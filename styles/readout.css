@@ -1,0 +1,77 @@
+/*
+ * Light-level readout chip.
+ *
+ * Every selector is scoped to `.pf1-lighting-readout`. Module CSS is unlayered and so
+ * outranks all of Foundry's `@layer` rules — a bare element or utility-class selector
+ * here would repaint parts of the core UI that have nothing to do with this module.
+ */
+
+.pf1-lighting-readout {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+
+  max-width: 22em;
+  padding: 0.25em 0.55em;
+  border: 1px solid var(--pf1-lighting-accent, #8886);
+  border-left: 3px solid var(--pf1-lighting-accent, #888);
+  border-radius: 4px;
+
+  background: rgba(0, 0, 0, 0.82);
+  color: #f0f0f0;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-shadow: 0 1px 2px #000;
+  white-space: nowrap;
+}
+
+.pf1-lighting-readout .readout-name {
+  font-weight: 600;
+  color: #fff;
+}
+
+.pf1-lighting-readout .readout-name::after {
+  content: "·";
+  margin-left: 0.4em;
+  color: #888;
+}
+
+.pf1-lighting-readout .readout-tier {
+  color: var(--pf1-lighting-accent, #f0f0f0);
+  font-weight: 600;
+}
+
+.pf1-lighting-readout .readout-reason {
+  color: #b8b8b8;
+  font-size: 0.92em;
+  font-style: italic;
+}
+
+/*
+ * One accent colour per tier, tracking the five-tier model (DESIGN.md §3.1). Supernatural
+ * Dark takes the violet Foundry already associates with darkness sources, so the one tier
+ * that has no natural analogue reads as obviously magical.
+ */
+.pf1-lighting-readout.tier-bright {
+  --pf1-lighting-accent: #ffe9a8;
+}
+
+.pf1-lighting-readout.tier-normal {
+  --pf1-lighting-accent: #ffd166;
+}
+
+.pf1-lighting-readout.tier-dim {
+  --pf1-lighting-accent: #7fa8d0;
+}
+
+.pf1-lighting-readout.tier-dark {
+  --pf1-lighting-accent: #4a5568;
+}
+
+.pf1-lighting-readout.tier-supernatural {
+  --pf1-lighting-accent: #9d6bd8;
+}

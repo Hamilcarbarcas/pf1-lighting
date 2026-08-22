@@ -1,0 +1,34 @@
+{
+  "id": "pf1-lighting",
+  "title": "PF1 Lighting",
+  "description": "Observer-relative light levels for Pathfinder 1e: five brightness tiers, darkness-spell semantics, and a queryable lighting model.",
+  "authors": [
+    {
+      "name": "Hamilcarbarcas"
+    }
+  ],
+  "version": "0.0.0",
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13"
+  },
+  "esmodules": [
+    "scripts/module.mjs"
+  ],
+  "styles": [
+    "styles/readout.css"
+  ],
+  "relationships": {
+    "systems": [
+      {
+        "id": "pf1",
+        "type": "system",
+        "compatibility": {
+          "minimum": "11"
+        }
+      }
+    ]
+  },
+  "url": "https://github.com/Hamilcarbarcas/pf1-lighting",
+  "license": "LICENSE"
+}
