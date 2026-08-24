@@ -1,0 +1,217 @@
+/**
+ * Making a darkness source answer to the observer. DESIGN.md §6.2.5.
+ *
+ * Two adjustments, both for the same underlying reason:
+ *
+ *   - **Desaturation** — grey vision gets full-colour terrain inside a darkness bubble.
+ *   - **Withholding** — for blindsight, the bubble should not be drawn at all: a creature that
+ *     maps a room by echo does not experience the darkness as anything.
+ *
+ * ## The problem
+ *
+ * A creature with darkvision or blindsight sees the world in grey — except inside a darkness
+ * bubble, where the terrain comes back in full colour. Reported 2026-08-22.
+ *
+ * It is not the vision mode, and swapping modes cannot fix it. A vision mode's colour
+ * adjustment is applied to the **primary sprite**: `refreshPrimarySpriteMesh` sets
+ * `visionMode.canvas.shader` on `canvas.primary.sprite` and points its sampler at
+ * `this.renderTexture` (`groups/primary.mjs:192-205`), so the desaturation happens *as the
+ * sprite is drawn*.
+ *
+ * A darkness source never uses that sprite. `_updateDarknessUniforms` hands the shader
+ * `u.primaryTexture = canvas.primary.renderTexture` (`point-darkness-source.mjs:217`) — the
+ * **raw** texture — and it composites its own darkened copy. That path bypasses the vision
+ * mode entirely, so whatever the observer's eyes are supposed to do to colour simply does not
+ * happen inside a darkness.
+ *
+ * This is a fifth face of §6.2.3's finding: a `PointDarknessSource` is not a well-behaved
+ * participant in the lighting pipeline. It redraws the map on its own terms.
+ *
+ * ## The fix, and why it wraps rather than replaces
+ *
+ * Every darkness shader — the default and all four animated ones — ends with the *same*
+ * `FRAGMENT_END`:
+ *
+ * ```glsl
+ * gl_FragColor = vec4(finalColor, 1.0) * depth;
+ * ```
+ *
+ * So one textual substitution desaturates all of them, and a GM who picked *Roiling Darkness*
+ * gets the fix too. Subclassing `AdaptiveDarknessShader` alone would have missed them, since
+ * an animation's `darknessShader` replaces the default outright
+ * (`rendered-effect-source.mjs:278`).
+ *
+ * **No new uniform is needed.** `saturation` is already declared in `FRAGMENT_UNIFORMS` for
+ * every lighting shader (`base-lighting.mjs:92`) and no darkness shader reads it. Reusing it
+ * avoids editing the uniform block, which is the fragile part of shader surgery.
+ *
+ * Luminance is computed inline rather than through `perceivedBrightness`, because only the
+ * default shader is guaranteed to have included that helper.
+ */
+
+import { MODULE_ID } from "../constants.mjs";
+
+export const SETTING_DESATURATE = "desaturateDarkness";
+
+/** The line every darkness shader ends on. */
+const FRAGMENT_END = "gl_FragColor = vec4(finalColor, 1.0) * depth;";
+
+/**
+ * Rec. 709 luma, matching what Foundry's own colour-adjustment shader uses, so the grey
+ * inside a darkness matches the grey outside it rather than merely being grey.
+ */
+const DESATURATE = `
+  float pf1Luma = dot(finalColor, vec3(0.2126, 0.7152, 0.0722));
+  finalColor = mix(finalColor, vec3(pf1Luma), clamp(saturation, 0.0, 1.0));
+`;
+
+/** Cache, so one wrapped class exists per base class rather than one per source. */
+const wrapped = new WeakMap();
+
+export function isEnabled() {
+  try {
+    return game.settings.get(MODULE_ID, SETTING_DESATURATE) === true;
+  } catch {
+    return true;
+  }
+}
+
+export function registerSettings() {
+  game.settings.register(MODULE_ID, SETTING_DESATURATE, {
+    name: "Darkness respects grey vision",
+    hint:
+      "Desaturates what a darkness source draws, so a creature seeing in black and white does not " +
+      "get full-colour terrain inside a darkness bubble. Foundry's darkness shader samples the map " +
+      "directly and skips the vision mode's colour adjustment; this puts it back.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      if (!canvas?.ready) return;
+      // The shader class is chosen during source initialisation, so a live change needs the
+      // sources rebuilt rather than merely refreshed.
+      for (const source of canvas.effects.darknessSources) source.object?.initializeLightSource?.();
+      canvas.perception.update({ initializeLighting: true, refreshLighting: true });
+    },
+  });
+}
+
+/**
+ * Wrap a darkness shader class so it honours `saturation`.
+ *
+ * @param {typeof AdaptiveDarknessShader} Base
+ * @returns {typeof AdaptiveDarknessShader}
+ */
+export function withDesaturation(Base) {
+  if (!Base) return Base;
+  if (wrapped.has(Base)) return wrapped.get(Base);
+
+  const source = Base.fragmentShader;
+
+  // If the substitution has nothing to bite on, leave the class alone rather than shipping a
+  // shader that fails to compile. A future Foundry that rewrites `FRAGMENT_END` should
+  // degrade to "colour inside darkness", not to a black canvas.
+  if (typeof source !== "string" || !source.includes(FRAGMENT_END)) {
+    console.warn(
+      `${MODULE_ID} | ${Base.name} does not end on the expected fragment; leaving it unwrapped.`
+    );
+    wrapped.set(Base, Base);
+    return Base;
+  }
+
+  const Wrapped = class extends Base {
+    static fragmentShader = source.replace(FRAGMENT_END, `${DESATURATE}${FRAGMENT_END}`);
+
+    static defaultUniforms = { ...Base.defaultUniforms, saturation: 0 };
+  };
+
+  Object.defineProperty(Wrapped, "name", { value: `PF1Lighting${Base.name}` });
+  wrapped.set(Base, Wrapped);
+  wrapped.set(Wrapped, Wrapped);
+  return Wrapped;
+}
+
+/**
+ * How grey the observer's eyes are, as 0..1.
+ *
+ * @remarks
+ * Read from the **single vision source** Foundry itself picks for canvas-wide tinting
+ * (`visibility.mjs:196`). That is a real limitation — with two vision sources active the
+ * canvas tint already comes from one of them, so matching that choice keeps the inside of a
+ * darkness consistent with the outside rather than inventing a third answer.
+ *
+ * Vision modes express saturation as -1..0 where -1 is fully grey; this wants 0..1.
+ */
+export function currentSaturation() {
+  if (!isEnabled()) return 0;
+  const source = canvas?.visibility?.visionModeData?.source;
+  const saturation = source?.visionModeOverrides?.saturation ?? 0;
+  return Math.clamp(-saturation, 0, 1);
+}
+
+/**
+ * Should the darkness mesh be withheld entirely for the current observer?
+ *
+ * @remarks
+ * **Blindsight only**, and only after two failed attempts at doing it in the shader.
+ *
+ * A creature that maps a room by echo does not experience a *deeper darkness* over it as
+ * anything at all, so the bubble should be **indistinguishable** from the ground around it.
+ * *See in darkness* and *true seeing* are different: they see the darkness perfectly well
+ * *as darkness*, and see through it. They need no adjustment — piercing rank already gives
+ * them the sight, and the bubble should still look like a bubble.
+ *
+ * The two shader attempts both failed on the same misconception. Mixing back toward
+ * `baseColor` gave the raw map at full brightness — too bright. Mixing toward
+ * `baseColor * computedBackgroundColor` gave the *ambient background*, which on a night scene
+ * is nearly black — a black disc. Neither is what the surroundings look like, because the
+ * grey around the bubble is painted by the **vision source**, and the darkness shader has no
+ * access to that term. There is no expression available in that shader that reproduces it.
+ *
+ * So do not reproduce it: withhold the mesh and let the ordinary pipeline draw the ground,
+ * vision paint included. `_drawMesh` already has that path (see {@link HIDDEN}), and it is
+ * the one lever measured to work — §6.2.3 found alpha does not stop a darkness source
+ * drawing.
+ *
+ * **Global, not per-observer-range.** Same single-vision-source approximation as
+ * {@link currentSaturation}: a distant bubble outside blindsight range also goes unpainted.
+ * It is beyond `data.radius` and so not drawn as perceived anyway.
+ */
+export function observerIgnoresDarkness() {
+  if (!isEnabled()) return false;
+  const source = canvas?.visibility?.visionModeData?.source;
+  return (source?.object?.actor?.system?.traits?.senses?.bs?.total ?? 0) > 0;
+}
+
+/** Last value seen, so a refresh is only requested when the answer actually changes. */
+let lastIgnores = null;
+
+/**
+ * Refresh lighting when the observer changes.
+ *
+ * @remarks
+ * `_drawMesh` runs on a **lighting** refresh, but changing which token is selected only
+ * triggers a *vision* refresh. Without this the bubble keeps whatever appearance the previous
+ * observer gave it until something else happens to dirty the lighting — which reads as the
+ * feature working intermittently, the worst way for it to be wrong.
+ *
+ * Guarded on a real change of answer, so the common case (selecting any token without
+ * blindsight, when the last one also had none) costs one boolean and requests nothing.
+ * Lighting is requested, never vision, so this cannot feed back into the hook that drives it.
+ */
+export function registerHooks() {
+  const check = () => {
+    const ignores = observerIgnoresDarkness();
+    if (ignores === lastIgnores) return;
+    lastIgnores = ignores;
+    if (canvas?.ready) canvas.perception.update({ refreshLighting: true });
+  };
+
+  Hooks.on("initializeVisionSources", check);
+  Hooks.on("initializeVisionMode", check);
+  Hooks.on("canvasReady", () => {
+    lastIgnores = null;
+    check();
+  });
+}

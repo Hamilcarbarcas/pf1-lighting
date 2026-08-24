@@ -27,6 +27,7 @@
 import { MODULE_ID } from "../constants.mjs";
 import { evaluate } from "../model/evaluate.mjs";
 import { TIER, TIER_NAME } from "../model/tiers.mjs";
+import { viewerTier } from "../vision/perception.mjs";
 
 export const SETTING_ENABLED = "readoutEnabled";
 export const SETTING_DETAIL = "readoutDetail";
@@ -92,12 +93,18 @@ function evaluateToken(token) {
   ];
 
   let best = null;
+  let at = centre;
   for (const point of points) {
     const result = evaluate({ x: point.x, y: point.y, elevation });
-    if (!best || result.B > best.B) best = result;
+    if (!best || result.B > best.B) {
+      best = result;
+      at = point;
+    }
     if (best.tier === TIER.BRIGHT) break; // nothing can beat it
   }
-  return best;
+  // The winning sample carried out, so the umbra clamp is applied at the same place the
+  // brightness was measured rather than at the centre.
+  return { ...best, point: { x: at.x, y: at.y, elevation } };
 }
 
 /* -------------------------------------------- */
@@ -142,12 +149,24 @@ function update() {
       element.style.display = "none";
       return;
     }
-    result = evaluate({ x: point.x, y: point.y, elevation: 0 });
+    result = { ...evaluate({ x: point.x, y: point.y, elevation: 0 }), point: { ...point, elevation: 0 } };
   }
 
-  const reason = detailed() ? reasonFor(result) : null;
+  // **The readout is a view, so it reports what the view sees.** `evaluate()` is god's eye and
+  // has no observer, so it cannot know that a *darkness* lies between the selected token and
+  // this point (§4.3) — which is why the chip went on calling a lit room bright while the
+  // screen, correctly, had it shadowed. The model was never wrong; the readout was asking the
+  // wrong one of its two questions.
+  //
+  // `null` means god's eye, where there is no observer and so no clamp — and the raw tier is
+  // then the right answer rather than a fallback.
+  const seen = viewerTier(result.point);
+  const clamped = seen !== null && seen < result.tier ? seen : null;
+  const tierShown = clamped ?? result.tier;
 
-  element.className = `pf1-lighting-readout tier-${TIER_CLASS[result.tier] ?? "dark"}`;
+  const reason = detailed() ? (clamped !== null ? "seen through darkness" : reasonFor(result)) : null;
+
+  element.className = `pf1-lighting-readout tier-${TIER_CLASS[tierShown] ?? "dark"}`;
   element.innerHTML = "";
 
   if (label) {
@@ -159,7 +178,7 @@ function update() {
 
   const tier = document.createElement("span");
   tier.className = "readout-tier";
-  tier.textContent = result.tierName;
+  tier.textContent = TIER_NAME[tierShown];
   element.append(tier);
 
   if (reason) {

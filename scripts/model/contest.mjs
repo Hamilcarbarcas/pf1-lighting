@@ -33,7 +33,67 @@
  * | passthrough | everything else, i.e. ambient | contributes, and *is* transformed |
  */
 
-import { TIER, reduceTiers, clampToTier } from "./tiers.mjs";
+import { TIER, reduceTiers, clampToTier, stepTier, tierCeiling, tierOf } from "./tiers.mjs";
+import { ZONE } from "./ramp.mjs";
+
+/* -------------------------------------------- */
+/*  Stacking — DESIGN.md §3.2.1                 */
+/* -------------------------------------------- */
+
+/**
+ * Resolve a set of emitters at one place into a brightness.
+ *
+ * @remarks
+ * **The one place the two zone kinds meet, and they meet by different operations.** Set levels
+ * *contend* — light does not stack (§4.2) — while relative bands *sum*:
+ *
+ * ```
+ * A      = max(every covering inner zone)
+ * Σn     = sum of `steps` over every covering band
+ * ceil   = max of `cap` over those same bands
+ * result = max(A, min(A + Σn, ceil))
+ * ```
+ *
+ * Two properties are worth naming because both are easy to lose in a refactor:
+ *
+ * - **`ceil` is the `max` of the caps, not the `min`.** A cap states what *that source* can
+ *   do alone, so a *daylight* whose band crosses a torch's must not be pulled down to the
+ *   torch's ceiling.
+ * - **The outer `max(A, …)`** stops a low cap from *darkening* ground already brighter than
+ *   it. Without it a torch would dim a sunlit field to Normal. Foundry's own shader carries the
+ *   identical guard at `base-lighting.mjs:380`.
+ *
+ * Bands read only `A`, never each other, so this is two passes and not a fixed point: no
+ * ordering, no convergence, and no way for two bands to amplify one another.
+ *
+ * @param {{zone?: number, B?: number, emission?: object}[]} emitters - Each carrying the zone
+ *   it contributes through *here*, as resolved by the caller
+ * @returns {number} Brightness, 0..1
+ */
+export function stack(emitters) {
+  let absolute = -Infinity;
+  let steps = 0;
+  let ceiling = -Infinity;
+
+  for (const e of emitters) {
+    if (e.zone === ZONE.BAND) {
+      steps += e.steps ?? 0;
+      ceiling = Math.max(ceiling, e.cap ?? TIER.NORMAL);
+    } else if (e.zone === ZONE.INNER) {
+      absolute = Math.max(absolute, e.tier ?? TIER.DARK);
+    } else if (e.B > 0) {
+      // An emitter resolved to a plain brightness with no zone — global illumination, and any
+      // caller holding a value rather than a source. Absolute by definition.
+      absolute = Math.max(absolute, tierOf(e.B));
+    }
+  }
+
+  if (absolute === -Infinity) absolute = TIER.DARK;
+  if (!steps) return tierCeiling(absolute);
+
+  const raised = Math.min(stepTier(absolute, steps), ceiling);
+  return tierCeiling(Math.max(absolute, raised));
+}
 
 /* -------------------------------------------- */
 /*  Defaults                                    */
@@ -76,6 +136,58 @@ export const DEFAULT_SUPPRESSOR = Object.freeze({
    */
   floor: TIER.DARK,
 });
+
+/**
+ * Does this suppressor block *sight through it* — cast an umbra (§4.3)?
+ *
+ * @remarks
+ * **Level 0 means mundane, for suppressors exactly as for emitters.** An unlit cellar and a
+ * *darkness* spell both make an area dark, and only one of them stops you seeing the lit
+ * courtyard on the far side. Standing in an ordinary dark room you can see out of the
+ * doorway perfectly well; that is the difference this predicate names.
+ *
+ * Two conditions, and the level one is the rule rather than a default:
+ *
+ * - `level >= 1` — magical. A level-0 source is mundane darkness and never casts an umbra,
+ *   whatever else it is configured with.
+ * - `blocksPath !== false` — an opt-out for magical darkness that is deliberately
+ *   see-through. Homebrew; the default is on.
+ *
+ * Consumed by §4.3's umbra and by §4.5.1's blindness, so the two cannot drift apart. It
+ * matters most for the case that motivated it: a creature with no darkvision on ordinary
+ * unlit ground can still see a lit room 30 ft away, and must not be blinded for standing in
+ * the dark.
+ *
+ * @param {object|null} suppressor
+ * @returns {boolean}
+ */
+export function castsUmbra(suppressor) {
+  if (!suppressor) return false;
+  return (suppressor.level ?? 0) >= 1 && suppressor.blocksPath !== false;
+}
+
+/**
+ * Does this suppressor hide terrain *inside* it from an observer outside? DESIGN.md §4.5.2.
+ *
+ * @remarks
+ * Strictly narrower than {@link castsUmbra}, and deliberately so. Umbra is per-observer
+ * geometry; this becomes **global sight-blocking edges**, which cannot carry a per-observer
+ * exception. So it may only fire where the answer is the same for everyone — and that is
+ * exactly what Supernatural Dark means, as against ordinary Dark which darkvision handles.
+ *
+ * Ordinary *darkness* needs nothing here and would be actively wrong to include: a
+ * normal-sighted creature has `basicSight.range` 0 and gets terrain from light perception
+ * alone, so unlit ground is already unpainted for it, while a darkvision creature's radius
+ * correctly does paint it. Adding edges would break the second case to fix a first case that
+ * was never broken.
+ *
+ * @param {object|null} suppressor
+ * @returns {boolean}
+ */
+export function blocksSight(suppressor) {
+  if (!castsUmbra(suppressor)) return false;
+  return (suppressor.floor ?? TIER.DARK) <= TIER.SUPERNATURAL_DARK;
+}
 
 /* -------------------------------------------- */
 /*  Eligibility                                 */
@@ -238,15 +350,18 @@ function annihilate(emitters, suppressors) {
  */
 export function contest(allEmitters, allSuppressors) {
   const ambient = 0; // nothing reaching this place
-  const brightest = (list) => list.reduce((max, e) => Math.max(max, e.B), ambient);
 
   if (!allEmitters.length && !allSuppressors.length) {
     return { B: ambient, baseline: ambient, winner: null, applied: false, negated: [] };
   }
 
-  // Unordered max over emitters: light does not stack (§4.2). Measured over the
-  // *original* set, including light annihilation is about to strike out, because
-  // `baseline` answers "what would this place read with no darkness anywhere".
+  // Set levels contend, bands sum — see {@link stack}. Not a plain `max` reduce since
+  // 2026-08-23: a light's outer band raises the prevailing level rather than setting it, so
+  // two overlapping torches are brighter than one (§3.2.1).
+  //
+  // Measured over the *original* set, including light annihilation is about to strike out,
+  // because `baseline` answers "what would this place read with no darkness anywhere".
+  const brightest = (list) => stack(list);
   const baseline = brightest(allEmitters);
 
   // *Daylight* resolves before the contest: it removes effects from play rather than

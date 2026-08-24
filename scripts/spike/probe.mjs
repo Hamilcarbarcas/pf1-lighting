@@ -6,11 +6,28 @@
  * than beside them (§6.6).
  */
 
-import { CLIP, MODULE_ID, RENDER_SHAPE, STRENGTH, isSynthetic } from "../constants.mjs";
-import { evaluate } from "../model/evaluate.mjs";
+import {
+  CLIP,
+  HIDDEN,
+  LEVEL,
+  MODULE_ID,
+  RENDER_SHAPE,
+  STRENGTH,
+  VISION_RANK,
+  isSynthetic,
+} from "../constants.mjs";
+import { containsPoint } from "../geometry.mjs";
+import { evaluate, evaluate as modelEvaluate } from "../model/evaluate.mjs";
+import * as field from "../model/field.mjs";
 import { TIER_NAME } from "../model/tiers.mjs";
 import * as registry from "../model/registry.mjs";
-import { isNativeSuppressionDisabled } from "../suppression.mjs";
+import { suppressorConfigOf } from "../model/registry.mjs";
+import { blocksSight, castsUmbra } from "../model/contest.mjs";
+import { RAW_BLINDED, isNativeSuppressionDisabled } from "../suppression.mjs";
+import * as perceptionModel from "../vision/perception.mjs";
+import * as blindness from "../vision/blindness.mjs";
+import * as umbraModel from "../vision/umbra.mjs";
+import { currentSaturation, observerIgnoresDarkness } from "../render/desaturate.mjs";
 
 /**
  * One-line summary of an evaluation.
@@ -29,13 +46,104 @@ function describe(result) {
   return `${head} — reduced from ${TIER_NAME[result.baselineTier]}`;
 }
 
+/* -------------------------------------------- */
+/*  Where did I actually sample?                */
+/* -------------------------------------------- */
+
+let marker = null;
+let markerTimer = null;
+
+/**
+ * Draw a crosshair at a sampled point.
+ *
+ * @remarks
+ * **`canvas.mousePosition` is the last position the pointer had *over the canvas*, and reaching
+ * the console means leaving it.** So every cursor-defaulting readout in this file samples
+ * wherever the mouse was before you went to type, which on a scene with two overlapping effects
+ * is reliably the wrong side of a boundary — and the output looks perfectly healthy, because it
+ * is a correct answer to a question nobody asked.
+ *
+ * Cost one round trip on 2026-08-23: a *daylight* absent from `emittersAt` read as the
+ * annihilation failing, when the point was simply outside the daylight. Marking it makes the
+ * two cases distinguishable at a glance instead of by arithmetic on the emission.
+ */
+export function mark(x, y, { ms = 6000 } = {}) {
+  if (!canvas?.ready) return null;
+  clearMark();
+
+  marker = new PIXI.Graphics();
+  marker.eventMode = "none";
+  const r = canvas.dimensions.size / 2;
+  marker.lineStyle(3, 0x00ffff, 1);
+  marker.drawCircle(x, y, r);
+  marker.moveTo(x - r * 1.5, y).lineTo(x + r * 1.5, y);
+  marker.moveTo(x, y - r * 1.5).lineTo(x, y + r * 1.5);
+  canvas.interface.addChild(marker);
+
+  markerTimer = setTimeout(clearMark, ms);
+  return marker;
+}
+
+/** Remove the crosshair. */
+export function clearMark() {
+  if (markerTimer) clearTimeout(markerTimer);
+  markerTimer = null;
+  if (!marker) return;
+  marker.destroy();
+  marker = null;
+}
+
+/**
+ * Which of `field()`'s cells contain a point?
+ *
+ * @remarks
+ * **The missing half of every "the tooltip disagrees with the screen" report.** The tooltip is
+ * `evaluate()` and the picture is `field()`, and until this existed nothing printed both for
+ * one point — so a disagreement between the two model paths and a disagreement between the
+ * model and someone's expectation looked identical.
+ *
+ * Even-odd across each cell's rings, because an `ambient` cell is the scene *less* every
+ * darkness on it (§7.0) and testing only its outer ring would report ambient inside a bubble.
+ *
+ * @param {number} [x]
+ * @param {number} [y]
+ * @returns {object[]}
+ */
+export function cellsAt(x, y) {
+  const point = x === undefined ? canvas.mousePosition : { x, y };
+  const hits = [];
+
+  for (const cell of field.get().cells) {
+    if (!cell.polygon?.points?.length) continue;
+    if (!containsPoint([cell.polygon, ...(cell.holes ?? [])], point)) continue;
+    hits.push({
+      kind: cell.kind,
+      tier: cell.tier,
+      tierName: cell.tier === undefined ? undefined : TIER_NAME[cell.tier],
+      emitter: cell.emitter?.id ?? null,
+      suppressor: cell.suppressor?.id ?? null,
+      holes: cell.holes?.length ?? 0,
+      // `stack` only. How many relative bands overlap here and what they sum to (§3.2.1) —
+      // the two numbers that say whether an over- or under-bright overlap is the geometry's
+      // fault or the arithmetic's.
+      ...(cell.kind === "stack" ? { bands: cell.bands, steps: cell.steps } : {}),
+    });
+  }
+  return hits;
+}
+
 /**
  * Light level at a point, or under the cursor if no point is given.
+ *
+ * @remarks
+ * Reports the **cells** alongside the evaluation, and marks the point on the canvas. Those two
+ * additions answer the two questions this readout could not previously distinguish: *is the
+ * model self-consistent here* (evaluate vs. cells), and *is "here" where I meant* (the mark).
  *
  * @param {number} [x] - Scene pixel X
  * @param {number} [y] - Scene pixel Y
  * @param {number} [elevation=0]
- * @returns {object} The full evaluate() result
+ * @returns {object} The full evaluate() result, plus the cells covering the point
  */
 export function at(x, y, elevation = 0) {
   if (x === undefined || y === undefined) {
@@ -43,12 +151,32 @@ export function at(x, y, elevation = 0) {
     x = p.x;
     y = p.y;
   }
-  const result = evaluate({ x, y, elevation });
+  const point = { x, y, elevation };
+  const result = evaluate(point);
+  const cells = cellsAt(x, y);
+  mark(x, y);
+
+  // **Emitters that reach this point and contribute nothing.** `evaluate()` reports what it
+  // *counted*, and the failure that matters most is a source it silently did not — a light
+  // whose polygon covers the point but whose `B` came out 0 is dropped by `emittersAt`, and an
+  // absence looks like nothing at all in the output.
+  //
+  // Added 2026-08-23, after a *daylight* was missing from that list for exactly this reason
+  // (`bright` past `dim`, see `ramp.normaliseEmission`). `emission` is printed alongside because
+  // the resolved zones are the answer whenever this list is not empty and should be.
+  const silent = registry
+    .emitters()
+    .filter((e) => !e.isGlobal && e.contains(point) && e.brightnessAt(point) <= 0)
+    .map((e) => ({ id: e.id, kind: e.kind, level: e.level, emission: e.emission }));
+
   console.error(
-    `PF1 Lighting | (${Math.round(x)}, ${Math.round(y)}) → ${describe(result)}`,
-    result
+    `PF1 Lighting | (${Math.round(x)}, ${Math.round(y)}) → ${describe(result)}` +
+      ` | cells: ${cells.map((c) => c.kind).join(", ") || "none"}` +
+      (silent.length ? ` | ${silent.length} silent emitter(s) reaching but contributing 0` : "") +
+      " — a cyan crosshair marks the point sampled",
+    { ...result, cells, silent }
   );
-  return result;
+  return { ...result, cells, silent };
 }
 
 /**
@@ -151,7 +279,39 @@ export function darkness() {
     // rendering path, is what makes a region unseeable.
     requiresEdges: s.requiresEdges,
     edges: s.edges?.length ?? s.edges?.size ?? null,
+    // §4.5.2 — the two restrictions must be split. `light: 0` (NONE) with `sight: 20`
+    // (NORMAL) is the healthy state: vision truncates at the boundary, light sweeps pass
+    // through so the model still measures an unsuppressed baseline. Both 20 means the
+    // relaxation did not run and path 1 is back, corrupting the baseline.
+    edgeLight: s.edges?.[0]?.light ?? null,
+    edgeSight: s.edges?.[0]?.sight ?? null,
+    // **Foundry's document priority, which is NOT the model's level.** They are unrelated
+    // fields and confusing them is easy: this readout showed only `priority`, so a source
+    // configured at document-priority 0 read as "mundane" while the model still had it at
+    // the `DEFAULT_SUPPRESSOR` level of 2 — magical, and casting an umbra. Reported
+    // 2026-08-23 as "priority 0 darkness sources should not have an umbra".
+    priority: s.priority,
+    // The model's view, which is the one that decides umbra. `level` comes **only** from
+    // `flags["pf1-lighting"].config` and defaults to 2/magical for a suppressor — an
+    // unconfigured darkness is a *deeper darkness*, not a mundane one. §3.5's config UI is
+    // the real fix for this trap.
+    ...(() => {
+      const config = suppressorConfigOf(s);
+      return {
+        modelKind: config.kind,
+        modelLevel: config.level,
+        modelFloor: config.floor,
+        // The two predicates, so neither has to be re-derived by hand from the fields above.
+        castsUmbra: castsUmbra(config),
+        blocksSight: blocksSight(config),
+      };
+    })(),
     strength: s[STRENGTH],
+    // Whether the renderer withheld the mesh entirely. `hidden: true` on a source the model
+    // says is Supernatural Dark means the renderer and the model disagree — which is a
+    // different bug from the source drawing and something painting over it.
+    hidden: s[HIDDEN] === true,
+    meshVisible: s.layers?.darkness?.mesh?.visible ?? null,
     hasClip: !!s[CLIP],
     clipPoints: s[CLIP]?.points?.length ?? null,
     shapePoints: s.shape?.points?.length ?? null,
@@ -185,13 +345,124 @@ export function vision() {
     // and vision is still cut, the cause is downstream of blinding entirely.
     isBlinded: v.isBlinded,
     blinded: { ...v.blinded },
+    // What Foundry *wanted* to set, before our record overrode it. `blindedRaw` true with
+    // `blinded.darkness` false is the healthy state inside an ordinary darkness: Foundry
+    // blinded the token and the model overruled it. Both false means it was never inside
+    // one, and a vision problem has some other cause.
+    blindedRaw: v.blinded?.[RAW_BLINDED] ?? null,
+    // The model's own verdict (§4.5.1) — true only in *magical* Supernatural Dark, and
+    // only without see-in-darkness. When this is true, `blinded.darkness` should be too.
+    modelBlinds: blindness.modelBlinds(v),
+    // Light-independent sight, in pixels. `Infinity` = see in darkness, a finite value =
+    // true seeing, 0 = neither. Non-zero here should always mean `modelBlinds: false`.
+    darkSight: perceptionModel.darkSightRange(v),
     visionMode: v.visionMode?.id ?? null,
     radius: v.data?.radius,
     lightRadius: v.data?.lightRadius,
+    // Above every darkness source's priority = this observer sweeps through sight-blocking
+    // edges (§4.5.2). Walls are registered at -Infinity and are never affected.
+    priority: v.data?.priority,
     shapePoints: (v.shape?.points?.length ?? 0) / 2,
     active: v.active,
   }));
   console.error("PF1 Lighting | vision sources", report);
+  return report;
+}
+
+/**
+ * Why can this observer see — or not see — each token on the scene?
+ *
+ * @remarks
+ * Visibility is a conjunction of six or seven things across three files, and every one of
+ * them fails the same way on screen: the token is simply not there. This walks the same
+ * decision Foundry walks and reports each term separately, so the failing one is a column
+ * rather than a hypothesis.
+ *
+ * Built **before** debugging the perception layer rather than during it — DESIGN.md §9's
+ * standing note about instrumentation, applied in advance for once.
+ *
+ * @param {Token} [observer] - Defaults to the controlled token
+ * @returns {object[]}
+ */
+export function perception(observerToken) {
+  const token = observerToken ?? canvas.tokens.controlled[0];
+  if (!token) {
+    ui.notifications.warn("PF1 Lighting | Select a token to use as the observer.");
+    return [];
+  }
+
+  const source = token.vision;
+  if (!source) {
+    ui.notifications.warn(`PF1 Lighting | ${token.name} has no vision source.`);
+    return [];
+  }
+
+  const modes = token.document.detectionModes.filter((m) => m.enabled);
+
+  const report = canvas.tokens.placeables
+    .filter((t) => t !== token)
+    .map((target) => {
+      const point = { x: target.center.x, y: target.center.y, elevation: target.document.elevation ?? 0 };
+      const light = perceptionModel.explainPoint(point, source);
+
+      // Ask each mode the same question Foundry asks it, one at a time, so a target that
+      // is invisible overall still says *which* senses declined it and why.
+      const byMode = {};
+      for (const mode of modes) {
+        const dm = CONFIG.Canvas.detectionModes[mode.id];
+        if (!dm) continue;
+        byMode[mode.id] = dm.testVisibility(source, mode, {
+          object: target,
+          tests: [{ point, los: new Map() }],
+        });
+      }
+
+      return {
+        target: target.name,
+        visible: target.visible,
+        tier: light.tierName,
+        // **Why** it is that tier, which is the question a bare tier cannot answer. `rawTier`
+        // is the god's-eye reading at the target; `tier` is what *this* observer gets after
+        // the umbra between them. When they differ, the target is not standing in the dark —
+        // the observer is looking through it (§4.3). Two causes, two different fixes, and
+        // without these they are indistinguishable in the readout.
+        rawTier: light.rawTierName,
+        umbraClamp: light.umbraClamp,
+        umbraApplied: light.umbraApplied,
+        // The two model verdicts, independent of whether the token has the sense.
+        litEnough: light.ordinarySight,
+        darkvisionWorks: light.darkvision,
+        // The observer's actual senses.
+        ...byMode,
+        // LOS is tested per mode, but when every mode says no it is usually this.
+        inLOS: source.los?.contains(point.x, point.y) ?? null,
+        // The *same* test `NonSightMixin` runs for blindsight and the other non-sight
+        // senses — a ray at piercing rank, which should clear every darkness edge and
+        // stop only at walls. `inLOS: false` with `losPiercing: true` is the healthy
+        // state inside a darkness: the shared polygon is truncated and the non-sight
+        // path correctly ignores that. Both false means a **wall**, not darkness.
+        losPiercing: (() => {
+          try {
+            return !CONFIG.Canvas.polygonBackends.sight.testCollision(source.origin, point, {
+              type: "sight",
+              mode: "any",
+              source,
+              useThreshold: true,
+              priority: VISION_RANK.PIERCING,
+            });
+          } catch (error) {
+            return `error: ${error.message}`;
+          }
+        })(),
+        distance: Math.round(canvas.grid.measurePath([token.center, target.center]).distance),
+      };
+    });
+
+  console.error(
+    `PF1 Lighting | perception from ${token.name} ` +
+      `(modes: ${modes.map((m) => `${m.id}@${m.range}`).join(", ") || "none"})`,
+    report
+  );
   return report;
 }
 
@@ -252,6 +523,209 @@ export function geometry() {
  *
  * @returns {object}
  */
+/**
+ * **What is actually painting light at this point?**
+ *
+ * @remarks
+ * Written 2026-08-23 for a §7.0 symptom the existing readouts could not touch: the model and
+ * the tooltip both said a point was dark, and the screen showed light. Every diagnostic to
+ * hand described the *model*, so all of them agreed with each other and none of them looked at
+ * the thing that was wrong.
+ *
+ * The distinction that matters is **`shape` versus the render shape**. `shape` is what the
+ * model reads and what Foundry's visibility mask draws; `RENDER_SHAPE` is the clipped polygon
+ * that actually reaches the mesh (§6.2.4). A source whose `shape` contains the point but whose
+ * render shape does not is correctly clipped; one where both contain it is painting, and is
+ * the culprit. Reporting them separately is the entire value here — reporting only "does this
+ * source reach the point" is what `sources()` already does, and it cannot distinguish the two.
+ *
+ * Defaults to the cursor, so it can be aimed at whatever looks wrong.
+ *
+ * @param {number} [x]
+ * @param {number} [y]
+ */
+export function paintersAt(x, y) {
+  const point =
+    x === undefined
+      ? canvas.mousePosition ?? canvas.app.renderer.events.pointer.getLocalPosition(canvas.stage)
+      : { x, y };
+
+  const describe = (s, collection) => {
+    const render = s[RENDER_SHAPE] ?? null;
+    return {
+      collection,
+      id: s.sourceId,
+      synthetic: isSynthetic(s),
+      active: s.active,
+      // The two questions. `inShape` without `paints` is a correctly clipped source.
+      inShape: s.shape?.contains?.(point.x, point.y) === true,
+      paints: (render ?? s.shape)?.contains?.(point.x, point.y) === true,
+      clipped: !!render,
+      hidden: s[HIDDEN] === true,
+      // Undefined means the class default.
+      level: s[LEVEL],
+      strength: s[STRENGTH],
+    };
+  };
+
+  const all = [
+    ...[...canvas.effects.lightSources].map((s) => describe(s, "light")),
+    ...[...canvas.effects.darknessSources].map((s) => describe(s, "darkness")),
+  ];
+
+  const global = canvas.environment?.globalLightSource;
+  if (global) {
+    all.push({
+      collection: "global",
+      id: global.sourceId,
+      synthetic: false,
+      active: global.active,
+      inShape: global.shape?.contains?.(point.x, point.y) === true,
+      // The global source covers the whole scene rect and is no longer clipped by us (§7.0);
+      // where it *renders* is decided per fragment by `darknessLevel` against `band` below.
+      paints: global.shape?.contains?.(point.x, point.y) === true,
+      clipped: false,
+      hidden: false,
+      level: undefined,
+      strength: undefined,
+    });
+  }
+
+  const painting = all.filter((s) => s.active && s.paints && !s.hidden);
+
+  // §7.0 — since the texture took over, "what paints here" is no longer only a question about
+  // sources. A point with an empty `painting` list can still be correctly lit, or correctly
+  // dim, purely from the background: these two lines are what say which.
+  const darknessLevel = canvas.effects.getDarknessLevel({ x: point.x, y: point.y, elevation: 0 });
+  const band = canvas.environment?.globalLightSource?.data?.darkness ?? null;
+
+  const report = {
+    point: { x: Math.round(point.x), y: Math.round(point.y) },
+    // What the model says should be here, so the two can be compared in one readout.
+    model: modelEvaluate(point).tierName,
+    // The texture's answer, and the scene's for comparison. Differing means a mesh is painting
+    // here; equal means none is, whether by design or because the cell was never emitted.
+    darknessLevel,
+    sceneDarkness: canvas.environment?.darknessLevel ?? null,
+    // The band **as authored**. `render/ambient.mjs` narrows only the shader uniform, so the
+    // effective upper bound at render time is `min(band.max, GLOBAL_LIGHT_CUTOFF)`.
+    band: band ? { ...band } : null,
+    painting,
+    // Reaching but correctly clipped away. A short list here and a wrong screen means the
+    // clipping is right and something else is painting; a source appearing in `painting` that
+    // the model says is blocked is the clip failing.
+    clippedOut: all.filter((s) => s.active && s.inShape && !s.paints),
+  };
+  console.error("PF1 Lighting | painters", report);
+  return report;
+}
+
+/**
+ * **What is revealing this point to this observer, and how?**
+ *
+ * @remarks
+ * Written 2026-08-23 for a symptom every existing readout is blind to: terrain rendering in
+ * *colour* where it should be monochrome. Nothing in `probe.at`, `paintersAt` or `perception`
+ * touches that, because it is not a light level, not a cell and not a detection verdict — it is
+ * a question about which of Foundry's several reveal paths painted the ground.
+ *
+ * The paths differ in what they look like, and that is the whole point of separating them:
+ *
+ * | Path | Shows as |
+ * | --- | --- |
+ * | `withinRadius` | **directly seen** — the vision source's own FOV, bright, and coloured by the vision mode |
+ * | `inLightMask` | lit ground, coloured by whatever light reaches it |
+ * | `inLos` only | reachable but unrevealed — fog |
+ *
+ * §4.5.1's note that "revealing terrain and brightening it are the same act" is why
+ * `withinRadius` matters most: `data.radius` is raised for *any* light-independent sense
+ * including **blindsight**, so a creature that maps a room by echo gets a genuine visual FOV
+ * out to that range. If a suspicious region turns out to be a circle centred on the observer
+ * rather than a wedge behind a darkness, that is the cause and the umbra is innocent.
+ *
+ * @param {number} [x]
+ * @param {number} [y]
+ */
+export function reveals(x, y) {
+  // **Copied, not referenced.** `canvas.mousePosition` returns a shared object that Foundry
+  // mutates, so a logged reference shows the console whatever the cursor is doing *now* — two
+  // samples taken at different places print identical coordinates and read as one sample taken
+  // twice. Only the numbers computed at call time (`distance`) survive honestly.
+  const live = x === undefined ? canvas.mousePosition : { x, y };
+  const point = { x: live.x, y: live.y };
+  mark(point.x, point.y);
+
+  const report = [...canvas.effects.visionSources]
+    .filter((v) => v.active)
+    .map((v) => {
+      const distance = Math.hypot(point.x - v.x, point.y - v.y);
+      const senses = v.object?.actor?.system?.traits?.senses ?? {};
+      const raw = modelEvaluate(point);
+      return {
+        id: v.sourceId,
+        distance: Math.round(distance),
+
+        // --- Which path reveals it ---
+        // The vision source's own FOV: directly seen, and the one that carries the vision
+        // mode's colour treatment.
+        withinRadius: distance <= (v.data?.radius ?? 0),
+        inShape: v.shape?.contains?.(point.x, point.y) === true,
+        inLos: v.los?.contains?.(point.x, point.y) === true,
+        radius: Math.round(v.data?.radius ?? 0),
+        lightRadius: Math.round(v.data?.lightRadius ?? 0),
+
+        // --- Why the radius is what it is ---
+        // `darkSightRange` includes blindsight and drives the radius; `visual` excludes it and
+        // drives perception. The two disagreeing is normal and is exactly the tension §4.5.1
+        // names — blindsight perceives without seeing.
+        darkSight: perceptionModel.darkSightRange(v),
+        visualDarkSight: perceptionModel.visualDarkSightRange(v),
+        blindsight: senses.bs?.total ?? 0,
+        darkvision: senses.dv ?? 0,
+
+        // --- What the model says should be here ---
+        rawTier: raw.tierName,
+        umbraClamp: umbraModel.clampAt(point, v),
+        seenTier: TIER_NAME[perceptionModel.perceivedTier(point, v)],
+
+        // --- What actually reached the screen ---
+        // The clamp is a *verdict*; this is whether it was **painted**. Two points with
+        // different `seenTier` and the same `darknessLevel` mean the model is right and the
+        // paint collapsed them — which the current table does on purpose, since Dark and
+        // Supernatural Dark share 1.0. Different levels mean the paint is fine and the
+        // difference is downstream of it.
+        darknessLevel: canvas.effects.getDarknessLevel({ x: point.x, y: point.y, elevation: 0 }),
+        sceneDarkness: canvas.environment?.darknessLevel ?? null,
+
+        // --- How it will be coloured ---
+        visionMode: v.visionMode?.id ?? null,
+        // `linkedToDarknessLevel` (`primary.mjs:204`). When true, the vision mode's colour
+        // adjustment is mixed by the darkness level per fragment
+        // (`color-adjustments.mjs:61-64`) rather than applied flat.
+        adaptive: v.visionMode?.vision?.darkness?.adaptive ?? null,
+        modeSaturation: v.visionModeOverrides?.saturation ?? null,
+        // **Darkness sources still drawing here.** §6.2.5: a darkness source samples
+        // `canvas.primary.renderTexture` *raw* and composites its own copy, so wherever one
+        // draws, the terrain arrives with the vision mode's colour adjustment already bypassed
+        // — full colour unless `desaturate.mjs` puts the saturation back. That is the only
+        // mechanism in the module that can make one region colour and its neighbour grey while
+        // every per-point measurement matches.
+        darknessDrawing: [...canvas.effects.darknessSources]
+          .filter((s) => s.active && !s[HIDDEN])
+          .filter((s) => ((s[RENDER_SHAPE] ?? s.shape)?.contains?.(point.x, point.y) === true))
+          .map((s) => s.sourceId),
+        // 0 = full colour, 1 = fully grey. Global to the observer, so it cannot differ between
+        // two regions — if two areas look differently saturated, the cause is which *path*
+        // revealed them, not this number.
+        saturation: currentSaturation(),
+        darknessMeshWithheld: observerIgnoresDarkness(),
+      };
+    });
+
+  console.error("PF1 Lighting | reveals", { point, sources: report });
+  return report;
+}
+
 export function sources() {
   const describe = (s) => ({
     id: s.sourceId,

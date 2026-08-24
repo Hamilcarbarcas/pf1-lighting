@@ -17,7 +17,7 @@
  * expected.
  */
 
-import { MODULE_ID } from "./constants.mjs";
+import { MODULE_ID, VISION_RANK } from "./constants.mjs";
 
 export const SETTING_DISABLE_NATIVE = "disableNativeSuppression";
 
@@ -86,7 +86,7 @@ function suppressedIgnoring(source, ignoredKey) {
  * of them rather than beside them.
  *
  * @remarks
- * There are **four independent** native suppression paths, and disabling any subset
+ * There are **five independent** native suppression paths, and disabling any subset
  * leaves the rest in place (measured 2026-08-21 and 2026-08-22):
  *
  * 1. **Edges** — geometric, partial. Darkness sources set `requiresEdges`, inserting
@@ -106,9 +106,15 @@ function suppressedIgnoring(source, ignoredKey) {
  * *inside* darkness vanishes entirely — wrong for PF1, where a torch inside a darkness
  * spell still burns, one tier down.
  *
- * 4. **Vision blinding** — `PointVisionSource` sets `blinded.darkness` when its origin is
- *    inside an active darkness source (`point-vision-source.mjs:198`). A blinded token
- *    sees *nothing*. See {@link patchVisionSource}.
+ * 4. **Vision blinding — the canvas.** `PointVisionSource` sets `blinded.darkness` when
+ *    its origin is inside an active darkness source (`point-vision-source.mjs:198`), and
+ *    its own sweep collapses to the token's footprint. See {@link patchVisionSource}.
+ *
+ * 5. **Vision blinding — detection.** The *same* flag, read from outside the class by
+ *    `DetectionMode#_testLOS` (`detection-mode.mjs:157`), fails every sight-based
+ *    detection independently of path 4. Found 2026-08-22 while building the perception
+ *    layer, and it is the reason paths 4 and 5 are now neutralised at the record rather
+ *    than at each consumer — see {@link patchVisionSource}.
  *
  * Path 3 is why a *daylight* overlapping a *darkness* refused to cancel: the daylight
  * outranked it, so Foundry had already cut a bite out of the darkness's polygon, and the
@@ -117,7 +123,9 @@ function suppressedIgnoring(source, ignoredKey) {
  *
  * Path 4 is why darkness regions rendered as pure black holes that blocked darkvision and
  * looked like unexplored space. It is not a rendering path at all, which is why four
- * successive rendering fixes did nothing to it.
+ * successive rendering fixes did nothing to it. Path 5 is its counterpart for *objects*
+ * rather than terrain, and stays hidden behind path 4: a token that cannot see the room
+ * is not obviously also failing to see the people in it.
  */
 export function applyMixin() {
   patchDarknessSource();
@@ -148,13 +156,32 @@ export function applyMixin() {
  * The private `#updateBlindedState` cannot be overridden, but the *consumers* are public
  * — so neutralise the key around a `super` call and let Foundry's own logic run.
  *
- * **There are two consumers, and the obvious one is the less important.** `isBlinded`
- * switches the vision mode to `blindness`; `_getPolygonConfiguration` reads
- * `blinded.darkness` *directly* and collapses the sweep radius to `data.externalRadius`
- * (`point-vision-source.mjs:289-290`). Patching only `isBlinded` produced a source that
- * reported healthy in every respect — not blinded, right vision mode, radius 1250,
- * active — while seeing a single square, because the polygon had already been built at
- * footprint size.
+ * **There are three consumers, spread across two files, and the obvious one is the least
+ * important.** Wrapping them individually was tried first and kept coming up one short:
+ *
+ *   1. `isBlinded` — swaps the vision mode to `blindness`
+ *      (`point-vision-source.mjs:173-175`). The visible one, and the one that matters
+ *      least.
+ *   2. `_getPolygonConfiguration` — reads `blinded.darkness` **directly** and collapses
+ *      the sweep radius to `data.externalRadius` (`point-vision-source.mjs:289-290`).
+ *      Patching only (1) produced a source that reported healthy in every respect — not
+ *      blinded, right vision mode, radius 1250, active — while seeing a single square,
+ *      because the polygon had already been built at footprint size.
+ *   3. `DetectionMode#_testLOS` — reads `visionSource.blinded.darkness` directly, from
+ *      *outside the class entirely*, and fails every sight-based detection
+ *      (`detection-mode.mjs:157`). A subclass override cannot reach this one at all. Its
+ *      symptom is different again from (1) and (2): the canvas looks right and the token
+ *      sees the room, but every other token in it is invisible.
+ *
+ * So the lever moved from the consumers to the **record**. `blinded` is a plain instance
+ * field, and a subclass field initialiser replaces the parent's — so we hand Foundry a
+ * record whose `darkness` key is an accessor that reads `false` while the model is in
+ * charge. `#updateBlindedState` still writes to it, `Object.values(this.blinded)` still
+ * enumerates it, and every reader present or future is covered without knowing they exist.
+ *
+ * The written value is kept, not discarded: `probe.vision()` reports it, so the diagnostic
+ * can still distinguish "Foundry wanted to blind this token and we overrode it" from
+ * "Foundry never blinded it".
  */
 function patchVisionSource() {
   const Base = CONFIG.Canvas.visionSourceClass;
@@ -164,45 +191,139 @@ function patchVisionSource() {
     static pf1LightingSuppressionPatched = true;
 
     /**
-     * Run `fn` with `blinded.darkness` neutralised.
-     *
-     * `#updateBlindedState` is private and cannot be overridden, so the flag gets set
-     * regardless; what we can do is stop it counting. Reusing Foundry's own logic around
-     * a temporarily cleared flag beats reimplementing each consumer.
+     * @override
+     * Replaces `PointVisionSource#blinded` (`point-vision-source.mjs:183`). A subclass
+     * field initialiser runs after the parent's and wins, so this is the record Foundry
+     * uses from construction onwards.
      */
-    #unblinded(fn) {
-      if (!isNativeSuppressionDisabled() || this.blinded?.darkness !== true) return fn();
-      const saved = this.blinded.darkness;
-      try {
-        this.blinded.darkness = false;
-        return fn();
-      } finally {
-        this.blinded.darkness = saved;
-      }
-    }
-
-    /** @override */
-    get isBlinded() {
-      return this.#unblinded(() => super.isBlinded);
-    }
+    blinded = createBlindedRecord(this);
 
     /**
      * @override
-     * **The one that actually mattered.**
+     * Light-independent sight needs a radius or it reveals nothing (DESIGN.md §4.5.1).
      *
-     * `_getPolygonConfiguration` reads `this.blinded.darkness` *directly* rather than
-     * through `isBlinded` (`point-vision-source.mjs:289-290`), collapsing the sweep
-     * radius to `data.externalRadius` — the token's own footprint. Patching `isBlinded`
-     * alone left the vision mode correct and the source active while the polygon was
-     * still a one-square bubble.
+     * Detection short-circuits let such a creature *detect* anything in line of sight, but
+     * terrain is painted from `data.radius` (`groups/visibility.mjs:575-590`), which is zero
+     * for a creature with no darkvision. Without this it would make out every token while
+     * standing in a black void.
+     *
+     * A **maximum**, never an assignment: *true seeing* already has its range folded into
+     * `sight.range` by PF1, and darkvision may reach further than either sense. This can
+     * only ever extend.
+     *
+     * `_initialize` is the seam because core normalises radii here too
+     * (`point-vision-source.mjs:217-222`), so the value is set before anything derives a
+     * polygon from it.
      */
-    _getPolygonConfiguration() {
-      return this.#unblinded(() => super._getPolygonConfiguration());
+    _initialize(data) {
+      super._initialize(data);
+      if (visionModel?.perceptionActive?.() !== true) return;
+
+      const darkSight = visionModel?.darkSightRadius?.(this) ?? 0;
+
+      // Where this observer sits on the ladder (EDGE_RANK). Ordinary sight ignores umbra
+      // edges and stops at blocking ones; light-independent sight ignores both. Set for
+      // *every* observer, not only the exceptional ones, because the whole point of the
+      // ladder is that rank-0 umbra edges must not block anybody's ordinary sight.
+      //
+      // **Walls are unaffected at any rank** — `_determineEdgeTypes` registers them at
+      // `-Infinity` (`clockwise-sweep.mjs:101`) while darkness edges take the sweep's own
+      // priority (`:127`), and an edge is skipped only when
+      // `edge.priority < edgeType.priority` (`:236`).
+      this.data.priority = Math.max(
+        this.data.priority ?? 0,
+        darkSight > 0 ? VISION_RANK.PIERCING : VISION_RANK.NORMAL
+      );
+
+      if (darkSight <= 0) return;
+      this.data.radius = Math.max(this.data.radius ?? 0, darkSight);
+
+      // Optional look adjustment. Revealing and brightening are the same act in Foundry
+      // (see `darkSightBrightness`), so this is the only way to have one without the other.
+      // Additive against any authored value, then clamped to the shader's range.
+      const offset = visionModel?.darkSightBrightness?.(this) ?? 0;
+      if (offset !== 0) {
+        this.data.brightness = Math.clamp((this.data.brightness ?? 0) + offset, -1, 1);
+      }
     }
   };
 
   Object.defineProperty(Patched, "name", { value: "PF1LightingVisionSource" });
   CONFIG.Canvas.visionSourceClass = Patched;
+}
+
+/**
+ * The vision layer's verdicts, injected rather than imported.
+ *
+ * @remarks
+ * Dependency direction, made explicit. This file is the **low** layer — it knows how to
+ * stop Foundry suppressing things and nothing about light levels. The vision layer sits on
+ * top and imports from here. Importing back the other way to ask "should this observer be
+ * blinded" would make the two mutually dependent, and an ES module cycle between a settings
+ * reader and a model query is the kind of thing that works until the day an import order
+ * changes and a `const` is read in its temporal dead zone.
+ *
+ * So `module.mjs` wires them together and this file holds an interface it never constructs.
+ *
+ * @type {{
+ *   blinds?: (s: object) => boolean,
+ *   darkSightRadius?: (s: object) => number,
+ *   darkSightBrightness?: (s: object) => number,
+ *   perceptionActive?: () => boolean,
+ * }|null}
+ */
+let visionModel = null;
+
+/** Wire the vision layer's verdicts in. Called once at `init`. */
+export function setVisionModel(model) {
+  visionModel = model;
+}
+
+/**
+ * The raw, un-overridden `blinded.darkness` value, for diagnostics.
+ *
+ * Non-enumerable, so it stays out of `Object.values(this.blinded)` — which is exactly how
+ * `isBlinded` is computed, and would otherwise blind every token permanently.
+ */
+export const RAW_BLINDED = Symbol("pf1LightingRawBlinded");
+
+/**
+ * A `blinded` record whose `darkness` key is decided by the model rather than by Foundry.
+ *
+ * @remarks
+ * Not simply `false`. Native path 4's *behaviour* is correct — a creature that cannot see
+ * where it stands should be blind — and only its **trigger** was wrong, firing on the mere
+ * presence of darkness rather than on whether that darkness actually defeats the observer.
+ * So the trigger is replaced and Foundry's own blinding machinery is left to do the rest.
+ *
+ * With no vision model wired in, this reports `false` and behaves exactly as it did before
+ * §4.5.1 — the model is additive, not load-bearing for correctness here.
+ *
+ * @param {object} source - The vision source this record belongs to
+ * @returns {Record<string, boolean>}
+ */
+function createBlindedRecord(source) {
+  let raw = false;
+  const record = {};
+
+  Object.defineProperty(record, "darkness", {
+    enumerable: true,
+    configurable: true,
+    get: () => {
+      if (!isNativeSuppressionDisabled()) return raw;
+      return visionModel?.blinds?.(source) === true;
+    },
+    set: (value) => {
+      raw = value === true;
+    },
+  });
+
+  Object.defineProperty(record, RAW_BLINDED, {
+    enumerable: false,
+    get: () => raw,
+  });
+
+  return record;
 }
 
 function patchDarknessSource() {
@@ -214,8 +335,21 @@ function patchDarknessSource() {
 
     /**
      * @override
-     * Path 1. The darkness source still renders its own mesh — that is driven by its
-     * own shape, independently of whether it contributes edges for other sources.
+     * Path 1, in full. A darkness source contributes **no** edges of its own.
+     *
+     * @remarks
+     * It briefly contributed sight-only edges here (§4.5.2, 2026-08-22), which was right
+     * about the mechanism and wrong about the geometry. Edges built in this method can only
+     * trace `this.shape`, the suppressor's *raw* polygon, so they ignore daylight
+     * cancellation, two-band rims and per-region tiers alike — "where a darkness is" rather
+     * than "where a darkness is in effect".
+     *
+     * Sight edges now come from `field()` cells in `vision/umbra-edges.mjs`, which is the
+     * only place the model's own answer is available. Read that file before reinstating
+     * anything here.
+     *
+     * The source still renders its own mesh either way — that is driven by its shape,
+     * independently of whether it contributes edges.
      */
     get requiresEdges() {
       if (isNativeSuppressionDisabled()) return false;

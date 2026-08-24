@@ -28,15 +28,16 @@
  */
 
 import { MODULE_ID, isSynthetic } from "../constants.mjs";
-import { brightnessAt, radiiOf } from "./ramp.mjs";
+import { brightnessAt, contributionAt, emissionOf, ZONE } from "./ramp.mjs";
 import { DEFAULT_EMITTER, DEFAULT_SUPPRESSOR } from "./contest.mjs";
+import { TIER, tierCeiling, tierFromDarkness } from "./tiers.mjs";
 
 /* -------------------------------------------- */
 /*  Entries                                     */
 /* -------------------------------------------- */
 
 /**
- * One resolved source. Config and radii are read once per rebuild; geometry is derived
+ * One resolved source. Config and emission are read once per rebuild; geometry is derived
  * lazily, because most entries are never asked for their polygon.
  */
 class Entry {
@@ -122,23 +123,64 @@ class Entry {
  * @returns {number} 0..1
  */
 export function ambientBrightness() {
+  return tierCeiling(ambientTier());
+}
+
+/**
+ * The ambient **tier**, and the base of every additive sum in §3.2.1.
+ *
+ * @remarks
+ * Read through the §7.0 darkness table rather than by thresholding `1 - darknessLevel`. Two
+ * quantisations of the same quantity cannot both be the base of a rung ladder, and this is the
+ * one the renderer already paints from — so the model and the picture agree by construction.
+ *
+ * Read live rather than cached on an entry: Foundry *animates* darkness transitions, so
+ * `darknessLevel` slides between values without firing a document update.
+ */
+export function ambientTier() {
   const darkness =
     canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0;
-  return Math.clamp(1 - darkness, 0, 1);
+  return tierFromDarkness(darkness);
 }
 
 /** An emitter: contributes brightness. */
 class EmitterEntry extends Entry {
   /**
-   * Brightness contributed at a point, before any contest.
+   * Which zone of this emitter a point falls in — DESIGN.md §3.2.1.
+   *
+   * @remarks
+   * The resolution path's entry point, and it deliberately does **not** return a number.
+   * A band contributes `+n rungs on whatever else is here`, which is not a quantity this
+   * emitter can know on its own; `contest.stack` is the only place that can. Returning a
+   * brightness here is exactly the collapse the three-zone ramp made.
    *
    * @param {{x: number, y: number, elevation?: number}} [point]
+   * @returns {{zone: number, tier?: number, steps?: number, cap?: number}}
+   */
+  contributionAt(point) {
+    // Global illumination is a set level with no origin and no band. `ambientTier` is read
+    // live, so a darkness *animation* cannot leave it stale.
+    if (this.isGlobal) return { zone: ZONE.INNER, tier: ambientTier() };
+    const distance = Math.hypot(point.x - this.source.x, point.y - this.source.y);
+    return contributionAt(distance, this.emission);
+  }
+
+  /**
+   * Brightness contributed at a point, ignoring everything else on the map.
+   *
+   * @remarks
+   * Retained for readouts and for the reaching test, **not** for resolution. A band's
+   * brightness here is what it would produce over unlit ground, which is a lower bound on
+   * its real contribution and the right answer for "does this light reach".
+   *
+   * @param {{x: number, y: number, elevation?: number}} [point]
+   * @param {number} [base] - The prevailing tier to raise from
    * @returns {number} 0..1
    */
-  brightnessAt(point) {
+  brightnessAt(point, base = TIER.DARK) {
     if (this.isGlobal) return ambientBrightness();
     const distance = Math.hypot(point.x - this.source.x, point.y - this.source.y);
-    return brightnessAt(distance, this.radii);
+    return brightnessAt(distance, this.emission, base);
   }
 }
 
@@ -157,6 +199,22 @@ let generation = 0;
 function configOf(source, defaults) {
   const flags = source.object?.document?.getFlag?.(MODULE_ID, "config") ?? {};
   return { ...defaults, ...flags };
+}
+
+/**
+ * A suppressor's resolved config, without going through the registry.
+ *
+ * @remarks
+ * For callers that run *during source initialisation*, before the registry is a meaningful
+ * thing to consult — notably `requiresEdges` (§4.5.2), which Foundry reads while building
+ * the very source the registry would be describing. Reading the flag directly avoids both a
+ * chicken-and-egg problem and any question of whether a rebuild is safe at that moment.
+ *
+ * @param {object} source
+ * @returns {object}
+ */
+export function suppressorConfigOf(source) {
+  return configOf(source, DEFAULT_SUPPRESSOR);
 }
 
 /**
@@ -202,7 +260,7 @@ function buildEmitters() {
           level: 0,
           isGlobal: true,
           placeholder: true,
-          radii: { bright: 0, normal: 0, dim: 0 },
+          emission: null,
         })
       );
       continue;
@@ -212,7 +270,7 @@ function buildEmitters() {
       new EmitterEntry(source, {
         ...configOf(source, DEFAULT_EMITTER),
         isGlobal: false,
-        radii: radiiOf(source),
+        emission: emissionOf(source),
       })
     );
   }
@@ -246,11 +304,6 @@ export function invalidate() {
   suppressorList = null;
 }
 
-/** Is the registry currently stale? */
-export function isDirty() {
-  return emitterList === null;
-}
-
 /**
  * Bumped on every rebuild. A cache key for anything derived from the registry —
  * notably `field()`, which is far too expensive to recompute speculatively.
@@ -273,19 +326,29 @@ export function suppressors() {
 }
 
 /**
- * Emitters whose brightness reaches a point.
+ * Emitters reaching a point, each with the **zone** it reaches through.
+ *
+ * @remarks
+ * `B` is still reported, because most readers want a number and every readout prints one, but
+ * it is the emitter's output *over unlit ground* — a lower bound. The authoritative answer
+ * needs the whole set at once and comes from `contest.stack` (§3.2.1).
+ *
+ * The reaching test is on the zone, not on `B`: a band whose contribution happens to be zero
+ * against Dark is still present, and dropping it here would silently unstack it. That is the
+ * same class of mistake as the `bright`-past-`dim` disappearance — absence leaving no trace.
  *
  * @param {{x: number, y: number, elevation?: number}} point
- * @returns {{entry: EmitterEntry, B: number}[]}
+ * @returns {{entry: EmitterEntry, B: number, zone: number, tier?: number, steps?: number,
+ *   cap?: number}[]}
  */
 export function emittersAt(point) {
   const out = [];
   for (const entry of emitters()) {
     // Global illumination covers everything and has no polygon to test.
     if (!entry.isGlobal && !entry.contains(point)) continue;
-    const B = entry.brightnessAt(point);
-    if (B <= 0) continue;
-    out.push({ entry, B });
+    const contribution = entry.contributionAt(point);
+    if (contribution.zone === ZONE.NONE) continue;
+    out.push({ entry, B: entry.brightnessAt(point), ...contribution });
   }
   return out;
 }
@@ -316,7 +379,7 @@ export function stats() {
  *
  * @remarks
  * The registry caches only what cannot be read live: resolved config (`kind`, `level`,
- * `floor`, `transform`) and radii. Position is **not** cached — `brightnessAt` reads
+ * `floor`, `transform`) and emission. Position is **not** cached — `contributionAt` reads
  * `source.x` and `contains` calls `testPoint`, both live — so a token walking around
  * with a torch does not stale the registry at all.
  *
@@ -368,7 +431,7 @@ export function registerHooks() {
   });
 
   // `environment` carries the darkness level and global illumination; `grid` because
-  // `radiiOf` converts our Bright radius through `distancePixels`.
+  // `grid` because a scene's distance scale feeds every radius the model reads.
   Hooks.on("updateScene", (_doc, changed) => {
     if (affectsRegistry(changed, ["environment", "darkness", "grid"])) dirty();
   });

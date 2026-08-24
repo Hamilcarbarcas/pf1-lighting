@@ -1,32 +1,69 @@
 /**
  * The renderer — DESIGN.md §6, §8.2 step 3.
  *
- * Takes `field()`'s cells and puts them on the screen. Three jobs, one per cell kind:
+ * Takes `field()`'s cells and puts them on the screen. One job per cell kind:
  *
  *   `clip`     narrow the **real** source to the cell, so flicker, colour and falloff
  *              survive (§6.1). This is the point of the whole design.
- *   `reduced`  a pooled synthetic at the emitter's origin with radii shifted one zone
+ *   `reduced`  a pooled synthetic at the emitter's origin with its set tier lowered
  *              inward, so suppressed light keeps its gradient (§6.2.2).
- *   `dark`     the **real darkness source**, clipped to the region it governs and scaled
- *              to darken by exactly the amount the model computed (§6.2.3).
+ *   `dark`     the tier into the **darkness-level texture** (§7.0), plus the real darkness
+ *              source clipped to the region for Supernatural Dark's violet and animation.
+ *   `ambient`  the same texture, at the scene's own tier.
+ *
+ * Note where the split falls: **sources carry light, the texture carries the ground.** A light
+ * source can only add, and composites with `MAX_COLOR`, so nothing built out of one can express
+ * "this area is one step dimmer than everything around it". The texture is a number per
+ * fragment that every lighting *and vision* shader reads, which is both weaker and exactly
+ * right — see `render/darkness-texture.mjs`.
  *
  * Everything is pooled (§9.5) and driven off the field's own staleness detection, so a
  * frame in which nothing changed costs one reference comparison.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
 import { isNativeSuppressionDisabled } from "../suppression.mjs";
 import * as field from "../model/field.mjs";
 import {
   emitters as registryEmitters,
   suppressors as registrySuppressors,
 } from "../model/registry.mjs";
-import { TIER, tierOf } from "../model/tiers.mjs";
+import { TIER, stepTier, tierOf } from "../model/tiers.mjs";
+import { levelForTier } from "./levels.mjs";
+import * as ambientTakeover from "./ambient.mjs";
 import * as clip from "./clip.mjs";
+import * as darknessTexture from "./darkness-texture.mjs";
+import * as tierPaint from "./paint.mjs";
 import * as pool from "./pool.mjs";
 
 
-export const SETTING_RENDER = "renderEnabled";
+export { SETTING_RENDER };
+
+/**
+ * Draw band overlaps, or only *model* them.
+ *
+ * @remarks
+ * §3.2.1's stacking is a rule about light levels and the model applies it unconditionally —
+ * the readout, perception, the umbra and every mechanical consumer see a two-torch overlap as
+ * Normal whatever this says. What it controls is whether the renderer *shows* it, by cloning
+ * the participating emitters at a raised level.
+ *
+ * Off by default (Patrick, 2026-08-24): the overlaps read oddly, and a light level you can
+ * query but cannot see is a normal state of affairs for this module — it is what the whole
+ * §4.8 perception layer is built on. Separating the two costs one branch.
+ */
+export const SETTING_SHOW_STACKS = "showStackedOverlaps";
+
+/** Draw an ordinary *darkness* that has an animation, for the animation alone. See {@link darkeningPlan}. */
+export const SETTING_DARKNESS_ANIMATION = "darknessAnimationStrength";
+
+const showStacks = () => {
+  try {
+    return game.settings.get(MODULE_ID, SETTING_SHOW_STACKS) === true;
+  } catch {
+    return false;
+  }
+};
 
 let lastField = null;
 let lastStats = null;
@@ -62,6 +99,7 @@ const active = () => {
   }
 };
 
+
 /** Polygon area, for picking which piece of a split cell the real source keeps. */
 function area(polygon) {
   return Math.abs(polygon?.signedArea?.() ?? 0);
@@ -85,18 +123,92 @@ function area(polygon) {
  *   3. It carries a padded `_visualShape` and a mesh scaled to the padded radius, all
  *      built for rendering supernatural darkness specifically.
  *
- * So darkness sources now do the one job they were designed for — Supernatural Dark —
- * and everything else is expressed by clipping light away, which is exact.
+ * So darkness sources do the one job they were designed for — Supernatural Dark — and every
+ * other tier is expressed by clipping light away and writing the tier into the darkness-level
+ * texture (§7.0). Both are exact, and neither is a scaled approximation of an effect built for
+ * a different purpose.
  *
- * **Target Dark** needs no source: removing the light *is* the render.
- * **Target above Dark** — a *darkness* at noon capping at Normal — cannot be drawn at
- * all without lowering ambient inside a region, which means owning global illumination.
- * That is §7.1, and it is a real blocker rather than a deferred nicety. `evaluate()` and
- * the readout still report those correctly; only the paint is missing.
+ * The `ambientTier` parameter is kept because the signature reads as though it should matter
+ * and a future two-band source (§3.3.1) may make it so; today it does not.
+ *
+ * ## Except for animation — §6.2.6 revisited, 2026-08-24
+ *
+ * §6.2.6 recorded that an ordinary *darkness* cannot animate: strength 0 withholds the mesh,
+ * and an animation is a fragment shader on a mesh. It concluded that a workaround was not worth
+ * it, because "synthesising a mesh purely to carry an animation would mean a second source
+ * fighting the first over the same ground".
+ *
+ * **That objection expired when §7.0 landed.** The texture owns the ground's brightness now, so
+ * there is no fight: the source is not being asked to darken, only to draw. And the darkness
+ * shader has exactly the dial that needs — the animation modifies `finalColor` *before* the
+ * intensity scale is applied (`darkness-lighting.mjs:119`):
+ *
+ * ```glsl
+ * finalColor *= (mix(color, color * 0.33, darknessLevel) * colorationAlpha);
+ * ```
+ *
+ * So a small non-zero strength draws the mesh faintly: the animation plays, and the extra
+ * darkening on top of the tier the texture already set is a tint rather than a second opinion.
+ *
+ * **Opt-in per source, by the GM's own choice of animation.** A darkness with no animation
+ * configured stays exactly as it was — no mesh, no cost, no tint. Nothing changes for anyone
+ * who has not asked for it, which is what makes a faint deliberate inaccuracy acceptable here.
  */
-function darkeningStrength(ambientTier, targetTier) {
+function darkeningPlan(ambientTier, targetTier, source) {
   void ambientTier;
-  return targetTier === TIER.SUPERNATURAL_DARK ? 1 : 0;
+  // The one tier a darkness source is actually good at, at its authored strength.
+  if (targetTier === TIER.SUPERNATURAL_DARK) return { strength: 1, animationOnly: false };
+  // Nothing to animate, or the GM has not asked for one: no mesh, exactly as before.
+  if (!source?.data?.animation?.type || !animateDarkness()) {
+    return { strength: 0, animationOnly: false };
+  }
+  // Draw it, contributing nothing but the animation. `strength` is the tint toward the
+  // source's authored colour; 0 leaves the ground exactly at the tier the texture set.
+  return { strength: 0, animationOnly: true };
+}
+
+const animateDarkness = () => {
+  try {
+    return game.settings.get(MODULE_ID, SETTING_DARKNESS_ANIMATION) === true;
+  } catch {
+    return false;
+  }
+};
+
+
+/**
+ * A light's two zones as Foundry lighting levels — DESIGN.md §3.2.1.
+ *
+ * @remarks
+ * The whole content of the two-zone model, on the render side. The inner zone provides a set
+ * tier and maps straight across; the band **raises** the prevailing level, so its tier depends
+ * on what it is sitting on and has to be computed rather than looked up.
+ *
+ * Both go through {@link levelForTier} rather than a table lookup, because Foundry's levels are
+ * **relative to the background** and the background is no longer always Dark (§7.0). A torch on
+ * a Normal-lit map, capped at Normal, has to resolve to `UNLIT` — paint the ground exactly as it
+ * is — where a table lookup would ask for `BRIGHT` and overshoot the ground it stands on.
+ *
+ * `base` is the scene's ambient tier and not a per-pixel value, which is the approximation this
+ * makes: the shader has one uniform per zone per source, so a band crossing two differently lit
+ * areas paints one level throughout. It matters only where a band overlaps *another light's*
+ * inner zone, and the model stays exact there regardless — §6.3's standing bargain, mechanics
+ * from the model and appearance from the shader.
+ *
+ * @param {object|null} emission
+ * @param {number} base - The ambient tier the band raises from
+ * @returns {{inner: number|undefined, band: number|undefined}} Foundry lighting levels
+ */
+function levelsFor(emission, base) {
+  if (!emission) return { inner: undefined, band: undefined };
+  const bandTier = Math.max(
+    base,
+    Math.min(stepTier(base, emission.steps ?? 1), emission.cap ?? emission.tier)
+  );
+  return {
+    inner: levelForTier(emission.tier, base),
+    band: levelForTier(bandTier, base),
+  };
 }
 
 /**
@@ -135,6 +247,9 @@ export function rebuild({ force = false } = {}) {
   lastField = current;
 
   const t0 = performance.now();
+  // The ambient rung every relative band raises from (§3.2.1).
+  const sceneTier = tierOf(current.stats.ambientB ?? 0);
+
   pool.begin();
 
   // --- `clip` — group by emitter, since a cell may have been split into several rings
@@ -161,10 +276,17 @@ export function rebuild({ force = false } = {}) {
     const [primary, ...rest] = cells;
     const split = cells.length > 1;
 
-    if (clip.assign(source, primary.polygon)) restage.add(source);
+    if (clip.assign(source, primary.clipped ? primary.polygon : null)) restage.add(source);
     // A split cell's pieces must abut with no fade, or the seam shows — as a dark line
     // if they meet, or a bright one if they overlap (coloration blends additively).
     if (clip.setHardEdges(source, split)) restage.add(source);
+
+    // §3.2.1's two zones, onto Foundry's two level-correction uniforms. The inner zone paints
+    // its set tier; the band paints one rung up from the ambient it sits on, ceiling `cap`.
+    // Where two bands overlap the shader cannot sum — `MAX_COLOR` — and the `stack` cells
+    // handle it through the darkness texture instead.
+    const zones = levelsFor(emitter.emission, sceneTier);
+    if (clip.setLevel(source, zones.inner, zones.band)) restage.add(source);
 
     for (const cell of rest) {
       clones++;
@@ -174,10 +296,23 @@ export function rebuild({ force = false } = {}) {
         x: source.x,
         y: source.y,
         elevation: source.elevation ?? 0,
-        radii: emitter.radii,
+        emission: emitter.emission,
         color: source.data?.color ?? undefined,
+        // **The comment above claimed this for months and the code never did it.** A split
+        // cell's clones were built with no `animation`, so an animated light stopped animating
+        // at the cut — the one place §6.2.1's "the seam is invisible" stops being true, because
+        // a static piece next to a flickering one is not a seam, it is two different lights.
+        // Reported 2026-08-23: the annulus split is invisible until the light animates.
+        //
+        // `seed` rides along so the pieces stay in phase; without it each clone starts its own
+        // cycle and the cut shows as a beat rather than a line.
+        animation: source.data?.animation,
+        seed: source.data?.seed,
+        // Passed in, not set afterwards. `_initializeSoftEdges` runs inside `initialize()`, so
+        // the old `clip.setHardEdges(clone, true)` here landed a rebuild too late — and on a
+        // pooled source it then never cleared. See the note in `pool.fill`.
+        hardEdges: true,
       });
-      clip.setHardEdges(clone, true);
     }
   }
 
@@ -189,33 +324,97 @@ export function rebuild({ force = false } = {}) {
     if (clip.assign(entry.source, null)) restage.add(entry.source);
   }
 
-  // --- `reduced` — gradient preserved via shifted radii (§6.2.2). ---
+  // --- `reduced` — the emitter's own geometry at a lowered set tier (§3.2.1). ---
+  //
+  // Was a radius shift (§6.2.2) until the two zones stopped meaning the same thing. Reduction
+  // is now a change of *level*, so the light keeps both radii and simply paints dimmer, which
+  // is both closer to the rule and one fewer transformation to get wrong.
   let reduced = 0;
   for (const cell of current.cells) {
     if (cell.kind !== "reduced" || !cell.emitter) continue;
     reduced++;
+    const zones = levelsFor(cell.emission, sceneTier);
     pool.fill({
       kind: "light",
       polygon: cell.polygon,
       x: cell.emitter.source.x,
       y: cell.emitter.source.y,
       elevation: cell.emitter.source.elevation ?? 0,
-      radii: cell.radii,
+      emission: cell.emission,
+      level: zones.inner,
+      bandLevel: zones.band,
       color: cell.emitter.source.data?.color ?? undefined,
     });
   }
 
-  // --- `dark` — the region a suppressor governs, rendered by the suppressor itself. ---
+  // --- `stack` — a band overlap, drawn by cloning the lights that made it. §3.2.1. ---
   //
-  // Routed through the **real darkness source**, not a synthetic fill, for the same
-  // reason light is: it already has the right origin and animation, and reusing it keeps
-  // one source per effect instead of two fighting over the same ground.
+  // **Not a fill, and the reason is the shape of a light rather than its brightness.** The
+  // first version wrote the overlap into the darkness-level texture as a flat region at the
+  // summed tier, which is what the model says is there and looked wrong anyway: `SWITCH_COLOR`
+  // blends a light's two zones across 72% of its ratio at the default attenuation
+  // (`base-lighting.mjs:312-318`) and `FALLOFF` ramps the outer half on top of that, so a
+  // Foundry light is very nearly *all* gradient. A plateau butted against that reads as a step
+  // however accurate its value — reported 2026-08-23 as the overlap standing out against the
+  // light around it, twice, before the cause was the flatness rather than the number.
   //
-  // A darkness source *subtracts*, which is what makes this work on a lit map. The tier
-  // is ambient reduced one step, so a light source could never express it — but a
-  // darkness source scaled to a fraction of full strength darkens the region *to* that
-  // tier rather than to black. That is a *darkness* spell at noon dropping Bright to
-  // Normal. See {@link darkeningStrength}.
+  // So the overlap is drawn with the same curve it has to meet: one clone per participating
+  // emitter, at that emitter's own origin, radii and attenuation, clipped to the region and
+  // with its **band** level raised to the resolved tier. `MAX_COLOR` across the clones gives
+  // `max(falloff_i)` with the rung added, which is the same function as `max(falloff_i)` just
+  // outside the boundary — so the two sides differ by a level and not by a shape, and the soft
+  // edge has something it can actually blend.
+  //
+  // One clone per emitter, not one per region: a single clone would only match wherever that
+  // light happened to be the strongest of them.
+  let stacked = 0;
+  const drawStacks = showStacks();
+  for (const cell of current.cells) {
+    if (!drawStacks) break;
+    if (cell.kind !== "stack" || !cell.emitters?.length) continue;
+    const band = levelForTier(cell.tier, sceneTier);
+    for (const emitter of cell.emitters) {
+      const source = emitter.source;
+      stacked++;
+      pool.fill({
+        kind: "light",
+        polygon: cell.polygon,
+        x: source.x,
+        y: source.y,
+        elevation: source.elevation ?? 0,
+        emission: emitter.emission,
+        level: levelForTier(emitter.emission?.tier ?? TIER.NORMAL, sceneTier),
+        bandLevel: band,
+        color: source.data?.color ?? undefined,
+        // The three that make the clone's curve identical to the original's. Attenuation drives
+        // both `SWITCH_COLOR` and `FALLOFF`, so a default here would reintroduce the step it is
+        // here to remove.
+        attenuation: source.data?.attenuation,
+        softEdges: true,
+        // A flickering torch's contribution to the overlap has to flicker with it, or the
+        // region reads as a static patch pinned over moving light — the same failure the split
+        // cell's clones had before they carried `animation`.
+        animation: source.data?.animation,
+        seed: source.data?.seed,
+      });
+    }
+  }
+
+  // `ambient` and `dark` cells do not belong to this pass at all — they say how bright the
+  // *ground* is, which goes to the darkness-level texture and is **observer-relative** once
+  // umbra is painted (§4.3). That runs on a different clock: see `render/paint.mjs`, called
+  // once at the end.
+  const takeover = ambientTakeover.isEnabled();
+
+  // --- `dark` — the region a suppressor governs. Two things happen to it. ---
+  //
+  // Its **tier** goes to the darkness-level texture, collected below into `paint`. That is
+  // what actually makes the ground read as Dim, Dark or anything else.
+  //
+  // Its **darkness source** is separately clipped to the region, for the one job a darkness
+  // source is good at: Supernatural Dark's violet, and the animation the GM chose. It is not a
+  // dimmer and cannot be made into one — see {@link darkeningPlan} — so every other tier
+  // withholds the mesh and leaves the paint to the texture.
   const bySuppressor = new Map();
   for (const cell of current.cells) {
     if (cell.kind !== "dark" || !cell.suppressor) continue;
@@ -226,9 +425,10 @@ export function rebuild({ force = false } = {}) {
 
   let fills = 0;
   let darkClones = 0;
+  let darkCells = 0;
   let blanked = 0;
   const litSuppressors = new Set();
-  const ambientTier = tierOf(current.stats.ambientB ?? 0);
+  const ambientTier = sceneTier;
 
   for (const [suppressor, cells] of bySuppressor) {
     const source = suppressor.source;
@@ -236,23 +436,25 @@ export function rebuild({ force = false } = {}) {
 
     cells.sort((a, b) => area(b.polygon) - area(a.polygon));
     const [primary, ...rest] = cells;
-    const strength = darkeningStrength(ambientTier, primary.tier ?? TIER.DARK);
+    const plan = darkeningPlan(ambientTier, primary.tier ?? TIER.DARK, source);
+    const drawn = plan.animationOnly || plan.strength > 0;
 
     // Strength 0 *is* the way to render nothing — no degenerate geometry needed. An
     // earlier version blanked the shape instead, which was both unnecessary and unsafe
     // (see the aliasing note in `clip._createShapes`).
     //
-    // Almost everything lands here now: only Supernatural Dark is drawn by a darkness
-    // source. Dark is rendered by the absence of light, and anything above Dark is not
-    // renderable until §7.1. See {@link darkeningStrength}.
-    if (strength <= 0) blanked++;
+    // Almost everything lands here: only Supernatural Dark is drawn by a darkness source.
+    // Every other tier is painted by the darkness-level texture instead (§7.0), which is a
+    // better answer than the one this branch was waiting for — it darkens by a *number*
+    // rather than by scaling an effect built to darken to black.
+    if (!drawn) blanked++;
     else fills++;
 
-    if (clip.assign(source, primary.polygon)) restage.add(source);
-    clip.setStrength(source, strength);
-    // Alpha alone does not stop a darkness source drawing (measured 2026-08-22), so
-    // strength 0 withholds the mesh outright.
-    clip.setHidden(source, strength <= 0);
+    if (clip.assign(source, primary.clipped ? primary.polygon : null)) restage.add(source);
+    clip.setStrength(source, plan.strength, plan.animationOnly);
+    // Alpha alone does not stop a darkness source drawing (measured 2026-08-22) — and lowering
+    // it makes the darkness *harder*, not fainter — so not drawing is the only "off".
+    clip.setHidden(source, !drawn);
 
     for (const cell of rest) {
       darkClones++;
@@ -262,9 +464,17 @@ export function rebuild({ force = false } = {}) {
         polygon: cell.polygon,
         x: bounds.x + bounds.width / 2,
         y: bounds.y + bounds.height / 2,
+        // A split cell's pieces have to carry the animation too, or the darkness roils on one
+        // side of the cut and sits still on the other — the same failure the light clones had.
+        animation: source.data?.animation,
+        seed: source.data?.seed,
       });
-      clip.setStrength(clone, darkeningStrength(ambientTier, cell.tier ?? TIER.DARK));
+      const clonePlan = darkeningPlan(ambientTier, cell.tier ?? TIER.DARK, source);
+      clip.setStrength(clone, clonePlan.strength, clonePlan.animationOnly);
     }
+
+    // Counted here only for the readout; the painting itself is `render/paint.mjs`.
+    if (takeover) darkCells += cells.filter((cell) => cell.tier !== undefined).length;
   }
 
   // A suppressor with no `dark` cell was wholly cancelled — by a *daylight*, or by light
@@ -278,6 +488,10 @@ export function rebuild({ force = false } = {}) {
 
   pool.finish();
 
+  // §7.0 / §4.3 — the ground's tiers, clamped for whoever is looking. Forced, because the
+  // field just changed and `repaint` compares against the field it last painted.
+  const painted = tierPaint.repaint({ force: true })?.painted ?? 0;
+
   // Re-run `_createShapes` on exactly the sources whose clip changed, by calling
   // `initialize()` with no data — that skips the data update but still rebuilds the shape
   // (`base-effect-source.mjs:206-224`).
@@ -288,15 +502,33 @@ export function rebuild({ force = false } = {}) {
   // polygons, which changes the field signature, which recomputes the field, which
   // rebuilds — forever. Re-initialising directly stays inside the tick.
   for (const source of restage) source.initialize();
-  canvas.perception.update({ refreshLighting: true });
+  // `initialize` reallocates every one of those sources' `shape`, and shapes *are* the field's
+  // signature — so without this the field recomputes next frame purely because we re-meshed,
+  // restages again, and the two chase each other at frame rate on an idle scene. See
+  // `field.resync`.
+  if (restage.size) field.resync();
+  // `refreshVision` because the texture's second mesh per region lives in the **visibility**
+  // mask (`vision.light.global.meshes`), and its `ERASE` blend is assigned by
+  // `#refreshDynamicIllumination` — which only runs inside a visibility refresh. Without it a
+  // newly painted region darkens but stays revealed by global light.
+  canvas.perception.update({ refreshLighting: true, refreshVision: takeover });
 
   lastStats = {
     ms: +(performance.now() - t0).toFixed(2),
     clipped: byEmitter.size,
     clones,
     reduced,
+    // §3.2.1 — synthetic clones drawn for band overlaps. Counts *clones*, not regions: a
+    // two-band overlap contributes two, because both curves are needed to match the boundary.
+    stacked,
     fills,
     darkClones,
+    // §7.0. `dark` cells handed to the texture — above zero is the observable proof that a
+    // *darkness* on a lit map is being drawn rather than merely computed.
+    darkCells,
+    // Cells handed to the darkness-level texture — `ambient` plus `dark`. Zero with the
+    // takeover on means the field produced neither, which is a model question, not a paint one.
+    painted,
     blanked,
     pool: pool.stats(),
   };
@@ -320,12 +552,45 @@ export function reset() {
   pool.begin();
   pool.finish();
 
+  // Hand the scene's own darkness level back to Foundry. Meshes left painted would outlive
+  // the renderer being switched off, and they are the one piece of state here that lives in a
+  // container whose owner never asked for it.
+  tierPaint.invalidate();
+  darknessTexture.clear();
+
   // Safe to use the broad signal here: with the renderer off, the hook's `rebuild()` call
   // returns immediately, so there is no cycle to fall into.
   canvas.perception.update({ initializeLighting: true, refreshLighting: true });
 }
 
 export function registerSettings() {
+  game.settings.register(MODULE_ID, SETTING_DARKNESS_ANIMATION, {
+    name: "Animate ordinary darkness",
+    hint:
+      "An ordinary darkness is drawn by removing light, so it has no surface of its own and " +
+      "an animation picked in its config does nothing. This draws one that contributes only " +
+      "the animation, leaving the light level exactly where the rules put it. Applies only to " +
+      "a darkness that has an animation set; a deeper darkness already animates.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: () => rebuild({ force: true }),
+  });
+
+  game.settings.register(MODULE_ID, SETTING_SHOW_STACKS, {
+    name: "Draw overlapping light bands brighter",
+    hint:
+      "Where two lights' outer bands overlap they raise the light level a further step. This " +
+      "controls only whether that is drawn. The level is computed either way, so the readout, " +
+      "what creatures can see, and every other rule still use it.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: () => rebuild({ force: true }),
+  });
+
   game.settings.register(MODULE_ID, SETTING_RENDER, {
     name: "Render the lighting model",
     hint:
@@ -367,6 +632,10 @@ export function registerHooks() {
     lastField = null;
     lastStats = null;
     pool.dispose();
+    // The containers our meshes live in belong to the old canvas and go with it, so this is
+    // about dropping *our* references: a pooled entry pointing at a destroyed mesh would be
+    // handed straight back out on the next scene.
+    darknessTexture.dispose();
   });
 }
 

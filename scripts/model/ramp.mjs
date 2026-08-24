@@ -1,164 +1,182 @@
 /**
- * The per-source brightness ramp. See DESIGN.md §3.2.1.
+ * What one emitter contributes, and where. See DESIGN.md §3.2.1.
  *
- * Three zones, each a gradient band:
+ * **Two zones, and they are different kinds of thing.**
  *
- *   bright  1.0 → 0.9
- *   normal  0.9 → 0.5
- *   dim     0.5 → 0.1
- *   beyond  0
+ *   inner  `d <= inner`           the set `tier`, absolutely
+ *   band   `inner < d <= outer`   `+steps` rungs on whatever else is there, ceiling `cap`
+ *   beyond `d > outer`            nothing
  *
- * Foundry's two native radii already are our Normal and Dim — `data.bright` is the
- * Normal radius and `data.dim` is the Dim radius. The Bright radius is ours, stored
- * in flags, and defaults to 0.
+ * Foundry's two native radii carry both: `data.bright` is the inner radius, `data.dim` the
+ * outer. Nothing is added to the schema, because a PF1 light needs nothing added — a torch is
+ * *Normal to 20 ft, one step up to 40*, which is exactly two radii and a set level.
+ *
+ * The set level and the step count live in flags, because `LightData`'s schema is fixed.
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { TIER } from "./tiers.mjs";
-
-const lerp = (a, b, t) => a + (b - a) * t;
+import { TIER, stepTier, tierCeiling } from "./tiers.mjs";
 
 /**
- * Radii for one emitter, all in **pixels**.
+ * One emitter's light output, independent of position.
  *
- * @typedef {object} Radii
- * @property {number} bright - Innermost. 0 when the light has no Bright zone (the norm).
- * @property {number} normal - Foundry's native `bright`.
- * @property {number} dim    - Foundry's native `dim`.
+ * @typedef {object} Emission
+ * @property {number} tier   - The {@link TIER} it provides inside `inner`
+ * @property {number} inner  - Radius at that tier, in **pixels**
+ * @property {number} outer  - Outer radius of the relative band, in **pixels**
+ * @property {number} steps  - Rungs the band raises the prevailing level by
+ * @property {number} cap    - Ceiling the band may not raise past, a {@link TIER}
  */
+
+/** Which zone a distance falls in. */
+export const ZONE = Object.freeze({ NONE: 0, INNER: 1, BAND: 2 });
 
 /**
- * Brightness contributed by a single emitter at a given distance.
+ * Force the two radii to increase outward.
  *
- * @param {number} distance - Distance from the emitter origin, in pixels
- * @param {Radii} radii - Zone radii, in pixels
- * @returns {number} Brightness, 0..1
+ * @remarks
+ * **Foundry does not order `dim` and `bright`.** `LightData` has them as two independent
+ * `NumberField`s (`common/data/data.mjs:45-49`); the only place they meet is
+ * `PointEffectSourceMixin`, which sweeps `shape` at `max(dim, bright)`. So `{bright: 60ft,
+ * dim: 0}` — the natural way to author *bright out to here*, and how a *daylight* gets
+ * written — is ordinary and valid, and used to invert the old three-zone nesting.
+ *
+ * Under §3.2.1's two zones the consequence is milder but still wrong if untreated: the band
+ * would run backwards. `max` rather than a warning, because there is nothing ambiguous — a
+ * light whose inner radius reaches past its outer simply has no band, which is what Foundry
+ * renders too.
+ *
+ * The old three-way version of this function cost a full debugging session in 2026-08-23; see
+ * DESIGN.md §3.2.1's closing note, which is about *absence* leaving no trace in a readout.
+ *
+ * @param {Emission} emission
+ * @returns {Emission} With `outer >= inner >= 0`
  */
-export function brightnessAt(distance, radii) {
-  const rB = radii.bright ?? 0;
-  const rN = radii.normal ?? 0;
-  const rD = radii.dim ?? 0;
-
-  // Past the dim radius contributes nothing. Anywhere outside every light is Dark,
-  // which is the correct mechanical answer; the visual taper past rD is the
-  // renderer's business, not the model's.
-  if (distance > rD || rD <= 0) return 0;
-
-  // Bright zone, when the light has one.
-  if (rB > 0 && distance <= rB) return lerp(1.0, 0.9, distance / rB);
-
-  // Normal zone. With no Bright zone the centre reads 0.9, not 1.0 — DESIGN.md §3.2.1.
-  const normalStart = rB > 0 ? rB : 0;
-  if (distance <= rN && rN > normalStart) {
-    return lerp(0.9, 0.5, (distance - normalStart) / (rN - normalStart));
-  }
-
-  // Dim zone.
-  const dimStart = Math.max(rN, normalStart);
-  if (rD > dimStart) {
-    return lerp(0.5, 0.1, (distance - dimStart) / (rD - dimStart));
-  }
-
-  // Degenerate: dim radius collapsed onto the zone below it.
-  return 0.1;
-}
-
-/**
- * Read an emitter's three radii off a live light source.
- *
- * `data.bright` / `data.dim` are already in pixels by the time they reach the source
- * (PF1's low-light mixin has also already scaled them, if active). Our Bright radius
- * is authored in scene distance units and converted here.
- *
- * @param {object} source - A PointLightSource
- * @returns {Radii} Radii in pixels
- */
-export function radiiOf(source) {
-  const doc = source.object?.document;
-  const brightUnits = doc?.getFlag?.(MODULE_ID, "brightRadius") ?? 0;
-  const perUnit = canvas.dimensions?.distancePixels ?? 1;
-
+export function normaliseEmission(emission) {
+  const tier = emission?.tier ?? TIER.NORMAL;
+  const inner = Math.max(0, emission?.inner ?? 0);
+  const outer = Math.max(0, emission?.outer ?? 0, inner);
   return {
-    bright: brightUnits * perUnit,
-    normal: source.data?.bright ?? 0,
-    dim: source.data?.dim ?? 0,
+    tier,
+    inner,
+    outer,
+    steps: Math.max(0, Math.trunc(emission?.steps ?? 1)),
+    // A cap below the set tier is meaningless — the band can only ever raise — so the floor
+    // here is the tier itself. Authoring `cap` at all is the rare case (§3.2.1's lever).
+    cap: Math.max(tier, emission?.cap ?? tier),
   };
 }
 
-/* -------------------------------------------- */
-/*  Transforms expressed as radii                */
-/* -------------------------------------------- */
-
 /**
- * Reduce an emitter's output by whole tiers, **as a change of radii**.
+ * Which zone of an emitter a point falls in, and what it contributes there.
  *
  * @remarks
- * This is the identity that lets suppressed light keep a gradient. Reducing one tier
- * shifts the zone radii inward by one zone: `(rB, rN, rD)` becomes `(0, rB, rN)`.
+ * Returns the *ingredients* rather than a level, because the two zones are consumed at
+ * different stages of the contest: inner zones contend by `max`, bands are summed. Collapsing
+ * them here would make that distinction unrepresentable, which is precisely the mistake the
+ * three-zone ramp made.
  *
- * Why it is exact, not an approximation. The original ramp puts Bright on `[0, rB)`,
- * Normal on `[rB, rN)` and Dim on `[rN, rD)`. Reducing one tier should leave Normal on
- * `[0, rB)`, Dim on `[rB, rN)` and Dark beyond `rN`. Feeding `(0, rB, rN)` back through
- * {@link brightnessAt} produces exactly that: with no Bright zone the ramp opens at 0.9
- * and runs to 0.5 across `[0, rB)` — Normal — then 0.5 to 0.1 across `[rB, rN)` — Dim —
- * and nothing beyond. Every tier boundary lands where the quantised model says it should.
- *
- * So `tierOf(brightnessAt(d, reduceRadii(r, n))) === tierOf(brightnessAt(d, r)) - n`
- * everywhere, while the value in between stays continuous instead of stepping.
- *
- * **This resolves the §6.2 tension for suppressed cells.** A reduced region can be drawn
- * by a source with shifted radii rather than a flat fill, so light inside a *darkness*
- * still falls off from its origin instead of becoming a uniform disc.
- *
- * @param {Radii} radii
- * @param {number} steps - Whole tiers to descend
- * @returns {Radii}
+ * @param {number} distance - Distance from the emitter origin, in pixels
+ * @param {Emission} emission
+ * @returns {{zone: number, tier?: number, steps?: number, cap?: number}}
  */
-export function reduceRadii(radii, steps) {
-  const zones = [radii.bright ?? 0, radii.normal ?? 0, radii.dim ?? 0];
-  const n = Math.max(0, Math.trunc(steps));
-  const shifted = [0, 0, 0];
-  for (let i = 0; i < zones.length; i++) {
-    const target = i + n;
-    if (target < shifted.length) shifted[target] = zones[i];
-  }
-  return { bright: shifted[0], normal: shifted[1], dim: shifted[2] };
-}
-
-/** Which tier each zone radius is the outer edge of. */
-const ZONE_TIER = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM];
-
-/**
- * Cap an emitter at a maximum tier, as a change of radii.
- *
- * Collapsing every zone above `maxTier` to zero is equivalent to `min(B, ceiling)`:
- * with the brighter zones gone the ramp simply opens at the capped tier's top and falls
- * off from there.
- *
- * @param {Radii} radii
- * @param {number} maxTier - A {@link TIER} value
- * @returns {Radii}
- */
-export function clampRadii(radii, maxTier) {
-  const zones = [radii.bright ?? 0, radii.normal ?? 0, radii.dim ?? 0];
-  const capped = zones.map((r, i) => (ZONE_TIER[i] > maxTier ? 0 : r));
-  return { bright: capped[0], normal: capped[1], dim: capped[2] };
+export function contributionAt(distance, emission) {
+  const e = normaliseEmission(emission);
+  if (e.outer <= 0 || distance > e.outer) return { zone: ZONE.NONE };
+  if (distance <= e.inner) return { zone: ZONE.INNER, tier: e.tier };
+  // A band with no steps reaches nothing, and saying so here keeps it out of the sum.
+  if (e.steps <= 0) return { zone: ZONE.NONE };
+  return { zone: ZONE.BAND, steps: e.steps, cap: e.cap };
 }
 
 /**
- * Apply a suppressor transform to an emitter's radii.
+ * A single emitter's contribution as a brightness, against a known base.
  *
- * @param {Radii} radii
- * @param {{op: string, steps?: number, max?: number}} transform
- * @returns {Radii}
+ * @remarks
+ * The scalar view, for callers that hold one emitter and want a number — the readout, the
+ * probe's `silent` list, and anything asking "does this light reach here at all". The
+ * *resolution* path does not use it: stacking cannot be expressed one emitter at a time, which
+ * is the whole content of §3.2.1.
+ *
+ * @param {number} distance - Distance from the emitter origin, in pixels
+ * @param {Emission} emission
+ * @param {number} [base=TIER.DARK] - The prevailing tier this emitter would be adding to
+ * @returns {number} Brightness, 0..1
  */
-export function transformRadii(radii, transform) {
-  switch (transform?.op) {
-    case "reduce":
-      return reduceRadii(radii, transform.steps ?? 1);
-    case "clamp":
-      return clampRadii(radii, transform.max ?? TIER.DIM);
+export function brightnessAt(distance, emission, base = TIER.DARK) {
+  const c = contributionAt(distance, emission);
+  switch (c.zone) {
+    case ZONE.INNER:
+      return tierCeiling(c.tier);
+    case ZONE.BAND:
+      return tierCeiling(Math.min(stepTier(base, c.steps), c.cap));
     default:
-      return { ...radii };
+      return 0;
+  }
+}
+
+/**
+ * Read an emitter's emission off a live light source.
+ *
+ * `data.bright` / `data.dim` are already in pixels by the time they reach the source (PF1's
+ * low-light mixin has also already scaled them, if active), so only the flags need reading.
+ *
+ * @param {object} source - A PointLightSource
+ * @returns {Emission}
+ */
+export function emissionOf(source) {
+  const config = source.object?.document?.getFlag?.(MODULE_ID, "config") ?? {};
+  const tier = config.emitTier ?? TIER.NORMAL;
+
+  return normaliseEmission({
+    tier,
+    inner: source.data?.bright ?? 0,
+    outer: source.data?.dim ?? 0,
+    steps: config.steps ?? 1,
+    cap: config.cap ?? tier,
+  });
+}
+
+/* -------------------------------------------- */
+/*  Transforms                                  */
+/* -------------------------------------------- */
+
+/**
+ * Apply a suppressor's transform to an emitter's output.
+ *
+ * @remarks
+ * **This is where the three-zone model got simpler rather than harder.** Reduction used to be
+ * expressed as a shift of the zone radii — `(rB, rN, rD)` becomes `(0, rB, rN)` — an exact
+ * identity, and an elaborate one, whose only purpose was to say "one tier dimmer" in the one
+ * language a light source understood back when it could not carry its own lighting level
+ * (DESIGN.md §6.2.2).
+ *
+ * It can. `clip.mjs` drives `dimLevelCorrection` and `brightLevelCorrection` per source, so
+ * reducing a light is now literally lowering its set tier and its cap, with the geometry left
+ * alone. The gradient survives because the light still has both its zones.
+ *
+ * @param {Emission} emission
+ * @param {{op: string, steps?: number, max?: number}} transform
+ * @returns {Emission}
+ */
+export function transformEmission(emission, transform) {
+  const e = normaliseEmission(emission);
+  switch (transform?.op) {
+    case "reduce": {
+      const n = Math.max(0, transform.steps ?? 1);
+      // The band descends with the core. A reduced torch is a dimmer torch, not a Normal torch
+      // whose rim happens to still reach Normal.
+      return normaliseEmission({ ...e, tier: stepTier(e.tier, -n), cap: stepTier(e.cap, -n) });
+    }
+    case "clamp": {
+      const max = transform.max ?? TIER.DIM;
+      return normaliseEmission({
+        ...e,
+        tier: Math.min(e.tier, max),
+        cap: Math.min(e.cap, max),
+      });
+    }
+    default:
+      return e;
   }
 }

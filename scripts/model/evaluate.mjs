@@ -12,7 +12,7 @@
 
 import { emittersAt, suppressorsAt } from "./registry.mjs";
 import { contest } from "./contest.mjs";
-import { TIER, TIER_NAME, tierOf } from "./tiers.mjs";
+import { TIER_NAME, resolveTier, tierOf } from "./tiers.mjs";
 
 export { ELIGIBILITY_PRESETS, contest } from "./contest.mjs";
 
@@ -48,7 +48,11 @@ export function evaluate(point) {
   // `source` by hand, so when `cancelsDarkness` was added the contest silently never saw
   // it and *daylight* did nothing. Every config field a suppressor might test has to
   // survive this boundary, and listing them is a standing invitation to forget one.
-  const emitters = reaching.map(({ entry, B }) => ({ ...entry, entry, B }));
+  //
+  // `...rest` carries the resolved zone (`zone`, `tier`, `steps`, `cap`) as well as `B`, and
+  // must: `contest.stack` sums bands and maxes set levels, so an emitter that arrived here as
+  // a bare brightness would be silently treated as absolute (§3.2.1).
+  const emitters = reaching.map(({ entry, ...rest }) => ({ ...entry, entry, ...rest }));
 
   const { B, baseline, winner, applied, negated } = contest(emitters, suppressors);
 
@@ -59,8 +63,7 @@ export function evaluate(point) {
   //
   // Gated on `applied`, not on `winner`: ground already unlit before any darkness
   // arrived is ordinary Dark, not supernatural.
-  const snuffed = applied && B <= 0;
-  const tier = snuffed ? (winner?.floor ?? TIER.DARK) : tierOf(B);
+  const tier = resolveTier(B, { suppressed: applied, floor: winner?.floor });
 
   return {
     B,
@@ -82,7 +85,7 @@ export function evaluate(point) {
  * @param {{x: number, y: number, elevation?: number}} point
  */
 export function gatherEmitters(point) {
-  return emittersAt(point).map(({ entry, B }) => ({ ...entry, entry, B }));
+  return emittersAt(point).map(({ entry, ...rest }) => ({ ...entry, entry, ...rest }));
 }
 
 /**

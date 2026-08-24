@@ -22,9 +22,15 @@ export const SETTING_OVERLAY = "cellOverlay";
 
 /** Fill and line colour per cell kind. */
 const STYLE = {
+  // Faint, and drawn first. An ambient cell covers most of the scene, so anything more
+  // assertive would wash out the three kinds that describe a *specific* light.
+  ambient: { fill: 0x88dd99, line: 0x449966, alpha: 0.06 },
   clip: { fill: 0x66ccff, line: 0x2288cc, alpha: 0.12 },
   reduced: { fill: 0xffaa33, line: 0xcc7700, alpha: 0.18 },
   dark: { fill: 0x9d6bd8, line: 0x6a3ba8, alpha: 0.25 },
+  // Where two or more relative bands overlap (§3.2.1). Drawn last and hottest: it is the one
+  // kind whose *existence* is the interesting fact, since the shader cannot show it unaided.
+  stack: { fill: 0xffe066, line: 0xd4a017, alpha: 0.3 },
 };
 
 let graphics = null;
@@ -43,7 +49,7 @@ const active = () => {
 /**
  * Draw the current field.
  *
- * Cells are drawn in kind order — `clip` beneath, then `reduced`, then `dark` — so the
+ * Cells are drawn in kind order — `ambient` beneath, then `clip`, `reduced`, `dark` — so the
  * suppressed regions read on top of the light they replace. That is the same ordering
  * question the renderer has to answer, and getting it visibly wrong here is cheap.
  */
@@ -72,7 +78,7 @@ export function draw({ force = false, log = false } = {}) {
   graphics.clear();
 
   const { cells, stats } = current;
-  const order = ["clip", "reduced", "dark"];
+  const order = ["ambient", "clip", "reduced", "dark"];
 
   for (const kind of order) {
     const style = STYLE[kind];
@@ -83,6 +89,16 @@ export function draw({ force = false, log = false } = {}) {
       graphics.lineStyle(2, style.line, 0.9);
       graphics.beginFill(style.fill, style.alpha);
       graphics.drawPolygon(points);
+      // Punched, not painted. An `ambient` cell is the scene *less* every darkness on it, so
+      // filling its holes would shade the overlay most strongly exactly where ambient does
+      // **not** apply — the overlay asserting the opposite of the model, in the one place it
+      // is being consulted about.
+      for (const hole of cell.holes ?? []) {
+        if (!hole.points?.length) continue;
+        graphics.beginHole();
+        graphics.drawPolygon(hole.points);
+        graphics.endHole();
+      }
       graphics.endFill();
     }
   }

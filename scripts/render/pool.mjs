@@ -12,6 +12,7 @@
  */
 
 import { MODULE_ID, SYNTHETIC_MARK } from "../constants.mjs";
+import { HARD_EDGES } from "../constants.mjs";
 import { setLevel } from "./clip.mjs";
 
 /** Classes are built lazily so we extend whatever `limits` and our own mixins installed. */
@@ -111,15 +112,61 @@ export function begin() {
  * @param {number} options.x - Origin, scene pixels
  * @param {number} options.y
  * @param {number} [options.elevation]
- * @param {object} [options.radii] - `{bright, normal, dim}` in pixels, for a `reduced`
- *   cell that keeps its gradient (§6.2.2). Omit for a flat fill.
+ * @param {object} [options.emission] - `{tier, inner, outer, steps, cap}` for a `reduced` cell
+ *   that keeps its two zones (§3.2.1). Omit for a flat fill.
  * @param {number} [options.level] - Foundry lighting level for a flat fill (§6.2.3)
+ * @param {number} [options.bandLevel] - Foundry lighting level for the **outer band**, when it
+ *   differs from `level`. `dimLevelCorrection` and `brightLevelCorrection` are separate
+ *   uniforms, so a light's two zones can carry two different tiers natively.
  * @param {number} [options.color]
+ * @param {number} [options.attenuation] - Override the falloff. Supply the **emitter's own**
+ *   value whenever this fill is standing in for a real light over part of its footprint: the
+ *   falloff curve is what makes the clone's edge line up with the original's, and a default
+ *   would put a step between them.
+ * @param {boolean} [options.softEdges] - Feather the clip boundary. Off by default (§9.5 —
+ *   `PolygonMesher`'s offsetting is the dominant remaining cost once construction is pooled),
+ *   on for a fill that has to blend into a neighbouring light rather than abut a region edge.
+ * @param {boolean} [options.hardEdges] - Force hard edges, for one piece of a split cell whose
+ *   halves must abut exactly. Defaults to the inverse of `softEdges`, and is **always
+ *   assigned** — see the note in the body.
+ * @param {object} [options.animation] - The emitter's animation config, for a split cell's
+ *   clones. Omitted leaves the clone still, which is what a split animated light must not be.
+ * @param {number} [options.seed] - Keeps a clone in phase with the piece it was split from
  * @returns {object} The configured source
  */
-export function fill({ kind, polygon, x, y, elevation = 0, radii, level, color }) {
+export function fill({
+  kind,
+  polygon,
+  x,
+  y,
+  elevation = 0,
+  emission,
+  level,
+  bandLevel,
+  color,
+  attenuation,
+  softEdges = false,
+  hardEdges = !softEdges,
+  animation,
+  seed,
+}) {
   const source = take(kind);
   source.directPolygon = polygon;
+
+  // **Both edge flags, always, and before `initialize`.** Two bugs lived here, found 2026-08-23
+  // while chasing hard arcs that survived turning soft edges on:
+  //
+  //   *Sticky.* Nothing ever cleared `HARD_EDGES`, so a pool slot once used for a split cell's
+  //   clone kept it for the rest of the session, and every later fill in that slot rendered
+  //   hard whatever it asked for. Exactly the failure the `animation` note below already
+  //   describes — the principle was written down and this flag was missed.
+  //
+  //   *Late.* The renderer set it with `clip.setHardEdges` **after** `fill` returned, and
+  //   `_initializeSoftEdges` runs inside `initialize()` from `_configure`
+  //   (`rendered-effect-source.mjs:243`). So the flag always landed one rebuild behind the
+  //   geometry it was meant to describe.
+  source.softEdges = softEdges;
+  source[HARD_EDGES] = hardEdges;
 
   const bounds = polygon.getBounds?.() ?? null;
   // A flat fill has no falloff to speak of: make the radius comfortably cover the cell
@@ -129,21 +176,37 @@ export function fill({ kind, polygon, x, y, elevation = 0, radii, level, color }
                  Math.max(Math.abs(bounds.y - y), Math.abs(bounds.bottom - y))) + 1
     : canvas.dimensions.maxR;
 
+  // A flat fill is bright out to the clip boundary; a `reduced` cell keeps the emitter's own
+  // two radii, because since §3.2.1 reduction is a change of *tier* and leaves the geometry
+  // alone. The gradient survives for free.
+  //
+  // These used to be overridable, so a fill could stand in for global illumination at the
+  // singleton's own `dim: maxR, bright: 0`. That whole idea is gone (§7.0): ambient is a
+  // *number*, and it now goes into the darkness-level texture rather than being impersonated
+  // by a light source. Four bugs came out of cloning `GlobalLightSource` property by property,
+  // and the fix was to stop needing to.
+  const useDim = emission ? (emission.outer ?? 0) : span;
+  const useBright = emission ? (emission.inner ?? 0) : span;
+
   const data = {
     x,
     y,
     elevation,
-    radius: radii ? Math.max(radii.dim ?? 0, span) : span,
-    dim: radii ? (radii.dim ?? 0) : span,
-    bright: radii ? (radii.normal ?? 0) : span,
-    attenuation: radii ? 0.5 : 0,
+    radius: Math.max(useDim, useBright, emission ? 0 : span),
+    dim: useDim,
+    bright: useBright,
+    attenuation: attenuation ?? (emission ? 0.5 : 0),
     ...(color !== undefined ? { color } : {}),
+    // Pooled, so these are assigned unconditionally rather than only when present — a source
+    // reused from an animated clone into a still one would otherwise keep flickering.
+    animation: animation ?? { type: null, speed: 5, intensity: 5, reverse: false },
+    ...(seed !== undefined ? { seed } : {}),
   };
 
   // Pin the rendered tier. §6.2.3 — our five tiers are exactly Foundry's levels, so this
   // is an assignment rather than an approximation. Set before `initialize` so the first
   // uniform update already carries it.
-  setLevel(source, level);
+  setLevel(source, level, bandLevel);
 
   source.initialize(data);
   source.add();
