@@ -73,9 +73,13 @@ export function registerSettings() {
       "polygons: ordinary sight needs dim light or better, darkvision works in darkness but not in " +
       "supernatural darkness. Requires 'Disable native darkness suppression'.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
-    default: false,
+    // Flipped from `false` with the control. See `suppression.mjs` for the reasoning.
+    default: true,
     onChange: (value) => {
       if (value === lastValue) return;
       lastValue = value;
@@ -328,6 +332,37 @@ export function darkSightRange(source) {
   }
 
   return 0;
+}
+
+/**
+ * Blindsight's range alone, in pixels.
+ *
+ * @remarks
+ * The third slice of the same trait data, and it exists because the **blinded condition** needs
+ * a different subset again from either of the other two.
+ *
+ * {@link darkSightRange} answers *"how far does perception that ignores light reach"* and folds
+ * blindsight in with *see in darkness* and *true seeing*. That is right for a creature standing
+ * in magical darkness — all three see through it. It is wrong for a creature that has been
+ * **blinded**, because the other two are still *sight*: a blinded creature does not get to use
+ * *true seeing*, and blindsight is the only one of the three that survives.
+ *
+ * So: one function per question, rather than one function with a flag. Three narrow readers of
+ * the same field are easier to reason about than one reader with three modes, and the mistake
+ * this guards against — using the wrong subset — is invisible at the call site otherwise.
+ *
+ * @param {PointVisionSource|null} source
+ * @returns {number} Pixels; `0` for a creature with no blindsight
+ */
+export function blindsightRange(source) {
+  const range = source?.object?.actor?.system?.traits?.senses?.bs?.total ?? 0;
+  if (range <= 0) return 0;
+  try {
+    // `getLightRadius`, as the others do, so a Huge creature measures from its edge.
+    return source.object?.getLightRadius?.(pf1.utils.convertDistance(range)[0]) ?? 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**

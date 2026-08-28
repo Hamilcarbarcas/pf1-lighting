@@ -52,7 +52,10 @@ export function registerSettings() {
       "darkness spell reaches. Fixes a PF1 bug, so it is on by default and independent of this " +
       "module's other features.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
     default: true,
     onChange: (value) => {

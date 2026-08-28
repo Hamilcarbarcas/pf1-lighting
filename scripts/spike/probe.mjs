@@ -8,6 +8,7 @@
 
 import {
   CLIP,
+  DARK_ANIMATION,
   HIDDEN,
   LEVEL,
   MODULE_ID,
@@ -21,9 +22,10 @@ import { evaluate, evaluate as modelEvaluate } from "../model/evaluate.mjs";
 import * as field from "../model/field.mjs";
 import { TIER_NAME } from "../model/tiers.mjs";
 import * as registry from "../model/registry.mjs";
+import * as areas from "../model/areas.mjs";
 import { suppressorConfigOf } from "../model/registry.mjs";
 import { blocksSight, castsUmbra } from "../model/contest.mjs";
-import { RAW_BLINDED, isNativeSuppressionDisabled } from "../suppression.mjs";
+import { RAW_BLIND, RAW_BLINDED, isNativeSuppressionDisabled } from "../suppression.mjs";
 import * as perceptionModel from "../vision/perception.mjs";
 import * as blindness from "../vision/blindness.mjs";
 import * as umbraModel from "../vision/umbra.mjs";
@@ -166,17 +168,53 @@ export function at(x, y, elevation = 0) {
   // the resolved zones are the answer whenever this list is not empty and should be.
   const silent = registry
     .emitters()
-    .filter((e) => !e.isGlobal && e.contains(point) && e.brightnessAt(point) <= 0)
+    .filter(
+      (e) => !e.isGlobal && !e.suppressedAtOrigin && e.contains(point) && e.brightnessAt(point) <= 0
+    )
     .map((e) => ({ id: e.id, kind: e.kind, level: e.level, emission: e.emission }));
+
+  // **Lights that are out, and whose polygon still covers this point.** A different absence
+  // from `silent` and it needs its own name, because the two want opposite responses: a silent
+  // emitter is a light that reaches and contributes nothing, which is usually a bug; an
+  // extinguished one is a light standing inside a *darkness* that put it out, which is §3.3.1
+  // working. Reported as one list they would be indistinguishable, and the reason a torch is
+  // dark is the first thing anyone asks.
+  const extinguished = registry
+    .emitters()
+    .filter((e) => e.suppressedAtOrigin && e.contains(point))
+    .map((e) => ({ id: e.id, kind: e.kind, level: e.level }));
+
+  // **The ambient here, next to the scene's.** Since §10.7 a region can move the base tier, and
+  // an area doing nothing looks identical to no area at all in every other field of this report:
+  // the emitters, the suppressors and the winner are all unchanged, and only the number the
+  // bands are added to has moved. `scene === here` with a region under the cursor is the whole
+  // symptom of a behaviour that is disabled, mis-scoped or on the wrong region.
+  const sceneAmbient = registry.ambientTier();
+
+  // Split, since §3.4 put computed areas in the same list. They answer different questions — a
+  // drawn region under the cursor that changed nothing is a mis-scoped behaviour, while a spill
+  // band that changed nothing is an ordinary overlap — and `areas.covers` is what tells either
+  // of them apart from no area at all, since a derived area has no document to test.
+  const covering = areas.areas().filter((a) => areas.covers(a, point));
+  const ambient = {
+    scene: TIER_NAME[sceneAmbient],
+    here: TIER_NAME[registry.ambientTier(point)],
+    areas: covering.filter((a) => !a.derived).length,
+    spill: covering.filter((a) => a.derived).length,
+  };
 
   console.error(
     `PF1 Lighting | (${Math.round(x)}, ${Math.round(y)}) → ${describe(result)}` +
       ` | cells: ${cells.map((c) => c.kind).join(", ") || "none"}` +
       (silent.length ? ` | ${silent.length} silent emitter(s) reaching but contributing 0` : "") +
+      (extinguished.length
+        ? ` | ${extinguished.length} emitter(s) put out at their own origin (§3.3.1)`
+        : "") +
+      (ambient.areas ? ` | ambient ${ambient.scene} → ${ambient.here} (§10.7)` : "") +
       " — a cyan crosshair marks the point sampled",
-    { ...result, cells, silent }
+    { ...result, cells, silent, extinguished, ambient }
   );
-  return { ...result, cells, silent };
+  return { ...result, cells, silent, extinguished, ambient };
 }
 
 /**
@@ -350,6 +388,11 @@ export function vision() {
     // blinded the token and the model overruled it. Both false means it was never inside
     // one, and a vision problem has some other cause.
     blindedRaw: v.blinded?.[RAW_BLINDED] ?? null,
+    // The blinded **condition**, as Foundry set it, beside what we report. `blindRaw: true`
+    // with `blinded.blind: false` is a blindsighted creature keeping its perception through
+    // the condition — and `radius` should then equal `blindsight`, not the token's sight range.
+    blindRaw: v.blinded?.[RAW_BLIND] ?? null,
+    blindsight: perceptionModel.blindsightRange(v),
     // The model's own verdict (§4.5.1) — true only in *magical* Supernatural Dark, and
     // only without see-in-darkness. When this is true, `blinded.darkness` should be too.
     modelBlinds: blindness.modelBlinds(v),
@@ -507,6 +550,11 @@ export function geometry() {
     clipPoints: (entry.source[CLIP]?.points?.length ?? 0) / 2,
     radiusData: entry.source.radius,
     padding: entry.source._padding ?? 0,
+    // §3.2.1's origin rule. True here explains a light with a perfectly good clip polygon
+    // drawing nothing at all, which is otherwise the most confusing state on this readout.
+    // Undefined on a suppressor, which is why it is not defaulted.
+    extinguished: entry.suppressedAtOrigin,
+    hidden: entry.source[HIDDEN] === true,
   });
 
   const report = {
@@ -744,5 +792,127 @@ export function sources() {
     darkness: [...canvas.effects.darknessSources].map(describe),
   };
   console.error("PF1 Lighting | live sources", report);
+  return report;
+}
+
+/**
+ * Every gate between a darkness source and its animation appearing on screen.
+ *
+ * @remarks
+ * Written 2026-08-25 after *"see in darkness removes animations from darkness sources, true
+ * seeing and darkvision do not"* — a report that cannot be resolved by reading, because both
+ * senses take the identical path through this module: same `darkSightRadius` shape, same
+ * `VISION_RANK.PIERCING`, same `darkSightBrightness`. Whatever separates them is a gate one of
+ * them trips and the other does not, and the gates live in four different files plus core.
+ *
+ * So this names all of them at once rather than testing a hypothesis. The one that differs
+ * between two observers **is** the answer.
+ *
+ * Read it with the affected token selected, then again with a true-seeing token selected, and
+ * compare. The likely discriminators, in the order worth checking:
+ *
+ * - `withheld` — our own `_drawMesh` override, which is supposed to be **blindsight only**. If
+ *   this is true for a see-in-darkness observer, the sense test in `observerIgnoresDarkness` is
+ *   catching something it should not.
+ * - `shader` — the shader class actually attached. An *animated* darkness has an animation-
+ *   specific class here; seeing the plain adaptive one means the animation was never installed,
+ *   which is a different failure from the mesh being withheld.
+ * - `meshVisible` / `meshRenderable` — what `_drawMesh` last decided.
+ * - `visionMasking` with `visionR` — core gates the whole darkness effect on the vision texture's
+ *   red channel (`darkness-lighting.mjs:93`), so a region the observer does not "see" draws no
+ *   darkness at all. A large `data.radius` changes what is in that texture.
+ * - `suppressed` — core's own `suppression.light`, from `testInsideLight` at the source's origin.
+ *
+ * @param {number} [x]
+ * @param {number} [y]
+ */
+export function darknessGates(x, y) {
+  if (!canvas?.ready) return null;
+  const point = x === undefined ? canvas.mousePosition : { x, y };
+
+  // **`visionModeData.source` is Foundry's *primary* vision source, not the selected token.**
+  // Everything observer-dependent in the render layer keys off it — `currentSaturation`,
+  // `observerIgnoresDarkness`, this readout — so when the two disagree, a reading taken with the
+  // right token selected describes the wrong creature. The first run of this readout
+  // (2026-08-25) came back `seeInDarkness: false` while the see-in-darkness token was the one
+  // being tested, which is exactly that. `selected` and `visionSources` below make it visible
+  // instead of silent.
+  const observer = canvas.visibility?.visionModeData?.source;
+  const sensesOf = (source) => source?.object?.actor?.system?.traits?.senses ?? {};
+
+  const describeObserver = (source, label) => {
+    const sense = sensesOf(source);
+    return {
+      what: label,
+      id: source?.sourceId ?? null,
+      token: source?.object?.name ?? null,
+      visionMode: source?.visionMode?.id ?? null,
+      radius: Math.round(source?.radius ?? 0),
+      blindsight: sense.bs?.total ?? 0,
+      seeInDarkness: sense.sid ?? false,
+      trueSeeing: sense.tr?.total ?? 0,
+      darkSightRadius: Math.round(blindness.darkSightRadius(source) || 0),
+      isPrimary: source === observer,
+    };
+  };
+
+  const sources = [...canvas.effects.darknessSources].map((s) => {
+    const layer = s.layers?.darkness;
+    return {
+      id: s.sourceId,
+      synthetic: isSynthetic(s),
+      // Does the model think it should draw at all?
+      hidden: s[HIDDEN] === true,
+      strength: s[STRENGTH],
+      animationOnly: s[DARK_ANIMATION] === true,
+      // Does core think it is live?
+      active: s.active,
+      suppressed: s.suppressed === true,
+      suppression: { ...(s.suppression ?? {}) },
+      hasActiveLayer: s.hasActiveLayer,
+      // What the GM asked for, versus what is actually attached.
+      animation: s.data?.animation?.type ?? null,
+      shader: layer?.shader?.constructor?.name ?? null,
+      meshVisible: layer?.mesh?.visible ?? null,
+      meshRenderable: layer?.mesh?.renderable ?? null,
+      // Core's own per-fragment gate.
+      visionMasking: layer?.shader?.uniforms?.enableVisionMasking ?? null,
+      colorationAlpha: layer?.shader?.uniforms?.colorationAlpha ?? null,
+      saturationUniform: layer?.shader?.uniforms?.saturation ?? null,
+      covers: (s[RENDER_SHAPE] ?? s.shape)?.contains?.(point.x, point.y) === true,
+    };
+  });
+
+  const selected = canvas.tokens?.controlled?.map((t) => t.vision).filter(Boolean) ?? [];
+  const active = [...(canvas.effects?.visionSources?.values() ?? [])].filter((v) => v.active);
+
+  const report = {
+    point: { x: Math.round(point.x), y: Math.round(point.y) },
+
+    // **The observer the render layer is actually using.** The three senses that take different
+    // paths sit side by side: whichever is set on the observer that misbehaves and unset on the
+    // one that does not is where to look.
+    observer: describeObserver(observer, "primary — what the render layer uses"),
+
+    // **Check this against `observer` before reading anything else.** If the token you selected
+    // is not the primary vision source, every observer-dependent number above describes someone
+    // else, and the readout will look healthy while you are testing the wrong creature.
+    selected: selected.map((v) => describeObserver(v, "selected")),
+    visionSources: active.map((v) => describeObserver(v, "active")),
+    observerIsSelected: selected.length === 0 || selected.includes(observer),
+
+    // Our blindsight-only mesh withholding. Should be false for see-in-darkness.
+    withheld: observerIgnoresDarkness(),
+    saturation: currentSaturation(),
+    animateSetting: (() => {
+      try {
+        return game.settings.get(MODULE_ID, "darknessAnimationStrength");
+      } catch {
+        return null;
+      }
+    })(),
+    sources,
+  };
+  console.error(`${MODULE_ID} | darkness sources`, report);
   return report;
 }

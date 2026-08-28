@@ -12,7 +12,7 @@
  */
 
 import { MODULE_ID, SYNTHETIC_MARK } from "../constants.mjs";
-import { HARD_EDGES } from "../constants.mjs";
+import { HARD_EDGES, HIDDEN } from "../constants.mjs";
 import { setLevel } from "./clip.mjs";
 
 /** Classes are built lazily so we extend whatever `limits` and our own mixins installed. */
@@ -118,6 +118,10 @@ export function begin() {
  * @param {number} [options.bandLevel] - Foundry lighting level for the **outer band**, when it
  *   differs from `level`. `dimLevelCorrection` and `brightLevelCorrection` are separate
  *   uniforms, so a light's two zones can carry two different tiers natively.
+ * @param {{inner: number, band: number, base: number}} [options.tiers] - The same two zones as
+ *   **tiers**, plus the ground tier beneath them (§6.2.9). Passed alongside `level`/`bandLevel`
+ *   rather than instead of them: the levels are what Foundry's relative path uses, and it is what
+ *   runs with the global-illumination takeover off.
  * @param {number} [options.color]
  * @param {number} [options.attenuation] - Override the falloff. Supply the **emitter's own**
  *   value whenever this fill is standing in for a real light over part of its footprint: the
@@ -132,6 +136,9 @@ export function begin() {
  * @param {object} [options.animation] - The emitter's animation config, for a split cell's
  *   clones. Omitted leaves the clone still, which is what a split animated light must not be.
  * @param {number} [options.seed] - Keeps a clone in phase with the piece it was split from
+ * @param {boolean} [options.hidden] - Withhold the mesh. **The only thing that stops a
+ *   *darkness* clone drawing** — alpha and strength do not (§6.2.3) — and, like the edge flags,
+ *   always assigned. Defaults to visible.
  * @returns {object} The configured source
  */
 export function fill({
@@ -143,15 +150,30 @@ export function fill({
   emission,
   level,
   bandLevel,
+  tiers,
   color,
   attenuation,
   softEdges = false,
   hardEdges = !softEdges,
   animation,
   seed,
+  hidden = false,
 }) {
   const source = take(kind);
   source.directPolygon = polygon;
+
+  // **The third flag that has to be assigned on every fill, and the third time this has bitten**
+  // (found 2026-08-25). Nothing ever wrote `HIDDEN` here, so a pooled *darkness* clone was
+  // always drawn — at full strength, because `setStrength(0)` is not an "off" switch for a
+  // darkness source (§6.2.3; alpha 0 still darkens). The renderer hides the *real* source of a
+  // split `dark` cell and then cloned the remaining pieces without hiding them, so an annulus —
+  // which is to say **any darkness containing another darkness** — rendered one half correctly
+  // and the other half black.
+  //
+  // The pattern is now unmistakable: `animation`, `HARD_EDGES`, and this. **Every per-source
+  // property a pooled fill can carry must be assigned on every fill**, and a default of "leave
+  // whatever the last tenant set" is never right.
+  source[HIDDEN] = hidden;
 
   // **Both edge flags, always, and before `initialize`.** Two bugs lived here, found 2026-08-23
   // while chasing hard arcs that survived turning soft edges on:
@@ -206,7 +228,7 @@ export function fill({
   // Pin the rendered tier. §6.2.3 — our five tiers are exactly Foundry's levels, so this
   // is an assignment rather than an approximation. Set before `initialize` so the first
   // uniform update already carries it.
-  setLevel(source, level, bandLevel);
+  setLevel(source, level, bandLevel, tiers);
 
   source.initialize(data);
   source.add();

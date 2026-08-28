@@ -318,8 +318,7 @@ export function registerSettings() {
     name: "Darkness shadows what lies beyond it",
     hint:
       "Looking through a magical darkness lowers the light level of everything past it to the " +
-      "darkness's own level, so a lit room seen through a darkness spell is as dark as the spell. " +
-      "Requires 'Perceive by light level'.",
+      "darkness's own level, so a lit room seen through a darkness spell is as dark as the spell.",
     scope: "world",
     config: true,
     type: Boolean,

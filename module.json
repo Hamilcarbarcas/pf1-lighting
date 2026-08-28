@@ -16,8 +16,21 @@
     "scripts/module.mjs"
   ],
   "styles": [
-    "styles/readout.css"
+    "styles/readout.css",
+    "styles/config.css"
   ],
+  "languages": [
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "documentTypes": {
+    "RegionBehavior": {
+      "globalIllumination": {}
+    }
+  },
   "relationships": {
     "systems": [
       {

@@ -59,6 +59,22 @@ import {
 } from "./levels.mjs";
 import * as field from "../model/field.mjs";
 
+/**
+ * Is §7.0 step 6 drawing lights into the texture?
+ *
+ * @remarks
+ * Read through the setting key rather than by importing `render/light-ramps.mjs`, which imports
+ * `render/darkness-shaders.mjs` and sits downstream of this file in the render graph. Same rule
+ * `render/paint.mjs` follows for the renderer's own switch.
+ */
+function lightsInTexture() {
+  try {
+    return game.settings.get(MODULE_ID, "lightsInTexture") === true;
+  } catch {
+    return false;
+  }
+}
+
 export const SETTING_AMBIENT = "ambientTakeover";
 
 const PATCH_MARK = "pf1LightingAmbientPatched";
@@ -90,9 +106,13 @@ export function registerSettings() {
       "including under true seeing and god's eye. Quantises ambient brightness to the five " +
       "tiers. Requires the renderer.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
-    default: false,
+    // Flipped from `false` with the control. See `suppression.mjs` for the reasoning.
+    default: true,
     onChange: () => {
       if (!canvas?.ready) return;
       syncLightWeights();
@@ -170,6 +190,30 @@ export function applyMixin() {
 
       const u = shader.uniforms;
       if (!u.globalLightThresholds) return;
+
+      // **Under §7.0 step 6 it contributes nothing at all**, and this is the second half of
+      // Patrick's report that dark regions still tracked the scene's slider (2026-08-27).
+      //
+      // Narrowing the upper bound stops global light painting where the model says *darker than
+      // Dim*, which was the whole point while the ground's brightness still came from light
+      // sources. It leaves it painting everywhere else — and what it paints is
+      // `mix(computedBackgroundColor, ambientBrightest, weightBright)`, a wash laid over the tier
+      // the texture just wrote. So a Normal cell rendered brighter than ground at Normal, and the
+      // wash appeared and vanished as the scene's darkness crossed the source's own
+      // `darkness.min/max` band — a brightness change with no model change behind it, which is
+      // exactly what the takeover exists to stop.
+      //
+      // An inverted band discards every fragment: `level < 1 || level > 0` is true for all of
+      // `[0, 1]`. **The reveal half is untouched** — `#refreshDynamicIllumination` reads the
+      // source's *shape* into the visibility mask (`visibility.mjs:637-640`), not this uniform, so
+      // global illumination still lights the map for the purpose of what a creature can see. Only
+      // its opinion about brightness is withdrawn, which the texture now owns outright.
+      if (lightsInTexture()) {
+        u.globalLightThresholds[0] = 1;
+        u.globalLightThresholds[1] = 0;
+        return;
+      }
+
       u.globalLightThresholds[1] = Math.min(u.globalLightThresholds[1], globalLightCutoff());
     }
   };

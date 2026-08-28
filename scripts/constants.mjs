@@ -68,6 +68,23 @@ export const LEVEL = "pf1LightingLevel";
 export const BAND_LEVEL = "pf1LightingBandLevel";
 
 /**
+ * The three **tiers** a light's zones resolve to, for absolute rendering. DESIGN.md §6.2.9.
+ *
+ * @remarks
+ * `{ inner, band, base }`, all {@link TIER} values rather than Foundry lighting levels.
+ *
+ * The distinction is the whole of §6.2.9. {@link LEVEL} says *which of Foundry's four levels to
+ * ask for*, and Foundry answers relative to the ground beneath — `computedBrightColor =
+ * mix(computedBackgroundColor, ambientBrightest, weightBright)` (`base-lighting.mjs:363`), so the
+ * same level renders brighter over Dim ground than over Dark. This says *what brightness the zone
+ * actually is*, which the tier table answers absolutely.
+ *
+ * Both are set, and both are used: the relative path is what runs with the global-illumination
+ * takeover off, and it is Foundry's own behaviour.
+ */
+export const TIERS = "pf1LightingTiers";
+
+/**
  * How hard a darkness source should darken, 0..1, where 1 is its authored strength.
  *
  * Separate from {@link LEVEL} because the darkness layer's shader ignores lighting
@@ -183,3 +200,39 @@ export const VISION_RANK = Object.freeze({
   /** *See in darkness* / *true seeing*: above every darkness edge. Walls still apply. */
   PIERCING: UMBRA_RANK[TIER.SUPERNATURAL_DARK] + 1,
 });
+
+/* -------------------------------------------- */
+/*  Settings visibility                         */
+/* -------------------------------------------- */
+
+/**
+ * Show or hide a registered setting's row after the fact.
+ *
+ * @remarks
+ * **For client-scoped settings that are nonetheless not everyone's business.** Foundry hides a
+ * *world*-scoped setting from non-GM clients on its own
+ * (`applications/settings/config.mjs:67`), and that is the right mechanism whenever the value
+ * genuinely belongs to the world. It is the wrong one for a per-client preference that only a GM
+ * should have — *GM sees through the selected token* has to stay client-scoped so two GMs can
+ * disagree, and it still must not appear in a player's settings.
+ *
+ * `config` is read at render time out of the entry in `game.settings.settings`, so flipping it
+ * afterwards is enough; there is no re-registration and no second copy of the definition. The
+ * registration keeps `config: true` so the setting reads as a menu row by default and this only
+ * ever takes rows *away*, which is the safe direction if the call is ever missed.
+ *
+ * @param {string} key
+ * @param {boolean} visible
+ * @returns {boolean} Whether anything changed
+ */
+export function setSettingVisibility(key, visible) {
+  const setting = game.settings?.settings?.get(`${MODULE_ID}.${key}`);
+  if (!setting || setting.config === visible) return false;
+  setting.config = visible;
+
+  // A settings window open at the moment the answer changes is showing the old one. Cheap to
+  // correct and confusing not to: this is reachable from a GM toggling *Light level is GM only*
+  // while a player has their settings open, which is exactly when someone is looking.
+  foundry.applications.instances?.get("settings-config")?.render();
+  return true;
+}

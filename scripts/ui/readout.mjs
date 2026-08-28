@@ -24,13 +24,29 @@
  * that matters — following the pointer at frame rate.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
 import { evaluate } from "../model/evaluate.mjs";
 import { TIER, TIER_NAME } from "../model/tiers.mjs";
 import { viewerTier } from "../vision/perception.mjs";
 
 export const SETTING_ENABLED = "readoutEnabled";
 export const SETTING_DETAIL = "readoutDetail";
+
+/**
+ * Whether the readout is the GM's alone.
+ *
+ * @remarks
+ * **World scope, and defaulting on** (Patrick, 2026-08-26). Foundry hides a world-scoped setting
+ * from non-GM clients outright (`applications/settings/config.mjs:67`), so the scope does the
+ * "GM only" half of the job for free — and defaulting it on is what makes the readout off for
+ * players without a second per-user default, which a client setting registered at `init` could
+ * not express anyway (`game.user` does not exist yet).
+ *
+ * The light level *is* information — a player who can read the exact tier under their token
+ * knows things their character has to work out — so the GM opting players in is the right
+ * direction for the default to point.
+ */
+export const SETTING_DM_ONLY = "readoutGmOnly";
 
 /** CSS modifier per tier, so the chip can carry a colour cue. */
 const TIER_CLASS = {
@@ -46,7 +62,44 @@ let hovered = null;
 let pointer = { x: 0, y: 0 };
 let frame = null;
 
-const enabled = () => {
+/**
+ * Is the pointer over the scene itself, with nothing on top of it?
+ *
+ * @remarks
+ * The chip used to follow the cursor across sheets, dialogs and the sidebar, reporting the light
+ * level at whatever canvas position happened to be underneath (Patrick, 2026-08-26). It is a
+ * readout *of the scene* and has no business being drawn over a character sheet.
+ *
+ * Answered from the `mousemove` target rather than by hit-testing rectangles, which is what
+ * makes "with no window in the way" fall out for free: the target **is** the topmost element
+ * under the pointer, so anything drawn over the board — a sheet, a menu, a tooltip, the HUD's
+ * own buttons — reports itself instead of `#board` and the chip goes away.
+ */
+let overBoard = false;
+
+const gmOnly = () => {
+  try {
+    return game.settings.get(MODULE_ID, SETTING_DM_ONLY) === true;
+  } catch {
+    return true;
+  }
+};
+
+/**
+ * Is the readout this user's to have at all?
+ *
+ * @remarks
+ * **Kept separate from {@link showing}, and the first version's failure to is instructive**
+ * (Patrick, 2026-08-26: *"the hotkey just keeps toggling it on and never toggles off"*). One
+ * function answering both questions returns `false` for a player under the GM-only switch
+ * however their own preference is stored — so `!enabled()` is permanently `true` and the
+ * keybinding writes `true` every press. A toggle needs to read *the thing it writes*, and that
+ * is never the effective answer when the effective answer has a second term in it.
+ */
+const available = () => game.user?.isGM === true || !gmOnly();
+
+/** The client's own preference, whatever the GM has allowed. What the keybinding toggles. */
+const showing = () => {
   try {
     return game.settings.get(MODULE_ID, SETTING_ENABLED) === true;
   } catch {
@@ -54,8 +107,72 @@ const enabled = () => {
   }
 };
 
+/** Should the chip be on screen right now? */
+const enabled = () => available() && showing();
+
+/* -------------------------------------------- */
+/*  Token names                                 */
+/* -------------------------------------------- */
+
+/**
+ * The name to show for a hovered token, never leaking what this user should not see.
+ *
+ * @remarks
+ * **The chip is the module's only player-facing surface that prints a token's name**, so it is
+ * the only place this can leak from — the probes and the overlay are console tools and the
+ * canvas nameplate is already substituted by the randomizer itself.
+ *
+ * Two layers, in order, because they answer different questions:
+ *
+ * 1. **`pf1-token-randomizer`'s obscured name**, if that module is present and its gate applies.
+ *    A DM authors a replacement name on a token and the module shows it to anyone below
+ *    Observer; a feature that prints `token.name` instead hands back the real one. Routed
+ *    through its own `shouldObscure`/`getObscuredName` rather than re-reading the flags, so the
+ *    policy lives in one place and cannot drift — the module's own comment asks for exactly
+ *    that.
+ * 2. **Foundry's native nameplate visibility**, which applies with or without that module. A
+ *    token whose nameplate is hidden from a player is not a token whose name should appear in a
+ *    tooltip six inches away.
+ *
+ * **A soft tie-in and nothing more.** No manifest relationship, no notification, no check at
+ * startup: the module is looked up per call and its absence is simply the first layer not
+ * applying. `tr?.active` matters as well as `tr?.api` — an installed-but-disabled module keeps
+ * its entry in `game.modules` and, since the API is assigned at its own `setup`, would have no
+ * `api` to call anyway.
+ *
+ * @param {Token} token - The placeable, not the document
+ * @returns {string}
+ */
+function tokenLabel(token) {
+  const doc = token?.document;
+  if (!doc) return "";
+
+  const tr = game.modules.get("pf1-token-randomizer");
+  if (tr?.active && tr.api?.shouldObscure?.(doc)) {
+    return tr.api.getObscuredName?.(doc) || "???";
+  }
+
+  if (game.user.isGM) return doc.name;
+  if (doc.actor?.testUserPermission(game.user, CONST.DOCUMENT_OWNERSHIP_LEVELS.LIMITED)) {
+    return doc.name;
+  }
+  // `HOVER` and `ALWAYS` are the two modes that show the plate to everyone; the owner-only and
+  // control-only modes are the ones worth hiding a name for.
+  const shownToAll = [CONST.TOKEN_DISPLAY_MODES.HOVER, CONST.TOKEN_DISPLAY_MODES.ALWAYS];
+  return shownToAll.includes(doc.displayName) ? doc.name : "???";
+}
+
+/**
+ * @remarks
+ * **GM-gated in the feature as well as in the menu.** The world scope already hides the control
+ * from players; this makes it impossible for the explanation to reach one even when the GM has
+ * shared the readout. The *why* — "reduced from normal", "darkness cancelled by daylight" — is
+ * a statement about causes the character has no way to know, which is a different thing from
+ * the level itself.
+ */
 const detailed = () => {
   try {
+    if (!game.user?.isGM) return false;
     return game.settings.get(MODULE_ID, SETTING_DETAIL) === true;
   } catch {
     return false;
@@ -133,7 +250,9 @@ function update() {
   frame = null;
   if (!element) return;
 
-  if (!enabled() || !canvas?.ready) {
+  // `hovered` is allowed through without `overBoard`, because a token can only be hovered while
+  // the pointer is on the board and `hoverToken(false)` fires before it can be anywhere else.
+  if (!enabled() || !canvas?.ready || (!overBoard && !hovered)) {
     element.style.display = "none";
     return;
   }
@@ -142,7 +261,7 @@ function update() {
   let label = null;
   if (hovered) {
     result = evaluateToken(hovered);
-    label = hovered.name;
+    label = tokenLabel(hovered);
   } else {
     const point = canvas.mousePosition;
     if (!point) {
@@ -210,8 +329,10 @@ function schedule() {
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_ENABLED, {
-    name: "Show light level readout",
-    hint: "Displays the light level under the cursor, or of a hovered token, as a chip beside the pointer.",
+    name: "Show light level",
+    hint:
+      "Displays the light level under the cursor, or of a hovered token, as a chip beside the " +
+      "pointer. Alt+L toggles it.",
     scope: "client",
     config: true,
     type: Boolean,
@@ -219,10 +340,32 @@ export function registerSettings() {
     onChange: () => schedule(),
   });
 
+  game.settings.register(MODULE_ID, SETTING_DM_ONLY, {
+    name: "Light level is GM only",
+    hint:
+      "Keeps the readout to the GM. Turn this off to let players see the light level their own " +
+      "tokens are standing in; they each still choose whether to show it.",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      // A player who may no longer have the readout must not keep a row for it — the switch
+      // takes the feature away, so it takes its control surface with it.
+      syncVisibility();
+      schedule();
+    },
+  });
+
   game.settings.register(MODULE_ID, SETTING_DETAIL, {
     name: "Explain the light level",
-    hint: "Adds why the level is what it is — for example 'reduced from normal' where a darkness effect applies.",
-    scope: "client",
+    hint:
+      "Adds why the level is what it is — 'reduced from normal', 'darkness cancelled by " +
+      "daylight'. GM only, whoever the readout is shown to.",
+    // **World, not client, and the scope is doing two jobs.** It hides the control from players
+    // (`applications/settings/config.mjs:67`), and it says what the setting is: whether
+    // explanations exist at this table, not whether one GM likes seeing them.
+    scope: "world",
     config: true,
     type: Boolean,
     default: true,
@@ -238,7 +381,12 @@ export function registerKeybindings() {
     // and Foundry will fire both if that module is also active and bound the same way.
     editable: [{ key: "KeyL", modifiers: ["Alt"] }],
     onDown: () => {
-      const next = !enabled();
+      // **Not consumed when the readout is not this user's to toggle.** Returning `false` lets
+      // the press fall through to any lower-precedence binding — `pf1-light-level-tooltip`
+      // binds the same chord — which is a better answer than a notification saying no.
+      if (!available()) return false;
+
+      const next = !showing();
       game.settings.set(MODULE_ID, SETTING_ENABLED, next);
       ui.notifications?.info(`PF1 Lighting | Readout ${next ? "shown" : "hidden"}.`);
       return true;
@@ -246,6 +394,19 @@ export function registerKeybindings() {
     restricted: false,
     precedence: CONST.KEYBINDING_PRECEDENCE.NORMAL,
   });
+}
+
+/**
+ * Take the readout's own row away from a user who cannot have the readout.
+ *
+ * @remarks
+ * `SETTING_ENABLED` is client-scoped — it is a personal preference and has to be — so Foundry's
+ * own "hide world settings from players" rule does not reach it, and a player under the GM-only
+ * switch was left with a control that did nothing (Patrick, 2026-08-26). Re-run whenever the
+ * GM's switch changes, not only at `ready`, since it can change while a player is looking at it.
+ */
+function syncVisibility() {
+  setSettingVisibility(SETTING_ENABLED, available());
 }
 
 export function registerHooks() {
@@ -256,10 +417,22 @@ export function registerHooks() {
     element.style.display = "none";
     document.body.append(element);
 
+    const board = () => canvas?.app?.view ?? null;
+
     window.addEventListener("mousemove", (event) => {
       pointer = { x: event.clientX, y: event.clientY };
+      overBoard = !!board() && event.target === board();
       schedule();
     });
+
+    // Leaving the window entirely fires no further `mousemove`, so without this the chip stays
+    // wherever it was last drawn.
+    document.addEventListener("mouseleave", () => {
+      overBoard = false;
+      schedule();
+    });
+
+    syncVisibility();
   });
 
   Hooks.on("hoverToken", (token, isHovered) => {

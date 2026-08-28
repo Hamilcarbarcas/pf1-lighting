@@ -1,0 +1,7 @@
+{
+  "TYPES": {
+    "RegionBehavior": {
+      "pf1-lighting.globalIllumination": "Restrict Global Illumination"
+    }
+  }
+}

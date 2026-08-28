@@ -46,7 +46,7 @@ import { MODULE_ID } from "../constants.mjs";
 import { castsUmbra } from "../model/contest.mjs";
 import { evaluate } from "../model/evaluate.mjs";
 import { TIER } from "../model/tiers.mjs";
-import { darkSightRange, isPerceptionEnabled, refresh } from "./perception.mjs";
+import { blindsightRange, darkSightRange, isPerceptionEnabled, refresh } from "./perception.mjs";
 
 export const SETTING_DARK_SIGHT_BRIGHTNESS = "darkSightBrightness";
 
@@ -78,7 +78,10 @@ export function registerSettings() {
       "cannot reveal an area without also lightening it, so their view reads brighter than the " +
       "scene's own lighting. Negative values dim it back toward that. 0 leaves it alone.",
     scope: "world",
-    config: true,
+    // **Edited in the *Configure visuals* window, not the flat list** (§10.6, 2026-08-26).
+    // Registered here, where the code that reads it lives; `ui/visuals.mjs` reads and writes it
+    // by key and does not own it.
+    config: false,
     type: Number,
     range: { min: -1, max: 1, step: 0.05 },
     default: 0,
@@ -133,6 +136,40 @@ export function darkSightRadius(source) {
   // unbounded for every purpose a vision polygon has.
   if (range === Infinity) return canvas?.dimensions?.maxR ?? 0;
   return range;
+}
+
+/**
+ * How far a **blinded** creature still perceives, in pixels — its blindsight range, or `0`.
+ *
+ * @remarks
+ * The rules answer to *"the blinded condition should not take away blindsight"* (Patrick,
+ * 2026-08-26). Blindsight is not sight: a creature that maps a room by echo has nothing taken
+ * from it by being unable to see, and PF1 already models the detection half — its `blindSight`
+ * mode is type `OTHER` with `_canDetect() { return true }`, so it survives core's
+ * status-effect gate on sight modes (`perception/detection-mode.mjs:107`).
+ *
+ * What did **not** survive is *terrain*, and for the reason that runs through all of §4.5.1:
+ * `Token#_getVisionBlindedStates` sets `blinded.blind` from the status effect
+ * (`placeables/token.mjs:911`), `isBlinded` then swaps the vision mode to `blindness` and
+ * `refreshVisibility` draws no sight FOV — so the creature detected every token in range while
+ * standing in an unpainted void. Exactly the failure {@link darkSightRadius} was written for,
+ * arriving down a different path.
+ *
+ * **Blindsight alone, not `darkSightRange`.** The other two light-independent senses are still
+ * *sight* — a blinded creature does not get to use *true seeing* — so the subset that survives
+ * blinding is narrower than the subset that survives darkness. See
+ * `perception.blindsightRange`.
+ *
+ * Gated on the perception setting rather than on one of its own: this is a rule about what a
+ * sense does, and that switch is what turns the senses layer on. It costs a twentieth flat
+ * setting not to.
+ *
+ * @param {PointVisionSource} source
+ * @returns {number} Pixels
+ */
+export function blindsightRadius(source) {
+  if (!isPerceptionEnabled()) return 0;
+  return blindsightRange(source);
 }
 
 /**

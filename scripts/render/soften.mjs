@@ -1,15 +1,26 @@
 /**
- * Soft transitions. DESIGN.md §3.2.1, §6.4.
+ * Soft edges on **sources**. DESIGN.md §3.2.1, §6.4.
  *
- * **Light edges only, since 2026-08-24.** A ground feather lived here too — concentric bands
- * cut from each `ambient`/`dark` cell — and it is gone at Patrick's call: it cost the great
- * majority of a repaint (55 of 74 ms on a drag), and a magical darkness reading as a hard-edged
- * circle turns out to be fine. The reasoning that led to it is kept in DESIGN.md §6.4.2 rather
- * than here, including why a filter on the darkness-level container cannot work — that one is
- * worth not rediscovering.
+ * Two mechanisms, both belonging to a light or a darkness *source* rather than to the ground: the
+ * polygon inset Foundry already has, widened and made live ({@link edgeOffset}), and the padding
+ * band on a drawn darkness source's rim ({@link darknessPadding}).
  *
- * What remains is the polygon inset Foundry already has, widened and made live, plus the
- * padding band on a drawn darkness source's rim.
+ * **The ground is no longer softened from here, and its two settings are gone.** §6.4.3 replaced
+ * `groundSoftness` and `spillSoftness`, and §6.4.4 replaced *that* with a single blur of the
+ * composited field (`render/texture-blur.mjs`). One brightness boundary, one width, one place:
+ * `transitionWidth` in `render/transition.mjs`.
+ *
+ * Two claims this file used to make and which are now known to be wrong, kept because both are the
+ * kind that get rediscovered:
+ *
+ * - *"A filter on the darkness-level container cannot work."* It was read off `cached-container.mjs`'s
+ *   redirect, which fires only when the container is already nested inside a filtered parent. In the
+ *   plain case the cached texture is bound before `super.render` pushes the filter, so the filter's
+ *   output lands on it. §6.4.4.
+ * - *"A blur cannot make a gradient."* True of a **mesh**, where the blur fades alpha and reveals
+ *   whatever is beneath. Not true of the composited **field**, where a blurred step is a genuine
+ *   ramp in the value. §7.0 step 5 established the first and it was over-generalised into the
+ *   second.
  */
 
 import { HARD_EDGES, HIDDEN, MODULE_ID, isSynthetic } from "../constants.mjs";
@@ -87,6 +98,24 @@ export const edgeOffset = () => -Math.abs(read(SETTING_EDGE_SOFTNESS, 0.3)) * 10
 export const darknessPadding = () =>
   Math.max(0, read(SETTING_DARKNESS_SOFTNESS, 1.5)) * (canvas?.grid?.size ?? 100);
 
+/**
+ * **Retired, 2026-08-27.** Both ground-softening mechanisms are gone from this file.
+ *
+ * @remarks
+ * `groundSoftness` blurred each ground *mesh*, and `spillSoftness` multiplied it for §3.4's bands.
+ * Neither could do the job, and the reason is one finding: a `PIXI.BlurFilter` fades a mesh's
+ * **alpha** to reveal whatever lies beneath, so it can soften a boundary between two levels but
+ * never invent one between them (§7.0 step 5). Every value of `spillSoftness` only spread the same
+ * handful of steps over more or less distance.
+ *
+ * `transitionWidth` in `render/transition.mjs` replaces both, and one blur of the composited
+ * **field** delivers it (§6.4.4) — which is a different operation from blurring a mesh and is why
+ * it works where these did not.
+ *
+ * The keys are not re-registered. An orphan `Setting` document in an existing world is inert:
+ * Foundry ignores a stored value with no registration behind it.
+ */
+
 /* -------------------------------------------- */
 
 export function registerSettings() {
@@ -99,7 +128,10 @@ export function registerSettings() {
       `instead. Costs a polygon-offsetting pass per 3 pixels, so about 10 at the default, and ` +
       `a feather wider than a narrow region can eat it entirely.`,
     scope: "world",
-    config: true,
+    // **Edited in the *Configure visuals* window, not the flat list** (§10.6, 2026-08-26).
+    // Registered here, where the code that reads it lives; `ui/visuals.mjs` reads and writes it
+    // by key and does not own it.
+    config: false,
     type: Number,
     range: { min: 0.05, max: 1, step: 0.05 },
     default: 0.3,
@@ -119,7 +151,10 @@ export function registerSettings() {
       "value is 0.5, which is a fixed distance and so looks progressively harder the larger " +
       "the darkness is. Widens only the picture, never the area the spell covers.",
     scope: "world",
-    config: true,
+    // **Edited in the *Configure visuals* window, not the flat list** (§10.6, 2026-08-26).
+    // Registered here, where the code that reads it lives; `ui/visuals.mjs` reads and writes it
+    // by key and does not own it.
+    config: false,
     type: Number,
     range: { min: 0.5, max: 6, step: 0.5 },
     default: 0.5,
@@ -129,7 +164,26 @@ export function registerSettings() {
       }
     },
   });
+
+
 }
+
+/**
+ * How to push a changed source-edge setting onto what is already drawn.
+ *
+ * @remarks
+ * Injected rather than imported, for the reason the other two seams in this module's
+ * neighbourhood give: `render/darkness-texture.mjs` reads from here, so
+ * importing its `refreshFilters` back would make two peers depend on each other for the sake
+ * of one settings callback. `module.mjs` wires it.
+ *
+ * @param {() => void} fn
+ */
+export function setGroundRefresh(fn) {
+  groundRefresh = typeof fn === "function" ? fn : () => {};
+}
+
+let groundRefresh = () => {};
 
 /**
  * Debug readout — **live source state, not the settings**.
@@ -192,7 +246,15 @@ export function status() {
     settings: {
       edgeOffset: edgeOffset(),
       darknessPadding: darknessPadding(),
+      // The ground's own softening lives in `render/texture-blur.mjs` now — see
+      // `game.pf1Lighting.render.blur()`. Nothing in this file touches it.
     },
+
+    // **Whether a darkness sweep reads wall restrictions at all.** False means core's own
+    // behaviour is in force and every wall blocks darkness — windows and open doors included —
+    // whatever those walls are configured to allow. See `clip.patchDarknessWalls`.
+    darknessWallsPatched:
+      canvas?.app && CONFIG.Canvas.polygonBackends?.darkness?.pf1LightingDarknessWalls === true,
 
     // Foundry's global gate. False means the whole light-edge half is inert whatever is set.
     softEdgesAvailable: canvas?.performance?.lightSoftEdges === true,

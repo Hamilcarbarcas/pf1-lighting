@@ -41,9 +41,15 @@ export function registerSettings() {
       "what the light level would have been before darkness applied. Until this module's renderer " +
       "exists, darkness will appear not to work — light will shine through it. Development use.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
-    default: false,
+    // **Flipped from `false` when the control was removed.** A hidden switch that defaults off
+    // is a module that does nothing on a fresh world, and everything downstream requires this:
+    // the renderer refuses to run without it (§4.1.1).
+    default: true,
     onChange: (value) => {
       // A settings-form save persists every setting and fires onChange unconditionally,
       // so only act on a genuine change.
@@ -219,6 +225,28 @@ function patchVisionSource() {
       super._initialize(data);
       if (visionModel?.perceptionActive?.() !== true) return;
 
+      // **Blinded: blindsight and nothing else.** The record above already reports this
+      // creature as unblinded so that terrain gets painted at all; this is the other half, and
+      // without it the radius left over from `_syncSenses` is `max(base, darkvision,
+      // blindsight)` — so a blinded creature would see as far as its *darkvision*, which is
+      // sight, and is precisely what the condition removes. Assigned, not maximised: when
+      // blinded, blindsight is the only reach there is, and zero correctly restores core's
+      // behaviour for a creature that has none.
+      if (this.blinded?.[RAW_BLIND]) {
+        const blindsight = visionModel?.blindsightRadius?.(this) ?? 0;
+        this.data.radius = blindsight;
+        // Same ladder as the ordinary path below, for the same reason: blindsight perceives
+        // through a magical darkness, so it sweeps at piercing rank. A creature blinded with no
+        // blindsight gets `NORMAL` and a radius of zero, which is core's behaviour exactly.
+        this.data.priority = Math.max(
+          this.data.priority ?? 0,
+          blindsight > 0 ? VISION_RANK.PIERCING : VISION_RANK.NORMAL
+        );
+        // `darkSightBrightness` is deliberately not applied: it is a look adjustment for
+        // light-independent *sight*, and this branch is reached only when sight is gone.
+        return;
+      }
+
       const darkSight = visionModel?.darkSightRadius?.(this) ?? 0;
 
       // Where this observer sits on the ladder (EDGE_RANK). Ordinary sight ignores umbra
@@ -268,6 +296,7 @@ function patchVisionSource() {
  * @type {{
  *   blinds?: (s: object) => boolean,
  *   darkSightRadius?: (s: object) => number,
+ *   blindsightRadius?: (s: object) => number,
  *   darkSightBrightness?: (s: object) => number,
  *   perceptionActive?: () => boolean,
  * }|null}
@@ -287,6 +316,9 @@ export function setVisionModel(model) {
  */
 export const RAW_BLINDED = Symbol("pf1LightingRawBlinded");
 
+/** The raw, un-overridden `blinded.blind` value — the status effect as Foundry set it. */
+export const RAW_BLIND = Symbol("pf1LightingRawBlind");
+
 /**
  * A `blinded` record whose `darkness` key is decided by the model rather than by Foundry.
  *
@@ -304,6 +336,7 @@ export const RAW_BLINDED = Symbol("pf1LightingRawBlinded");
  */
 function createBlindedRecord(source) {
   let raw = false;
+  let rawBlind = false;
   const record = {};
 
   Object.defineProperty(record, "darkness", {
@@ -318,9 +351,49 @@ function createBlindedRecord(source) {
     },
   });
 
+  /**
+   * **The blinded *condition*, which blindsight should survive** (Patrick, 2026-08-26).
+   *
+   * Written by `Token#updateVisionSource` from the status effect
+   * (`placeables/token.mjs:889-890`, `:911`), and `isBlinded` is any-true over this record — so
+   * a blinded creature gets the `blindness` vision mode, no sight FOV, and an unpainted void,
+   * however well its other senses work.
+   *
+   * Blindsight is not sight. PF1 already has the *detection* half right: its `blindSight` mode
+   * is type `OTHER` with `_canDetect() { return true }`, so core's status gate on sight modes
+   * (`perception/detection-mode.mjs:107`) never reaches it, and a blinded creature still detects
+   * what it can hear or feel. Only terrain was lost, and only because terrain is painted from
+   * `data.radius`.
+   *
+   * So this reports `false` for a creature with blindsight, and the `_initialize` override then
+   * **clamps the radius to the blindsight range** rather than leaving it at the token's full
+   * sight range. Both halves are needed: without the first there is no terrain at all, and
+   * without the second a blinded creature would see as far as its *darkvision*, which is sight
+   * and is exactly what the condition takes away.
+   *
+   * The sight-based modes stay blocked either way, because core gates those on the status effect
+   * itself and not on this record. That is the division that makes this safe.
+   */
+  Object.defineProperty(record, "blind", {
+    enumerable: true,
+    configurable: true,
+    get: () => {
+      if (!rawBlind) return false;
+      return !((visionModel?.blindsightRadius?.(source) ?? 0) > 0);
+    },
+    set: (value) => {
+      rawBlind = value === true;
+    },
+  });
+
   Object.defineProperty(record, RAW_BLINDED, {
     enumerable: false,
     get: () => raw,
+  });
+
+  Object.defineProperty(record, RAW_BLIND, {
+    enumerable: false,
+    get: () => rawBlind,
   });
 
   return record;

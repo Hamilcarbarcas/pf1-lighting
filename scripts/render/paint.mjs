@@ -18,21 +18,24 @@
  * So the two are split: sources rebuild when the scene changes, the texture repaints when
  * either the scene **or** the point of view changes. Nothing here constructs a source.
  *
- * ## Overlap is not an option, and that decides the whole shape
+ * ## Overlap **is** the mechanism now — reversed 2026-08-27
  *
- * The obvious implementation — paint the umbra as extra meshes on top of the ambient — cannot
- * work. `invalidateDarknessLevelContainer` sorts the container by darkness level *descending*,
- * so where two meshes overlap the **lowest level wins**, i.e. the brightest
- * (`illumination-effects.mjs:106-110`). An umbra laid over the ambient would be erased by the
- * ambient, which is the exact opposite of the intent.
+ * This section used to say the opposite, and the reasoning was sound for the blend mode it
+ * assumed. `invalidateDarknessLevelContainer` sorts the container by darkness level *descending*
+ * (`illumination-effects.mjs:106-110`), so under the default blend an umbra laid over the ambient
+ * would be **erased by it**. The shadow was therefore *cut into* each cell instead, keeping the
+ * output a disjoint set.
  *
- * So the shadow is not added, it is **cut in**: each base cell is split against the shadow, the
- * inside piece taking the clamped tier and the outside piece keeping its own. The result stays
- * a disjoint set, which is the invariant the painter needs.
+ * §7.0 step 6 retired that constraint. Foundry registers `MIN_COLOR` and `MAX_COLOR` into
+ * `PIXI.BLEND_MODES` at startup (`board.mjs:721-722`), and this channel holds a *darkness* level —
+ * so `MAX` is **darkest wins, per fragment**, which is what a clamp means (§4.3): nothing between
+ * two points can make the far one brighter. A clamp is now composited over the finished picture by
+ * {@link clampRamps} rather than cut into it, and it wins wherever it lands.
  *
- * Two things keep that cheap. A cell already at or below the clamp is skipped whole — the clamp
- * only ever darkens (§4.3) — which on a typical scene leaves just the ambient cell to split.
- * And the whole pass is skipped unless something it depends on changed.
+ * `applyShadows` is still here and is **off** (`softClamps`). Leaving both on was worse than
+ * either: the cut produces a flat hard-edged cell at the clamp level, and `max(hard, soft ramp)` is
+ * the hard one everywhere inside it — so the cut silently defeated the ramp that replaced it. Kept
+ * behind the switch because it is the whole of §4.3.1 and the bisection is one setting away.
  *
  * ## Several observers
  *
@@ -52,21 +55,105 @@
 import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
 import {
   CLIPPER_SCALE,
+  containsPoint,
   difference,
   fromClipperPaths,
   groupRings,
   intersection,
+  splitRings,
   toClipperPath,
   union,
 } from "../geometry.mjs";
+import { TIER, tierOf } from "../model/tiers.mjs";
 import * as field from "../model/field.mjs";
 import * as umbra from "../vision/umbra.mjs";
 import * as ambientTakeover from "./ambient.mjs";
 import * as darknessTexture from "./darkness-texture.mjs";
+import { CLAMP_SORT } from "./darkness-shaders.mjs";
+import * as gradient from "./gradient.mjs";
+import * as halo from "./halo.mjs";
+import { darknessFor } from "./levels.mjs";
+import { width as transitionWidth } from "./transition.mjs";
+import * as lightRamps from "./light-ramps.mjs";
+import * as fieldBlur from "./texture-blur.mjs";
 
 let signature = null;
 let lastStats = null;
+/** The cells handed to the painter last time, for `ui/cell-overlay.levels`. @type {object[]|null} */
+let lastCellList = null;
+/** The composited ramps from the same pass — lights, halos and clamps. @type {object[]} */
+let lastRampList = [];
+
+/**
+ * Announced after every repaint, so the debug overlay can follow without polling.
+ *
+ * A hook rather than an injected callback: `ui/cell-overlay.mjs` already imports this file, so a
+ * callback would have to be wired the other way for one listener. Same reasoning as
+ * `levels.TABLE_CHANGED_HOOK`.
+ */
+export const PAINTED_HOOK = `${MODULE_ID}.painted`;
 let scheduled = false;
+
+export const SETTING_HIDE_UNSEEN = "hideUnseenGround";
+export const SETTING_SOFT_CLAMPS = "softClamps";
+
+/**
+ * Are the umbra and vision clamps composited as ramps, or cut into the ground cells?
+ *
+ * @remarks
+ * The two express the same regions and cannot both be applied: the cut is flat and hard-edged, and
+ * `MAX_COLOR` over it can only ever agree with it. On is §6.4.3's picture; off is §4.3.1's original
+ * one, which is what to fall back to if a clamp lands somewhere it should not.
+ */
+export function softClamps() {
+  try {
+    return game.settings.get(MODULE_ID, SETTING_SOFT_CLAMPS) === true;
+  } catch {
+    return true;
+  }
+}
+
+/** Is unseen ground drawn dark? See {@link unseenRegionFor}. */
+export function hideUnseen() {
+  try {
+    return game.settings.get(MODULE_ID, SETTING_HIDE_UNSEEN) === true;
+  } catch {
+    return true;
+  }
+}
+
+export function registerSettings() {
+  game.settings.register(MODULE_ID, SETTING_HIDE_UNSEEN, {
+    name: "Unseen ground is drawn dark",
+    hint:
+      "Treats a wall the way a darkness is already treated: ground the viewer cannot see is " +
+      "drawn at Dark rather than at whatever the model says is there. Without it, a darkness " +
+      "spell or an umbra stays visible through fog, because Foundry renders unseen ground from " +
+      "the same texture this module writes its light levels into. Affects drawing only — what a " +
+      "creature can see is unchanged.",
+    scope: "world",
+    // No control surface, matching the module's other corrections of core behaviour.
+    config: false,
+    type: Boolean,
+    default: true,
+    onChange: () => repaint({ force: true }),
+  });
+
+  game.settings.register(MODULE_ID, SETTING_SOFT_CLAMPS, {
+    name: "Unseen and shadowed ground fades in",
+    hint:
+      "Composites the umbra and the edge of vision over the finished picture with a gradient, " +
+      "instead of cutting them into the ground as flat hard-edged regions. Off restores the " +
+      "original behaviour, which is the one to compare against if a clamp lands somewhere it " +
+      "should not.",
+    scope: "world",
+    // No control surface, matching the module's other corrections of core behaviour.
+    config: false,
+    type: Boolean,
+    default: true,
+    onChange: () => repaint({ force: true }),
+  });
+}
 
 /**
  * Both switches, because painting needs both.
@@ -127,6 +214,50 @@ function baseCells() {
 }
 
 /**
+ * Everything this observer cannot see, as a clamp region. DESIGN.md §4.3.1.
+ *
+ * @remarks
+ * **Patrick's idea, 2026-08-27, and it is the right shape for a reason worth writing down.** The
+ * model already owns *"this observer cannot perceive here, so clamp it"* — that is the umbra —
+ * and a wall is the most basic case of not perceiving. Treating the two the same makes every
+ * unseen part of a scene render consistently instead of showing whatever the model happened to
+ * paint there.
+ *
+ * It also resolves the leak three earlier patches missed. The darkness discs visible through fog
+ * were `dark` **regions in the darkness-level texture**, not meshes — every darkness source on
+ * the scene reports `parent: "none"`, `visible: false`, because §6.4.1's `darkeningStrength`
+ * withholds the mesh for every tier but Supernatural Dark. §6.2.8 stopped fog *reading* that
+ * texture for its replacement colour, which fixed the base; what remained came through the
+ * partial `mix` where the vision mask is neither 0 nor 1. Clamping the ground itself removes the
+ * discs from the texture in the first place, so there is nothing left to bleed through at any
+ * mask value. Attacking the source rather than each route out of it.
+ *
+ * **Render-only, deliberately.** This does not go through `umbra.clampAt`, so `perceivedTier`
+ * and every mechanical consumer are untouched. §6.1 keeps model and picture agreeing by
+ * construction, and this is a claim about *drawing* — a blindsighted creature perceives past a
+ * wall perfectly well, and a model that reported Dark there would be wrong about the rules to
+ * fix something about pixels.
+ *
+ * @returns {{clamp: number, polygons: PIXI.Polygon[]}|null}
+ */
+function unseenRegionFor(source) {
+  if (!hideUnseen() || !source?.los) return null;
+
+  const rect = canvas?.dimensions?.sceneRect;
+  if (!rect) return null;
+
+  const outside = difference(
+    [toClipperPath(rect.toPolygon(), CLIPPER_SCALE)],
+    [toClipperPath(source.los, CLIPPER_SCALE)]
+  );
+  if (!outside.length) return null;
+
+  // `los` comes back as a hole in the scene rect, wound against it, which is exactly what
+  // `containsPoint`'s even-odd test and `union`'s `pftNonZero` both already expect.
+  return { clamp: TIER.DARK, polygons: fromClipperPaths(outside, CLIPPER_SCALE) };
+}
+
+/**
  * Cumulative shadow regions, darkest tier first.
  *
  * @returns {{clamp: number, paths: object[][]}[]} Each entry is *"everywhere clamped to this
@@ -139,7 +270,11 @@ function shadowRegions() {
   // God's eye. No observer, no path, no umbra — §5.4.
   if (!sources.length) return [];
 
-  const perObserver = sources.map((source) => umbra.regionsFor(source));
+  const perObserver = sources.map((source) => {
+    const regions = umbra.regionsFor(source);
+    const unseen = unseenRegionFor(source);
+    return unseen ? [...regions, unseen] : regions;
+  });
   // One observer that shadows nothing means `max` over observers clamps nothing, anywhere.
   // Also the state when `umbraPerception` is off, which is why no separate check is needed.
   if (perObserver.some((regions) => !regions.length)) return [];
@@ -186,13 +321,29 @@ function cellPaths(cell) {
   return paths;
 }
 
-/** Rebuild a cell over new geometry at a new tier. */
-function cellsFromPaths(paths, template, tier) {
+/**
+ * Rebuild a cell over new geometry at a new tier.
+ *
+ * @remarks
+ * `clamped` marks the piece the shadow actually took down, as against the piece that kept its own
+ * tier. Nothing in the model reads it — a clamped cell and an ordinary one are both just a polygon
+ * at a level — but `render/gradient.mjs` does: a §3.4 spill band is drawn by a gradient mesh
+ * *unless* it was clamped, in which case it is a constant again and is painted flat on top of the
+ * gradient. Stamping it here is what lets that decision be made without re-deriving which cells
+ * came from a shadow further down the pipeline.
+ *
+ * @param {object[][]} paths
+ * @param {object} template
+ * @param {number} tier
+ * @param {boolean} [clamped] - Did a shadow put this piece at `tier`, or is it the cell's own?
+ */
+function cellsFromPaths(paths, template, tier, clamped = false) {
   return groupRings(fromClipperPaths(paths, CLIPPER_SCALE)).map(({ outer, holes }) => ({
     ...template,
     polygon: outer,
     holes,
     tier,
+    clamped: clamped || template.clamped === true,
   }));
 }
 
@@ -232,13 +383,158 @@ function applyShadows(cells, shadows) {
       ops++;
       split++;
 
-      next.push(...cellsFromPaths(inside, cell, clamp));
+      next.push(...cellsFromPaths(inside, cell, clamp, true));
       next.push(...cellsFromPaths(outside, cell, cell.tier));
     }
     working = next;
   }
 
   return { cells: working, ops, split };
+}
+
+/* -------------------------------------------- */
+/*  Clamp meshes — §7.0 step 6                  */
+/* -------------------------------------------- */
+
+/**
+ * Minkowski offset in scene pixels; negative erodes.
+ *
+ * `jtMiter` for the reason `render/halo.mjs` gives at length: a round join curves every corner and
+ * its segment count falls as the offset shrinks, so a small erosion facets a circle.
+ */
+function offsetPaths(paths, delta) {
+  if (!paths.length || !delta) return paths;
+  const co = new ClipperLib.ClipperOffset(2, 0.25);
+  co.AddPaths(paths, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+  const out = new ClipperLib.Paths();
+  co.Execute(out, delta * CLIPPER_SCALE);
+  return out;
+}
+
+/**
+ * The shadow regions as `MAX_COLOR` meshes, drawn after everything else.
+ *
+ * @remarks
+ * **This exists because §7.0 step 6 put light into the darkness-level texture, and that texture is
+ * deliberately not vision-masked.** A light source's illumination mesh is replaced in unseen area
+ * by `VisualEffectsMaskingFilter`; a region written here is not, on purpose — it is what lets
+ * *true seeing* and god's eye still read the map's real light levels (§7.0). Moving a torch's
+ * brightness into it would therefore have made the torch shine through walls, which is §4.3.1's
+ * bug arriving by a new route.
+ *
+ * `MAX` on the red channel is **darkest wins per fragment**, which is exactly what a clamp means
+ * (§4.3): nothing between two points can make the far one brighter. So the clamp does not have to
+ * be *cut into* anything — it is composited over the finished picture, after the ground and after
+ * the lights, and it wins wherever it lands.
+ *
+ * The cumulative regions {@link shadowRegions} returns overlap by construction, darker inside
+ * brighter, and `MAX` resolves that correctly with no extra difference.
+ *
+ * **{@link applyShadows} is deliberately still running.** It cuts the same clamp into the ground
+ * cells, so on ground this is redundant — `max(Dark, Dark)` — and the two agree by construction
+ * because they read the same regions. Keeping both is what makes step 6 additive: §4.3.1 was hard
+ * won, and removing the cut in the same change that introduced the composite would have left no
+ * way to tell which of them a regression belonged to. The cut can come out once this is proven,
+ * and that is worth doing — it is most of what a token drag costs.
+ *
+ * @param {{clamp: number, paths: object[][]}[]} shadows
+ * @returns {object[]} Ramp payloads in `render/gradient.mjs`'s shape
+ */
+function clampRamps(shadows) {
+  const out = [];
+  let index = 0;
+
+  const half = transitionWidth() / 2;
+
+  for (const { clamp, paths } of shadows) {
+    const { level } = darknessFor(clamp);
+    const vertices = [];
+    const levels = [];
+    const indices = [];
+
+    // **The clamp's own edge ramps too** (§6.4.3). Eroding the region and painting the collar as a
+    // ramp from `level` down to **0** gives a soft vision boundary out of the same mechanism as
+    // every other transition: zero is the brightest value the channel holds, and `max(x, 0)` is
+    // `x`, so the outer end of the collar contributes nothing at all. That is the `MAX` mirror of
+    // the trick §7.0 step 6 plays with `MIN` for a light's rim.
+    //
+    // **The outer boundary only, and that is the whole of the 2026-08-27 halo fix.** A negative
+    // Clipper offset shrinks the *region*, which means it grows every hole — so `offsetPaths(paths,
+    // -half)` put a collar around each hole as well, and the umbra's holes are the darkness sources
+    // that cast it. There the clamp faded to 0 over ground the observer cannot see, `MAX` let
+    // whatever was beneath show through, and a light out-reaching its own darkness came back as a
+    // bright ring at the darkness's rim. Patrick, 2026-08-27: *"it doesn't actually gradient away
+    // from dark from the token's perspective"* — exactly so, and the collar was inventing one.
+    //
+    // Not a judgement about holes in general: it is that a hole here is a boundary the clamp shares
+    // with something **at least as dark**, so there is no step to soften. The hard edge that leaves
+    // is softened by §6.4.4's field blur along with every other boundary nobody enumerated, and
+    // that blur works on the *composited* field, so it cannot reveal a brighter value from beneath
+    // the way this collar could.
+    const rings = half > 0 ? fromClipperPaths(paths, CLIPPER_SCALE) : [];
+    const { outers, holes } = half > 0 ? splitRings(rings) : { outers: [], holes: [] };
+    const back = (polygons) => polygons.map((polygon) => toClipperPath(polygon, CLIPPER_SCALE));
+
+    let core = paths;
+    if (half > 0 && outers.length) {
+      const eroded = offsetPaths(back(outers), -half);
+      core = holes.length && eroded.length ? difference(eroded, back(holes)) : eroded;
+    }
+    const collar = half > 0 && core.length && core !== paths ? difference(paths, core) : [];
+
+    const emit = (rings, levelFor) => {
+      for (const { outer, holes } of groupRings(fromClipperPaths(rings, CLIPPER_SCALE))) {
+        if (!(outer?.points?.length >= 6)) continue;
+        const points = holes?.length ? Array.from(outer.points) : outer.points;
+        const holeIndices = [];
+        for (const hole of holes ?? []) {
+          if (!(hole?.points?.length >= 6)) continue;
+          holeIndices.push(points.length / 2);
+          for (const value of hole.points) points.push(value);
+        }
+
+        const tri = PIXI.utils.earcut(points, holeIndices.length ? holeIndices : null, 2);
+        if (!tri.length) continue;
+
+        const base = vertices.length / 2;
+        for (let i = 0; i < points.length; i += 2) {
+          vertices.push(points[i], points[i + 1]);
+          levels.push(levelFor({ x: points[i], y: points[i + 1] }));
+        }
+        for (const i of tri) indices.push(base + i);
+      }
+    };
+
+    // The interior is the clamp outright; the collar fades it out across the boundary. A vertex
+    // still inside the eroded core is the inner end of the ramp, everything else the outer.
+    emit(core.length ? core : paths, () => level);
+    if (collar.length) {
+      const coreRings = fromClipperPaths(core, CLIPPER_SCALE);
+      emit(collar, (point) => (containsPoint(coreRings, point) ? level : 0));
+    }
+
+    if (indices.length < 3) continue;
+
+    out.push({
+      id: `${MODULE_ID}.clamp.${clamp}.${index++}`,
+      kind: "clamp",
+      blendMode: "MAX_COLOR",
+      sortLevel: CLAMP_SORT,
+      nominal: level,
+      vertices: new Float32Array(vertices),
+      levels: new Float32Array(levels),
+      indices: new Uint32Array(indices),
+      bounds: canvas.dimensions.sceneRect.clone(),
+      // **No outline, so `getDarknessLevel` never answers from a clamp.** It covers most of the
+      // map when an observer is in a corridor, and a point query there should report what the
+      // ground *is*, not what this observer can see of it — the same argument the seam backstop
+      // makes for staying out of that query.
+      outline: [],
+      triangles: indices.length / 3,
+    });
+  }
+
+  return out;
 }
 
 /* -------------------------------------------- */
@@ -281,6 +577,7 @@ export function repaint({ force = false } = {}) {
 
   if (!active()) {
     if (lastStats) {
+      gradient.clear();
       darknessTexture.clear();
       lastStats = null;
       signature = null;
@@ -295,23 +592,68 @@ export function repaint({ force = false } = {}) {
   const t0 = performance.now();
   const base = baseCells();
   const shadows = shadowRegions();
-  const { cells, ops, split } = shadows.length
+
+  // **The cut is off, and leaving it on was actively wrong** (Patrick, 2026-08-27, reporting hard
+  // edges on wall shadows and around a spill).
+  //
+  // §7.0 step 6 kept `applyShadows` running beside the new `MAX_COLOR` clamp meshes as
+  // belt-and-braces, on the grounds that §4.3.1 was hard won and the two agree by construction.
+  // They do agree — and that is the problem. The cut produces a *flat* cell at the clamp level with
+  // a hard boundary, and `max(hard Dark, soft ramp)` is the hard one everywhere inside it. So the
+  // cut silently defeated the ramp that replaced it, and every umbra and vision boundary on the map
+  // came back with exactly the edge §6.4.3 had just removed.
+  //
+  // Kept behind a switch rather than deleted, because it is still the whole of §4.3.1 and a
+  // bisection between "the clamp is wrong" and "the ramp is wrong" is one setting away.
+  const cut = shadows.length && !softClamps();
+  const { cells, ops, split } = cut
     ? applyShadows(base, shadows)
     : { cells: base, ops: 0, split: 0 };
 
+  // §7.0 step 6 — the two passes that composite over the ground rather than being cut into it.
+  // Lights first (`MIN_COLOR`, brightest wins), then clamps (`MAX_COLOR`, darkest wins); the sort
+  // ladder in `render/darkness-shaders.mjs` is what puts them in that order.
+  const lights = lightRamps.rampsFrom(field.get().cells, tierOf(field.get().stats?.ambientB ?? 0));
+  const clamps = softClamps() ? clampRamps(shadows) : [];
+  // §6.4.3 — the ground's own boundaries, as ramps rather than as a blur.
+  //
+  // **From `base`, not from the shadow-cut `cells`** (Patrick, 2026-08-27: *"inconsistent
+  // application of the gradient that changes as I drag lights around"*). A cut introduces
+  // boundaries that are not brightness boundaries at all — they are the umbra and the edge of
+  // vision, they move every frame an observer does, and they already have their own ramped mesh in
+  // `clampRamps`. Haloing them meant a second gradient on the same edge, rebuilt from different
+  // geometry each frame, which is exactly what "inconsistent, and changes as I drag" looks like.
+  // The model's own boundaries do not move when a token walks.
+  const halos = halo.halosFrom(base);
+  // Cheap and idempotent: it compares one number and returns.
+  fieldBlur.sync();
+
+  // **Before the painter, because the painter asks whether a gradient exists.**
+  const ramps = gradient.sync([...halos, ...lights, ...clamps]);
+  lastCellList = cells;
+  lastRampList = [...halos, ...lights, ...clamps];
   const painted = darknessTexture.paint(cells);
 
   lastStats = {
     base: base.length,
     painted,
+    // §7.0 step 5/6. Every mesh that composites over the ground rather than partitioning it:
+    // spill falloffs, light contributions, and the clamps that put unseen ground back to Dark.
+    ramps,
+    lights: lights.length,
+    clamps: clamps.length,
+    halos: halos.length,
+    fieldBlur: fieldBlur.isEnabled(),
     shadows: shadows.length,
-    // Cells the shadow actually cut. Zero with `shadows` above zero is the state that reads as
-    // "umbra painting is broken" and usually is not — see {@link explainQuiet}.
+    // **`split: 0` is now the normal state**, because the cut is off and the clamps are composited
+    // instead — see the note at `cut`. It is only meaningful with `softClamps` turned off.
     split,
+    softClamps: softClamps(),
     ops,
     ms: +(performance.now() - t0).toFixed(2),
     ...(shadows.length && !split ? { quiet: explainQuiet(base, shadows) } : {}),
   };
+  Hooks.callAll(PAINTED_HOOK, lastStats);
   return lastStats;
 }
 
@@ -368,7 +710,25 @@ export function registerHooks() {
   Hooks.on("canvasTearDown", () => {
     signature = null;
     lastStats = null;
+    // The container these live in belongs to the old canvas; this is about dropping *our*
+    // references, same as `renderer.mjs` does for the texture pool.
+    gradient.dispose();
+    fieldBlur.dispose();
   });
+}
+
+/**
+ * The ground regions the painter was last given — `ui/cell-overlay.levels`'s input.
+ *
+ * Post-clamp, which is the point: it is what was *drawn*, not what the field computed.
+ */
+export function lastCells() {
+  return lastCellList;
+}
+
+/** The light, halo and clamp meshes composited over those cells on the same pass. */
+export function lastRamps() {
+  return lastRampList;
 }
 
 /** Drop the cached signature so the next call recomputes. */
@@ -390,8 +750,13 @@ export function stats() {
     enabled: active(),
     observers: observers().length,
     umbraTiers: shadowTiers(),
+    // §4.3.1. `true` with `observers: 0` is a god's-eye view and correctly clamps nothing —
+    // there is no point of view to be unable to see from.
+    hideUnseen: hideUnseen(),
     ...(repaint({ force: true }) ?? { note: "needs the renderer and 'Model global illumination'" }),
     texture: darknessTexture.status(),
+    gradient: gradient.stats(),
+    blur: fieldBlur.status(),
   };
   console.error(`${MODULE_ID} | tier paint`, report);
   return report;

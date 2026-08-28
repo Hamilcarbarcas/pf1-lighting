@@ -7,6 +7,21 @@
  *   - **Withholding** — for blindsight, the bubble should not be drawn at all: a creature that
  *     maps a room by echo does not experience the darkness as anything.
  *
+ * > **The first of those is dormant while §6.2.11 is on, which is the default.** It was route 5 of
+ * > the five ways greyscale reached the screen, and the takeover zeroes the vision mode's
+ * > `saturation` — so {@link currentSaturation} reads 0 and the wrap below mixes by nothing. The
+ * > single pass on `canvas.environment` greys the darkness disc along with everything else, and it
+ * > cannot disagree with the terrain around it the way two mechanisms could.
+ * >
+ * > **Not deleted, because it is the fallback.** With `regionalGreyscale` off, `neutralise` never
+ * > runs, the vision mode keeps its saturation, and everything below works exactly as written. The
+ * > analysis is also still the load-bearing one: it is where the finding that a darkness source
+ * > repaints from the raw primary texture is written down, and §6.2.11 exists because a *vision*
+ * > source does the same thing.
+ * >
+ * > **{@link observerIgnoresDarkness} is untouched** — it reads actor senses, not saturation, and
+ * > is the only thing withholding a darkness bubble from a blindsight observer.
+ *
  * ## The problem
  *
  * A creature with darkvision or blindsight sees the world in grey — except inside a darkness
@@ -84,7 +99,10 @@ export function registerSettings() {
       "get full-colour terrain inside a darkness bubble. Foundry's darkness shader samples the map " +
       "directly and skips the vision mode's colour adjustment; this puts it back.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
     default: true,
     onChange: () => {
@@ -142,6 +160,14 @@ export function withDesaturation(Base) {
  * darkness consistent with the outside rather than inventing a third answer.
  *
  * Vision modes express saturation as -1..0 where -1 is fully grey; this wants 0..1.
+ *
+ * **This returns 0 for darkvision as of §6.2.11, and that is not a bug.** The greyscale takeover
+ * zeroes `vision.defaults.saturation` on the vision mode, so the value this reads is 0 and the
+ * wrap below mixes by nothing. It is route 5 of the five, switched off from the far end rather
+ * than by editing this file — a single pass on `canvas.environment` greys the darkness disc along
+ * with everything else, and two mechanisms greying the same pixels was the state the takeover
+ * exists to end. The *other* half of this file, {@link observerIgnoresDarkness}, reads actor
+ * senses and is untouched.
  */
 export function currentSaturation() {
   if (!isEnabled()) return 0;

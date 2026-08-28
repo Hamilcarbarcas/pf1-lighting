@@ -2,21 +2,39 @@
 
 Observer-relative light levels for Pathfinder 1e on Foundry VTT.
 
-**Status: model, renderer, perception and umbra.** Everything that changes behaviour is
-behind a world setting, off by default. Light levels are now genuinely observer-relative —
-what a creature can see depends on the darkness *between* it and the target, not only on
-the darkness *at* the target — which was the point of the whole thing.
+**Status: model, renderer, perception and umbra, all on by default.** Light levels are
+genuinely observer-relative — what a creature can see depends on the darkness *between* it and
+the target, not only on the darkness *at* the target — which was the point of the whole thing.
 
-The largest gap left is that global illumination is not yet a real light source, so a
-*darkness* on a bright map is computed correctly and drawn not at all, and a shadowed area
-goes undetectable while still looking lit. See [DESIGN.md](DESIGN.md) §7.1 and §8.2.
+The settings list is short on purpose: seven switches and three windows. The rest of what the module
+does used to be behind a toggle so it could be bisected during development, and those toggles are
+gone rather than the behaviour. See **Settings** at the end if you need one back.
+
+A *darkness* on a bright map now both computes and draws correctly, and so does the shadow it
+casts. The gap that remains is narrower: an area dimmed by looking *through* a darkness is
+dimmed only where global illumination lit it, because ground lit by an actual light source is
+not dimmed. See [DESIGN.md](DESIGN.md) §7.0 and §7.1.
 
 ## What it does today
 
 ### Light level readout
 
 A chip beside the pointer showing the light level under the cursor, or of a hovered
-token. **Alt+L** toggles it; both it and the explanation line are per-client settings.
+token. **Alt+L** toggles it.
+
+**GM only by default.** The light level is information — a player reading the exact tier under
+their token knows something their character would have to work out — so **Light level is GM
+only** starts on and you turn it off to share. Each player then still chooses whether to show
+their own chip; while the switch is on they get neither the chip, the setting, nor the keybinding.
+
+The chip only appears over the scene itself. Move the pointer onto a sheet, a dialog or the
+sidebar and it goes away.
+
+Hovering a token shows its name beside the level, and that name respects who is looking. If
+[`pf1-token-randomizer`](https://github.com/Hamilcarbarcas/pf1-token-randomizer) is installed,
+its DM-authored obscured names are used for anyone below Observer; with or without it, a token
+whose nameplate a player cannot see reads `???`. Nothing is required — the tie-in is used if the
+module is there and skipped silently if not.
 
 With explanations on it says *why*, not just what — "Dim · reduced from normal", "Normal ·
 darkness present, no effect", "Bright · darkness cancelled by daylight". That comes
@@ -31,9 +49,8 @@ module is untouched and still works standalone. Note both bind Alt+L by default.
 
 ### Renderer
 
-Off by default. **Render the lighting model** (world setting) draws the scene from the
-model instead of Foundry's own lighting. Requires **Disable native darkness suppression**
-to also be on — otherwise Foundry is still clipping light before the model sees it.
+The scene is drawn from the model instead of from Foundry's own lighting: light clipped at
+darkness boundaries, five brightness tiers, darkness-spell semantics.
 
 ```js
 game.pf1Lighting.render.rebuild()   // force a rebuild
@@ -46,21 +63,19 @@ with a bite taken out where a darkness overlaps. Synthetic sources are pooled an
 never created per frame (§9.5). How dark an area *is*, as opposed to what lights reach it, is
 painted separately — see **Global illumination** below.
 
-**Known consequence: darkness *animations* only play on supernatural darkness.** An ordinary
-*darkness* is rendered by removing light rather than by drawing anything, so there is no mesh
-for a shader animation to run on — pick *Roiling Darkness* on one and the dropdown does
-nothing. Turning the renderer off restores stock behaviour.
+An ordinary *darkness* is rendered by removing light rather than by drawing anything, which
+used to mean a shader animation had no mesh to run on. See **Animated darkness** below for the
+setting that gives it one.
 
 ### Global illumination
 
-Off by default. **Model global illumination** (world setting) paints the model's five
-brightness tiers into Foundry's darkness-level texture, so every area of the map renders at
-the tier the model says it is. Requires the renderer.
+The model's five brightness tiers are painted into Foundry's darkness-level texture, so every
+area of the map renders at the tier the model says it is.
 
-Without it, a *darkness* cast on a brightly lit map is computed correctly and drawn not at
-all: Foundry's global light is unconditional, illumination composites by taking the brightest
-contributor, and so anything painted on top loses to the ambient beneath it. With it, a
-*darkness* at noon visibly drops the area a step.
+Without this, a *darkness* cast on a brightly lit map would be computed correctly and drawn not
+at all: Foundry's global light is unconditional, illumination composites by taking the brightest
+contributor, so anything painted on top loses to the ambient beneath it. With it, a *darkness* at
+noon visibly drops the area a step.
 
 It also fixes the reverse problem. Brightness is information a GM needs, and a region drawn as
 *absence of light* stops reading as dark the moment anything reveals it — so under god's eye,
@@ -75,7 +90,8 @@ the most visible thing this switch does.
 
 ### Soft transitions
 
-Two settings, for the two kinds of edge a light has.
+Two sliders in **Configure Visuals**, for the two kinds of *source* edge on the map. The
+boundary between two brightness levels is a separate thing and has its own section below.
 
 **Light edge softening** widens the fade on a light whose shape has been clipped, cut by a
 wall, or drawn for a band overlap. Foundry's own value is 0.08; the default here is 0.3. It
@@ -89,11 +105,18 @@ only kind that draws a darkness source of its own. Foundry's value is 0.5, which
 defaults; because that is a fixed distance rather than a proportion, a large darkness looks
 harder-edged than a small one, and raising it widens only the picture.
 
-Neither affects where a light or a darkness *reaches*, only how its edge is drawn.
+*Ground edge softening* and *Band softening* used to sit here and are **gone**. Both blurred an
+individual mesh, which fades that mesh's transparency to reveal whatever is beneath it — that can
+soften a boundary between two brightness levels but cannot add one between them. One width now
+covers every brightness boundary in the module; see *Transitions between brightnesses* below.
 
-An ordinary darkness effect keeps a hard edge, deliberately. It is drawn by removing light
-rather than by painting a surface, so there is nothing there to fade — and a magical darkness
-with a crisp boundary is a reasonable thing for a magical darkness to look like.
+Neither of the remaining two affects where a light or a darkness *reaches*, only how its edge is
+drawn.
+
+One edge stays hard whatever these are set to: whether global illumination *reveals* a region
+is a yes-or-no question rather than a level, so on a globally-lit map a darkness keeps a crisp
+outline in the fog. That is deliberate — a magical darkness with a crisp boundary is a
+reasonable thing for a magical darkness to look like.
 
 ### Animated darkness
 
@@ -102,6 +125,49 @@ on and does nothing. **Animated darkness visibility** draws one faintly so the a
 It tints the area slightly darker than the rules say, which is the price; 0 turns it off, and
 it only ever applies to a darkness that actually has an animation set. A *deeper darkness* is
 unaffected either way — it already draws.
+
+One known limit: a creature with **blindsight** sees no animation on a darkness. Its darkness
+overlay is withheld entirely, on the grounds that a creature mapping a room by echo does not
+experience a darkness spell over it as anything at all.
+
+### Darkness is hidden where a creature cannot see
+
+A darkness bubble used to be drawn through walls — visible, and visibly *moving*, in rooms a
+player had no vision into. Two separate gaps in Foundry caused it, both fixed here.
+
+Foundry masks its light and colour layers to what the viewer can see, and does not mask darkness,
+so a darkness source drew everywhere it reached. And it paints unseen ground by reading the
+darkness-level texture — which holds nothing but static region data in a stock world, and holds
+this module's entire light model here. Fog was not failing to hide darkness; it was faithfully
+reproducing it.
+
+Both are corrected, so a darkness source is withheld outside vision the way a light already is,
+and unseen ground reads at one fixed brightness — the model's Dark, the same on every scene. It
+follows the observer, so with **GM sees through the selected token** on, the GM stops seeing
+darkness outside that token's vision too.
+
+On top of those, **a wall is treated the way a darkness already is**: ground you cannot see is
+drawn dark, rather than showing whatever the light model says is there. That is what actually
+stops a darkness spell or an umbra being visible — and visibly moving — through fog. It affects
+drawing only; what a creature can see is unchanged.
+
+One consequence worth knowing: an area with its own light level no longer shows through fog
+either, so an unlit cellar reads at scene brightness in unexplored area rather than dark. Static
+architecture is not secret, and the map already shows it.
+
+```js
+game.pf1Lighting.render.darknessMask()   // whether both are in force, and why they might not be
+```
+
+`applied: true` with `enableVisionMasking: false` is a scene with **Token Vision** switched off —
+Foundry disables every such mask there, and this one goes with them.
+
+### Walls and darkness
+
+A darkness spreads the way light does. A wall that lets light through — a window, an open
+doorway — lets a darkness through as well, and a wall that blocks light blocks it. Foundry on
+its own treats every wall as blocking darkness regardless of what the wall allows, including
+open doors; this module corrects that.
 
 ### How a light source works
 
@@ -124,10 +190,14 @@ brighter as far as every rule is concerned — the readout says so, and it is wh
 see by — but the renderer leaves it looking like plain overlapping light unless *Draw
 overlapping light bands brighter* is switched on.
 
-Three per-light flags tune this, all defaulting to the ordinary case: the set level
-(`emitTier`, default normal), how many steps the band raises (`steps`, default 1), and the
-ceiling on that increase (`cap`, default the set level). Most lights need none of them; a rare
-effect that brightens by two steps sets `steps: 2`.
+Three controls tune this, all defaulting to the ordinary case and all in **Lighting
+Configuration** on the light's own sheet: the set level, how many steps the band raises, and the
+ceiling on that increase. Most lights need none of them; a rare effect that brightens by two
+steps sets steps to 2.
+
+A light **standing inside** a darkness that could block it is out entirely — it does not shine
+out of the far side just because its radius reaches past the edge. Magical light that out-levels
+the darkness, and anything marked as *daylight*, is unaffected.
 
 Looking **through** a magical darkness dims what lies beyond it to the darkness's own level
 (see *Darkness shadows what lies beyond it*, below). With this on, that shadow is drawn: the
@@ -141,24 +211,249 @@ game.pf1Lighting.render.texture()   // what is painted, and the level under the 
 game.pf1Lighting.render.paint()     // the observer's shadow: tiers found, cells cut, cost
 game.pf1Lighting.render.stats()     // painted > 0 means the model is reaching the screen
 
-game.pf1Lighting.render.levels("bands")  // alternative tier→brightness table (see below)
-game.pf1Lighting.render.levels(null)     // back to the default
+game.pf1Lighting.render.levels("bands")  // try a whole alternative table, unsaved
+game.pf1Lighting.render.levels(null)     // reload the four saved settings
 ```
 
-Two tables are provided, and which one looks right is a matter for a real map. The default,
-`"even"`, spaces the five tiers equally and separates them as clearly as possible, at the cost
-of night scenes reading brighter than stock. `"bands"` renders each tier at the top of its own
-brightness range, so a dark scene stays dark, at the cost of squashing Bright against Normal.
-Neither is persisted — pick one by looking, and say which.
+### A scene's own light level
 
-This is the largest single change to how a scene looks, which is why it's a separate switch
-from the renderer — if the map looks wrong, turning this off narrows it in one step.
+The scene config's **Lighting** tab has a **Light level** dropdown — Bright, Normal, Dim or
+Dark — in place of Foundry's darkness slider. The model works in five tiers, so a slider offered
+precision that does not exist.
+
+The scene remembers the tier you picked, not just the number behind it. That means changing how
+bright a tier is drawn (below) carries every scene set to that tier along with it: set a scene
+to Dim, later decide Dim should be darker, and the scene follows without being reopened.
+
+Scenes you have never set through this dropdown are left alone — the dropdown shows their
+nearest tier so it reads sensibly, but nothing is written until you choose one. A scene with
+**darkness locked** is skipped and reported, because Foundry refuses darkness changes on it.
+
+```js
+game.pf1Lighting.render.scenes()        // which scenes carry a tier, and whether they match
+game.pf1Lighting.render.resyncScenes()  // force the pass
+```
+
+### An area with its own light level
+
+A room that stays dark on a sunlit map, without hand-placing anything.
+
+Draw a **region**, add the behaviour **Restrict Global Illumination**, and give it a light level
+and a mode. *At most* is the default and the one you want for an interior: it says *no brighter than
+this*, so the cellar stays dark at noon and does not turn into a light source at midnight when
+the sky outside drops below it. *Set to* overrides the scene outright, and *At least* is its
+other half.
+
+The region changes global illumination and nothing else. **Lights inside still light it** — in
+fact a torch works *better* in a room the region has darkened, because it has more to add — a
+*darkness* inside still suppresses it from the lower base, and the area itself casts no umbra.
+It is an unlit room, not magical darkness.
+
+Its edge is drawn hard, not feathered, since a region boundary follows a wall.
+
+Two things it needs to be visible at all:
+
+- **Model global illumination** must be on. It is the setting that lets anything paint darker
+  than global light; with it off the model still answers correctly and the map does not change.
+- The **scene's global illumination** must be enabled. These regions override the ambient, and
+  with global light off there is no ambient to override.
+
+```js
+game.pf1Lighting.areas.status()   // every area, and the three reasons one might do nothing
+game.pf1Lighting.probe.at()       // reports the ambient here next to the scene's
+```
+
+A region set to **Dim** on a brightly lit scene will look under-darkened. That is the same
+single-threshold limit that affects any darkness whose floor is Dim, not something specific to
+regions. Region elevation is ignored — the model is flat.
+
+Core's own *Adjust Darkness Level* behaviour does not work while this module is rendering; this
+replaces it.
+
+### Light spill through windows and open doors
+
+A room darkened by *Restrict Global Illumination* should still catch the daylight coming through
+its window. It does, with nothing to place: any wall on the border of such a region that **does
+not block light** becomes an aperture, and the outdoor light comes in through it.
+
+A window is simply a wall whose *Light* restriction is set to none. **An open door counts while
+it is open** — Foundry drops every restriction on a door's wall as it swings, so opening one lets
+the light in and closing it takes it away, with no configuration at all.
+
+What you get is a bright wedge spreading in from the gap, cut off by walls exactly as a light
+source would be, and then bands stepping down one level at a time — bright, normal, dim — until
+it runs out. The bands bend around the room, so standing one square to the side of the doorway is
+not the same as standing in the dark.
+
+Three things follow from the light being the *sky*, rather than anything you placed:
+
+- **A darkness over the window dims what comes through it.** Cast *darkness* on a window and the
+  spill starts at dim instead of bright, so it throws a tenth as far. *Deeper darkness* shuts it
+  off entirely, and a *daylight* cancelling that darkness restores it.
+- **At nightfall it stops on its own.** Once the sky is darker than the room, no window on the
+  scene qualifies and nothing is computed.
+- **A candle on the windowsill does not flood the room.** It already shines through the window on
+  its own, the way any light does, and spill deliberately ignores it.
+
+Spill is treated as global illumination by everything else in the module — the readout, what a
+creature can see, perception, and any darkness cast over it — because it *is* global
+illumination, reaching ground it otherwise could not.
+
+**Settings → PF1 Lighting → Light Spill → Configure Light Spill** holds the numbers: an on/off
+switch, the cone angle (105° by default), how far the wedge throws for each outdoor light level
+(40 / 20 / 10 feet for bright, normal and dim), and how far each falloff band runs (10 feet). So bright daylight reaches forty feet at full strength and sixty
+before it gives out.
+
+**Transition width** sits in the same window and is not a spill setting: it is the one distance
+every brightness boundary in the module fades over. It is edited here because a spill falloff is
+where it shows most. See *Transitions between brightnesses* below.
+
+Like the region itself, it needs **Model global illumination** on to be visible.
+
+```js
+game.pf1Lighting.spill.stats()   // windows found, bands drawn, and why there might be none
+game.pf1Lighting.spill.at({ x: 1000, y: 1200 })   // which bands cover a point
+game.pf1Lighting.spill.config()  // open the settings window
+game.pf1Lighting.render.gradient()   // one entry per window: triangles, plateau, draw order
+```
+
+Two things worth knowing about how the gradient is drawn. Where two windows light the same floor,
+the overlap is resolved by draw order rather than by taking the brighter of the two — the *model*
+is still exact there, so `spill.at()` will tell you the real answer even when the picture is a
+level off. And `canvas.effects.getDarknessLevel()` inside a spill reports the falloff's midpoint
+rather than the value under the cursor, because a gradient has no single level to report;
+`game.pf1Lighting.render.meshAt()` reads the rendered texture back instead.
+
+Every wall edit recomputes the spill for the whole scene, so heavy wall work on a map with several
+windows may feel a little slower than it used to. The geometry is cached between edits and only the
+windows themselves are re-swept.
+
+### How bright each tier is drawn
+
+**Settings → PF1 Lighting → Visuals → Configure Visuals** holds four sliders — **Bright**,
+**Normal**, **Dim**, **Dark** — setting how dark the ground at each tier is painted, from 0 (full
+daylight) to 1 (unlit). They default to evenly spaced
+values, and they should descend in brightness: Bright lowest, Dark highest. The gaps between
+them are what makes one tier readable against the next, so this is the dial to reach for if the
+map looks flat or if night scenes read too bright.
+
+Supernatural Dark is drawn at the same level as Dark. Dark already means *no light*, so there is
+nothing below it to reserve; the two are told apart by the darkness effect's own overlay
+instead.
+
+Changing any of them re-solves how light sources paint as well, so lights and ground stay on the
+same ladder.
+
+**These are absolute, and they apply to lights as well as to ground.** A tier is a brightness, not
+a brightening: a torch's Normal ring is the same colour as ground at Normal, in a dark cellar and
+in a dim room alike, whatever the scene's global illumination is set to.
+
+That takes two changes to how Foundry draws a light, because Foundry gets it wrong in two separate
+ways. It brightens each light *relative to whatever it is standing on*, so the same ring reads
+about a third of the way toward Bright when it lands on dim ground. And it draws every light as a
+**radial falloff**, so the nominal level only ever exists at the very centre and everything else is
+a fade toward the background — which means no amount of pinning the endpoints gives you a light
+level you can actually see.
+
+So the whole scene is drawn from one brightness map instead: ground, light and shadow all painted
+as regions at fixed levels, with controlled transitions between them. A light contributes its two
+zones to that map; where lights overlap, the brighter wins; ground the viewer cannot see is put
+back to Dark last, so a torch behind a wall cannot shine through. Lights keep their colour, their
+flicker, and what they let a creature see by — only the brightness moves.
+
+### Transitions between brightnesses
+
+**Every brightness boundary fades over the same distance**, set once by *Transition width* (in the
+Light Spill window, since a spill falloff is where it shows most). A room's edge, a darkness rim, a
+light's two zones, a window's falloff and the edge of what you can see all use it. A boundary two
+steps apart — bright straight to dark — is not made wider for it, because a wider fade would read
+as *less* of a step.
+
+Set it to 0 and every brightness boundary becomes a hard edge, all at once.
+
+It lives in **Configure Visuals** alongside the other appearance numbers, and is repeated in the
+Light Spill window because a spill falloff is where it shows most. Both edit the same setting.
+
+**Unseen ground dimming**, in Configure Visuals, is the companion: how far explored ground outside
+your current vision is taken toward black, on top of already being drawn at Dark. Foundry hard-codes
+that at 0.5, which stacks heavily on dark terrain; this defaults to 0.2. Ground you have never
+visited stays solid black either way.
+
+**Where two lights' outer bands overlap they brighten each other** — each band raises the level a
+step, to that light's own cap, so two overlapping dim bands read as Normal. The overlap is drawn as a
+region in the same brightness map as everything else, so it fades over the same transition width and
+the readout inside it reports the level the model says is there.
+
+```js
+game.pf1Lighting.render.gradient()   // ground, light and clamp meshes, and the per-light cache
+game.pf1Lighting.render.zones()      // every light's zones in luminance, against the ladder
+game.pf1Lighting.overlay.draw()      // the model's own cells — band overlaps in hot yellow
+game.pf1Lighting.overlay.levels()    // what the renderer painted
+```
+
+Both take the same argument: call one bare to toggle it, or pass `false` to turn it off.
+
+```js
+game.pf1Lighting.overlay.draw(false)
+game.pf1Lighting.overlay.levels(false)
+```
+
+To go back to Foundry's own rendering, in increasing order of how much it puts back:
+
+```js
+game.pf1Lighting.settings("lightsInTexture", false)      // radial falloff again, levels still fixed
+game.pf1Lighting.settings("absoluteLightLevels", false)  // relative brightening as well
+```
+
+Two whole alternatives are also available from the console for trying against a live map:
+`"even"` gives Supernatural Dark a level of its own, and `"bands"` renders each tier at the top
+of its own brightness range, so a dark scene stays dark at the cost of squashing Bright against
+Normal. Neither is saved — the four settings are the stored answer, and `render.levels(null)`
+puts them back.
+
+This is the largest single lever on how a scene looks, which is why it sits at the top of the
+Configure Visuals window with the softening sliders under it.
+
+### Darkvision sees grey where it is dark, and colour where it is not
+
+A creature that sees in black and white falls back on that sense **where there is no light**. Where
+there is light it uses its eyes, and its eyes see colour. So the module greys the parts of the map
+its own brightness model calls dark, and leaves everything at Dim and above in full colour.
+
+Foundry instead greys the whole canvas the moment a darkvision token becomes the viewer, so a
+torchlit room and the pitch-dark corridor behind it look equally colourless.
+
+The boundary between grey and colour is the *same* boundary as the one between brightnesses — it is
+read from the same map, so it fades over the same transition width and moves when you retune the
+tier ladder.
+
+Foundry desaturates in five different places, three of which take their own copy of the map and
+repaint it, so correcting them one at a time does not work. All five are switched off and a single
+pass replaces them, applied after the scene has finished compositing. Everything the observer looks
+at goes through it together — terrain, tokens, tiles, and the tint a light casts — so a torch
+burning inside a magical darkness is grey light rather than a coloured wash on a grey floor, and a
+creature standing in a dark room is not in full colour.
+
+**Greyscale in explored fog**, in Configure Visuals, decides how much of this reaches ground you
+have explored but cannot currently see. At 0 remembered terrain stays in full colour; at 1 it is
+treated exactly like ground in view. It defaults to **0.5** because the boundary is your own vision
+polygon and it moves with you — the two extremes both draw attention to that edge, and the middle
+does not.
+
+```js
+game.pf1Lighting.render.greyscale()   // is it running, and what the ramp resolved to
+```
+
+To go back to Foundry's whole-canvas version:
+
+```js
+game.pf1Lighting.settings("regionalGreyscale", false)
+```
 
 ### Perception
 
-Off by default. **Perceive by light level** (world setting) decides what a creature can see
-from the lighting model rather than from Foundry's raw light polygons. Requires **Disable
-native darkness suppression**, for the same reason the renderer does.
+What a creature can see is decided from the lighting model rather than from Foundry's raw light
+polygons.
 
 | Sense | Rule |
 | --- | --- |
@@ -167,11 +462,18 @@ native darkness suppression**, for the same reason the renderer does.
 | *See in darkness* | works everywhere, at any range, and reveals terrain across its whole line of sight |
 | *True seeing* | the same, bounded to the spell's range |
 | *See invisibility* | in range, or wherever ordinary sight would work |
+| Blindsight | unaffected by the **blinded** condition — see below |
 
 A creature in **magical** Supernatural Dark is blinded outright, unless it has *see in
 darkness*. Mundane darkness — a source at level 0 — never blinds and never blocks sight
 through it, however dark it is: standing on an unlit hillside you can still see a lit window
 thirty feet away.
+
+**The blinded condition does not take away blindsight.** Blindsight is not sight, so a blinded
+creature that has it keeps perceiving — terrain and tokens both — out to its blindsight range,
+and no further. Its darkvision and *true seeing* are gone, because those are sight, and it
+detects only through blindsight rather than by seeing. Foundry on its own blanks such a
+creature's view entirely.
 
 *See in darkness* is worth calling out because **PF1 models the sense and then never uses
 it** — it has a trait and a change flag and appears on the sheet, but nothing in Foundry has
@@ -194,9 +496,9 @@ either.
 
 ### Umbra — darkness shadows what lies beyond it
 
-On by default, alongside **Perceive by light level**. **Darkness shadows what lies beyond
-it** (world setting) makes light levels *observer-relative*: looking through a magical
-darkness lowers everything past it to the darkness's own level.
+On by default. **Darkness shadows what lies beyond it** (world setting) makes light levels
+*observer-relative*: looking through a magical darkness lowers everything past it to the
+darkness's own level.
 
 So a lit room seen through a *darkness* spell is as dark as the spell, and a creature with
 ordinary sight can no longer pick tokens out of it. A creature with darkvision still can —
@@ -244,17 +546,36 @@ with nothing selected they get the union of the tokens they own or observe (PF1'
 vision-shared token stay a vision source even when a player has selected something else, so
 selecting one token didn't actually narrow their view. It does now.
 
+### Brightness map (debug)
+
+**The tool to reach for when the map does not look the way you expect.** It draws what the
+renderer is actually drawing from — every brightness region, coloured and labelled by tier, plus
+each light's two zones, each spill band, and the count of clamps.
+
+```js
+game.pf1Lighting.overlay.levels()
+```
+
+It follows a repaint, so it stays correct while you drag a token or a light.
+
+The one thing it is best at: **if a transition on screen is not sitting on a line in this overlay,
+the renderer invented it.** That distinction — model or render — is not answerable any other way,
+and it is the first question worth asking about anything that looks wrong.
+
+The console line beside it reports counts by tier plus `lights`, `halos`, `clamps` and
+`spillBands`. Zero lights with torches on the map means lights are not being drawn as brightness
+regions, so Foundry is drawing them its own way and this overlay is describing a different picture
+from the one on screen.
+
 ### Field cell overlay (debug)
 
-Draws the lighting model's computed cells on the canvas — blue for unsuppressed light,
-orange for reduced, violet for darkness fill. Off by default; a client setting, or:
+An older, narrower view: the model's cells coloured by **kind** rather than by brightness — blue
+for unsuppressed light, orange for reduced, violet for darkness fill. It answers "how did the field
+get subdivided", where the brightness map above answers "what is being painted".
 
 ```js
 game.pf1Lighting.overlay.toggle()
 ```
-
-Development aid rather than a play feature, but it is how the subdivision gets verified
-before anything renders for real.
 
 ### Console
 
@@ -463,40 +784,149 @@ source blinds a token outright (DESIGN.md §4.1.1 lists all five).
 because nothing is re-applying suppression. Turn on **Render the lighting model** with it.
 It is the prerequisite for both that and **Perceive by light level**.
 
-## Configuring a darkness source
+## Configuring a light or a darkness
 
-Place an **AmbientLight** with *Negative* (darkness) enabled. With no further setup it
-behaves as a 2nd-level *darkness* spell — reduce one tier, blocking mundane light and
-magical light of level 2 or lower.
+Open any **ambient light**, or a token's **Light** tab, and look for **Lighting Configuration**
+on the same page as the placement fields. Everything the model reads is there.
 
-To override, set a flag on the light document:
+Foundry's own two radius fields have moved into that section, next to the levels they belong
+to, and the *Darkness source* checkbox has moved to the head of it. They are the same fields in
+a new place, not copies — the originals are hidden rather than duplicated, so nothing can end
+up with two conflicting values.
+
+### Presets
+
+The first control fills in everything else. Eleven ship with the module:
+
+| | |
+| --- | --- |
+| Candle | +1 step to 5 ft, no further than normal |
+| Torch | normal to 20 ft, +1 to 40 |
+| Lamp, common | normal to 15 ft, +1 to 30 |
+| Lantern, bullseye | normal to 60 ft, +1 to 120 |
+| Lantern, hooded | normal to 30 ft, +1 to 60 |
+| Sunrod | normal to 30 ft, +1 to 60 |
+| *Continual flame* | magical, spell level 2 — normal to 20 ft, +1 to 40 |
+| *Light* | magical, cantrip — normal to 20 ft, +1 to 40 |
+| *Daylight* | magical, level 3 — bright to 60 ft, +1 to 120, counts as daylight |
+| *Darkness* | magical, level 2 — one step down for 20 ft, no darker than dark |
+| *Deeper darkness* | magical, level 3 — two steps down for 60 ft, down to supernatural dark |
+
+The **bullseye lantern lights a cone** in the rules, and the preset sets radii only — set the
+Angle field by hand after applying it. Presets deliberately leave the angle alone so that
+switching between them never traps a light in a cone it did not ask for.
+
+A preset is a starting point, not a mode. Changing any field it governs sets the selector back
+to **Custom**, and it stays there — setting the values back by hand does not restore the name.
+The label records where the numbers came from, which is not something that can be worked out by
+looking at them afterwards.
+
+Radii are the exception: a preset fills them in, but widening a torch's radius to light a
+bigger room does not stop it being a torch.
+
+#### Editing the presets
+
+**Settings → PF1 Lighting → Lighting Presets → Edit Presets** opens a window that edits the
+table itself: retune the shipped entries to your table's numbers, or add your own.
+
+The window edits one preset at a time and holds everything in a working copy — switching between
+presets keeps your edits, and closing without saving discards them. **Restore defaults** puts the
+world back on the module's own table, and back to tracking it as the module changes.
+
+Two things worth knowing:
+
+- **Editing a preset does not change lights already placed from it.** A preset fills fields in at
+  the moment you choose it and is never read again afterwards.
+- **Deleting one is harmless.** A light placed from a preset that no longer exists reads as
+  Custom and renders exactly as before — the name is a record of where the numbers came from,
+  and nothing depends on it.
+
+Renaming keeps a preset's identity, so lights placed from it follow the new name.
+
+### A light
+
+| Control | What it does |
+| --- | --- |
+| **Magical** | Magical light out-levels a darkness of its own level or lower and keeps shining |
+| **Spell level** | Only meaningful on magical light, and greyed out otherwise |
+| **Counts as *daylight*** | Annihilates with a darkness of its level or lower — both effects vanish in the overlap |
+| **Brightness — level, radius** | The level this light provides outright, out to that radius |
+| **Increase brightness — radius, steps, maximum** | Beyond the inner radius it raises whatever level is already there by that many steps, never past the maximum |
+
+The last row is what a torch actually does: *normal light to 20 feet, one step up to 40*. Steps
+defaults to 1 and the maximum defaults to the set level, so an ordinary light needs neither
+touched.
+
+### A darkness
+
+| Control | What it does |
+| --- | --- |
+| **Radius** | How far it reaches. A darkness has one radius, not two |
+| **Spell level** | Level 0 is *Mundane / unlit area* — dark, but you can still see out of it. Level 1 and up cast an umbra |
+| **Effect** | *Decrease by* n steps, with a floor; or *Set level to* a named tier |
+
+*Set level to* never brightens. Over ground that is already darker than the target, it leaves
+it alone.
+
+### From a macro
+
+The same table is reachable in code, and returns the flat update a document wants:
 
 ```js
-light.setFlag("pf1-lighting", "config", {
-  kind: "magical",
-  level: 3,
-  transform: { op: "reduce", steps: 2 },   // deeper darkness
-  eligibility: "preset:darkness",
-  blocksPath: true,
-});
+light.document.update(game.pf1Lighting.presets.apply("deeperDarkness"));
+game.pf1Lighting.presets.table()        // every preset and its values, as currently configured
+game.pf1Lighting.presets.builtIn        // the module's own table, whatever this world has done
+game.pf1Lighting.presets.edit()         // open the editor
+game.pf1Lighting.presets.reset()        // back to the built-ins
 ```
 
-A light's **Bright** radius (our innermost tier, above Normal) is also a flag, in scene
-distance units, and defaults to 0:
+Two settings the model reads have no control and are not meant to: which lights a darkness
+*extinguishes* rather than merely dims (the rule is already Pathfinder's), and whether a
+magical darkness casts an umbra (it follows from being magical). Both remain settable through
+the `pf1-lighting.config` flag if a scene ever needs an exception.
+
+## Settings
+
+Seven switches and three windows.
+
+| | |
+| --- | --- |
+| **Visuals** | Brightness of each tier, the two source-edge distances, the one brightness transition width, unseen-ground dimming, greyscale in explored fog, see-in-darkness brightness |
+| **Lighting Presets** | The named light and darkness configurations offered on a light's sheet |
+| **Light Spill** | Whether windows let the daylight in, how wide the wedge is, how far it reaches, and the transition width (the same one Visuals holds) |
+| Show light level | Your own readout chip |
+| Light level is GM only | Whether players get one at all — on by default |
+| Explain the light level | The *why* line. GM only, whoever the readout is shown to |
+| Animate ordinary darkness | Draws an ordinary darkness faintly so its animation has a surface |
+| Darkness shadows what lies beyond it | Observer-relative light levels — the umbra |
+| GM sees through the selected token | GM only. Also **Alt+O** and a token-control toggle |
+
+Everything else the module does is simply on. The switches that used to gate the renderer, the
+global-illumination model and the perception layer were there to bisect problems during
+development, and they are gone from the menu rather than from the code — a switch whose value is
+*"the module works"* is not a preference.
+
+They are all still reachable, and a world that explicitly turned one off before this change keeps
+it off, so this is the first place to look if the module appears to do nothing:
 
 ```js
-light.setFlag("pf1-lighting", "brightRadius", 20);
+game.pf1Lighting.settings()                        // every setting, with hidden: true marked
+game.pf1Lighting.settings("renderEnabled")         // read one
+game.pf1Lighting.settings("renderEnabled", true)   // write one
 ```
 
 ## Not implemented yet
 
-Low-light vision, grayscale darkvision, interiors and apertures, diffuse spill, dim-light
-concealment.
+Low-light vision, dim-light concealment.
 
-The largest gap is **global illumination as a real light source** — until it is one, a
-*darkness* cast on a brightly lit map is computed correctly and drawn not at all. The same
-rework is what would let an umbra be *painted* rather than only detected, so the shadowed
-side of a darkness currently goes undetectable while still looking lit.
+Light spill does not bend around a corner into true shadow — the far leg of an L-shaped room,
+out of sight of the window, stays dark with a hard edge. That boundary is a real one, but a soft
+wrap is possible later if it reads badly.
+
+One rendering gap remains, and it is narrow: a region dimmed by an umbra is drawn dimmer only
+where global illumination lit it. Ground lit by a *light source* is not dimmed, because a
+light's own mesh composites over the background rather than being darkened by it. A darkness
+strong enough to remove the light entirely is unaffected — that case works.
 
 ## Requirements
 

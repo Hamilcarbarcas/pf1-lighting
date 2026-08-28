@@ -28,10 +28,13 @@ import {
   LEVEL,
   BAND_LEVEL,
   DARK_ANIMATION,
+  MODULE_ID,
   RENDER_SHAPE,
   STRENGTH,
+  TIERS,
   isSynthetic,
 } from "../constants.mjs";
+import { TIER, darknessTable } from "../model/tiers.mjs";
 import { darknessPadding, edgeOffset } from "./soften.mjs";
 import {
   currentSaturation,
@@ -119,13 +122,202 @@ export function patchVisibility() {
  * @param {object} source
  * @param {number|undefined} level - The inner zone's level
  * @param {number|undefined} [bandLevel=level] - The outer band's, when it differs
+ * @param {{inner: number, band: number, base: number}|undefined} [tiers] - The same two zones as
+ *   **tiers**, plus the ground tier beneath them, for the absolute path (§6.2.9). See {@link TIERS}.
  * @returns {boolean} Whether the assignment changed anything
  */
-export function setLevel(source, level, bandLevel = level) {
-  if (source[LEVEL] === level && source[BAND_LEVEL] === bandLevel) return false;
+export function setLevel(source, level, bandLevel = level, tiers = undefined) {
+  const previous = source[TIERS];
+  const same =
+    previous === tiers ||
+    (!!previous &&
+      !!tiers &&
+      previous.inner === tiers.inner &&
+      previous.band === tiers.band &&
+      previous.base === tiers.base);
+  if (source[LEVEL] === level && source[BAND_LEVEL] === bandLevel && same) return false;
   source[LEVEL] = level;
   source[BAND_LEVEL] = bandLevel;
+  source[TIERS] = tiers;
   return true;
+}
+
+/* -------------------------------------------- */
+/*  Absolute zone colours — §6.2.9              */
+/* -------------------------------------------- */
+
+export const SETTING_ABSOLUTE = "absoluteLightLevels";
+
+/**
+ * Are a light's zones painted at a fixed brightness per tier?
+ *
+ * @remarks
+ * **Gated on the global-illumination takeover, not on the renderer.** With the takeover off,
+ * Foundry's own darkness level drives the ground and the tier table describes nothing that is on
+ * screen — pinning lights to it would make them the one thing ignoring the scene. The same
+ * reasoning ties `levels.applyLightWeights` to that setting, and this is the other half of it.
+ *
+ * Read here rather than imported from `render/ambient.mjs`, which imports this file's neighbours;
+ * `render/paint.mjs` reads the renderer's switch the same way and for the same reason.
+ */
+function absolute() {
+  try {
+    return (
+      game.settings.get(MODULE_ID, SETTING_ABSOLUTE) === true &&
+      game.settings.get(MODULE_ID, "ambientTakeover") === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function registerSettings() {
+  game.settings.register(MODULE_ID, SETTING_ABSOLUTE, {
+    name: "Fixed brightness per light level",
+    hint:
+      "Paints a light's zones at the same brightness the ground would be at that tier, instead of " +
+      "Foundry's default of brightening relative to whatever is underneath. Without it the same " +
+      "Normal-lit ring reads brighter in a dim room than in a dark one, because the scene's global " +
+      "illumination sets what it is measured against. Requires Model global illumination.",
+    scope: "world",
+    // No control surface, matching the module's other corrections of core behaviour.
+    config: false,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      if (canvas?.ready) canvas.perception.update({ refreshLighting: true });
+    },
+  });
+}
+
+/**
+ * The colour a tier's ground is painted, as the baseline sampler computes it.
+ *
+ * @remarks
+ * The **same formula, deliberately**: `baseline-illumination.mjs:21` is
+ * `mix(ambientDaylight, ambientDarkness, level)`, and `Color#mix(other, w)` is `a + (b - a) * w`.
+ * A light asking for Normal therefore lands on exactly the pixel value ground at Normal has, and
+ * the two cannot drift because there is one expression of the ladder.
+ *
+ * @param {number} tier
+ * @returns {object|null} A `Color`
+ */
+function tierColor(tier) {
+  const colors = canvas?.colors;
+  if (!colors?.ambientDaylight || !colors?.ambientDarkness) return null;
+  const table = darknessTable();
+  const level = table[tier] ?? table[TIER.DARK];
+  return colors.ambientDaylight.mix(colors.ambientDarkness, level);
+}
+
+/**
+ * Hand a source's shader the three zone colours outright, bypassing the relative computation.
+ *
+ * @remarks
+ * **Core's own branch, not a patch.** `COMPUTE_ILLUMINATION` already has an `else` that takes
+ * `colorBackground`, `colorDim` and `colorBright` as uniforms (`base-lighting.mjs:373-378`); all
+ * `computeIllumination = false` does is select it. That branch also skips `getCorrectedColor`
+ * entirely, which is why nothing here goes through `levelForTier` — the tier *is* the answer, and
+ * translating it into one of Foundry's four levels first would put the relative step back.
+ *
+ * **A per-source constant is exact here rather than an approximation**, and that is §6.1 paying
+ * off: every source is clipped to a cell, and a cell is a region of uniform treatment, so the
+ * ground tier under a source does not vary across the part of it that draws. The relative path
+ * needs a per-fragment background precisely because it has no such guarantee.
+ *
+ * A zone no brighter than the ground it falls on is given the ground's own colour, which is what
+ * `levelForTier`'s `UNLIT` means on the other path: `FRAGMENT_END` mixes toward
+ * `computedBackgroundColor`, so all three equal leaves the ground exactly as the texture painted
+ * it — a torch at noon draws nothing, as it should.
+ */
+function applyAbsoluteZones(shader, tiers) {
+  const u = shader.uniforms;
+
+  // **The illumination layer only, selected by capability rather than by name.** All three layers
+  // — background, illumination, coloration — share `_updateCommonUniforms`, and the GLSL declares
+  // all three colours for each of them (`base-lighting.mjs:107-112`); but only the illumination
+  // shader seeds `colorDim`/`colorBright` in `defaultUniforms`, so on the other two they are
+  // `undefined` in JS and `Color#applyRGB` throws inside the ticker (reported 2026-08-27).
+  //
+  // Testing for them is the fix and it is also the right selection, not merely a safe one. Those
+  // two colours are read by exactly one thing, `TRANSITION` (`base-lighting.mjs:341`), which only
+  // the illumination shader's fragment program includes — the other two layers paint the map
+  // artwork and the light's tint, neither of which was ever part of §6.2.9's problem. The
+  // background layer computes `computedBackgroundColor` per fragment from our texture, which is
+  // already absolute; switching it to a per-source constant would be a change nobody asked for.
+  if (!u?.colorBright || !u?.colorDim || !u?.colorBackground) return;
+
+  const base = tierColor(tiers.base);
+  if (!base) return;
+
+  // `max`, because a light may not darken. The model already refuses to lower a level with a
+  // light source (§3.2.1); this is the render side of the same rule and it is what reproduces
+  // `UNLIT` without a second code path.
+  const inner = tierColor(Math.max(tiers.inner, tiers.base)) ?? base;
+  const band = tierColor(Math.max(tiers.band, tiers.base)) ?? base;
+
+  u.computeIllumination = false;
+  base.applyRGB(u.colorBackground);
+  inner.applyRGB(u.colorBright);
+  band.applyRGB(u.colorDim);
+  // The else-branch takes `computedDarknessLevel` from this uniform. It reaches the `globalLight`
+  // discard — false for every source that gets here — and a darkness source's colour tint, which
+  // never gets here either. Set from the ground tier so it is at least the truth.
+  u.darknessLevel = darknessTable()[tiers.base] ?? u.darknessLevel;
+}
+
+/**
+ * Debug readout — **what each light's zones actually resolved to**, as luminance.
+ *
+ * @remarks
+ * Written for one question, because it is the question the whole of §6.2.9 turns on and it cannot
+ * be answered by looking at the map: *does the same tier come out the same colour on two different
+ * grounds?* The ladder is reported alongside, so a zone can be read against it directly — a Normal
+ * ring should equal the `Normal` entry, and under the relative path it will not.
+ *
+ * Rec. 709, matching `levels.deriveWeights`, so the numbers here and the weights it solves are
+ * comparable.
+ */
+export function zones() {
+  const colors = canvas?.colors;
+  if (!colors?.ambientDaylight) return null;
+
+  const lum = (rgb) => 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2];
+  const at = (tier) => +lum(tierColor(tier)?.rgb ?? [0, 0, 0]).toFixed(3);
+
+  const globalSource = canvas.environment?.globalLightSource;
+  const lights = [...(canvas.effects?.lightSources?.values() ?? [])].filter((s) => s !== globalSource);
+
+  const report = {
+    absolute: absolute(),
+    // The ladder every zone below should land exactly on, once `absolute` is true.
+    ladder: {
+      Bright: at(TIER.BRIGHT),
+      Normal: at(TIER.NORMAL),
+      Dim: at(TIER.DIM),
+      Dark: at(TIER.DARK),
+    },
+    lights: lights.slice(0, 6).map((source) => {
+      const u = source.layers?.illumination?.shader?.uniforms;
+      const tiers = source[TIERS];
+      return {
+        name: source.sourceId ?? source.constructor?.name,
+        synthetic: isSynthetic(source),
+        // What the model decided.
+        tiers: tiers ? { ...tiers } : null,
+        // **What the shader is running.** `computeIllumination: true` here with `absolute: true`
+        // above is the failure this readout exists for — the uniforms were set and something
+        // re-uploaded them afterwards.
+        computeIllumination: u?.computeIllumination,
+        inner: u ? +lum(u.colorBright).toFixed(3) : null,
+        band: u ? +lum(u.colorDim).toFixed(3) : null,
+        ground: u ? +lum(u.colorBackground).toFixed(3) : null,
+        drawn: source.active === true && source[HIDDEN] !== true,
+      };
+    }),
+  };
+  console.error(`${MODULE_ID} | light zones`, report);
+  return report;
 }
 
 /**
@@ -289,6 +481,12 @@ export function applyMixin() {
         shader.uniforms.dimLevelCorrection = this.constructor.getCorrectedLevel(
           this[BAND_LEVEL] ?? level
         );
+
+        // §6.2.9. Both paths are kept and the corrections above are set either way: the absolute
+        // one is switched off with the takeover, and then the relative one is Foundry's own
+        // behaviour rather than a fallback we have to maintain.
+        const tiers = this[TIERS];
+        if (tiers && absolute()) applyAbsoluteZones(shader, tiers);
       }
 
       /**
@@ -486,4 +684,84 @@ export function applyMixin() {
     Object.defineProperty(Patched, "name", { value: `PF1LightingClipped${slot}` });
     CONFIG.Canvas[slot] = Patched;
   }
+}
+
+/* -------------------------------------------- */
+/*  Walls, for darkness sweeps                  */
+/* -------------------------------------------- */
+
+let wallsPatched = false;
+
+/**
+ * Let a darkness source respect the *light* restriction of the walls it sweeps.
+ *
+ * @remarks
+ * **A core oversight, not one of ours** — but this module leans on darkness sources harder than
+ * core does, so it surfaces here. Reported by Patrick 2026-08-26: darkness was being blocked by
+ * windows and by **open doors**.
+ *
+ * `ClockwiseSweepPolygon#_testEdgeInclusion` decides whether an edge blocks by indexing the edge
+ * with the polygon's own type (`clockwise-sweep.mjs:244`):
+ *
+ * ```js
+ * if ( edge[type] === CONST.WALL_SENSE_TYPES.NONE ) return false;
+ * ```
+ *
+ * That works for `sight`, `light`, `sound` and `move`, because those are the four
+ * `WALL_RESTRICTION_TYPES` and `Edge` carries one property per restriction
+ * (`edges/edge.mjs:40-43`). **`darkness` is not one of them.** It is a *source* type —
+ * `PointDarknessSource.sourceType` — and `Edge` has no such property, so `edge.darkness` is
+ * `undefined`, which is not `NONE`, so **every edge blocks every darkness source**.
+ *
+ * The open door is what makes it unambiguous rather than a matter of taste. `Wall#createEdge`
+ * zeroes all four restrictions on an open door (`placeables/wall.mjs:225`) — the edge remains,
+ * blocking nothing. A darkness sweep asks for a fifth restriction that was never zeroed because
+ * it never existed, and stops at the doorway.
+ *
+ * `applyThreshold` has the same shape one level down (`edges/edge.mjs:213-215`): it reads
+ * `this.threshold[sourceType]`, so a proximity or attenuation wall configured for light never
+ * applies to darkness either.
+ *
+ * ## Swapping the type, rather than teaching `Edge` a new word
+ *
+ * Both problems are the *same* one — one string used as two kinds of name — so the fix is
+ * applied where the string is read rather than where the data lives. `edgeTypes` is still
+ * computed from `"darkness"` before this runs, which is the part that must not change: it is
+ * what makes a darkness sweep respect `light`-type edges at `priority + 1`
+ * (`clockwise-sweep.mjs:132-134`) and is unrelated to wall restrictions.
+ *
+ * The alternative was a `darkness` accessor on `Edge.prototype` aliasing `light`. Rejected: it
+ * cannot reach `threshold.darkness`, which is a plain per-instance object, so it would fix half
+ * the bug and leave the half that is harder to notice.
+ *
+ * **Darkness spreads like light** is the semantic being asserted, and it is the one a GM already
+ * expects — a window that lets light through lets a *darkness* through, and an open doorway
+ * stops neither.
+ */
+export function patchDarknessWalls() {
+  if (wallsPatched) return;
+  const Base = CONFIG.Canvas.polygonBackends?.darkness;
+  if (!Base || Base.pf1LightingDarknessWalls) return;
+  wallsPatched = true;
+
+  const Patched = class extends Base {
+    static pf1LightingDarknessWalls = true;
+
+    /** @override */
+    _testEdgeInclusion(edge, edgeTypes) {
+      // Synchronous, restored in `finally`, and confined to one call — the same idiom
+      // `patchVisibility` and `umbra-mask` use for swapping a property around core's own method.
+      const config = this.config;
+      if (config?.type !== "darkness") return super._testEdgeInclusion(edge, edgeTypes);
+      config.type = "light";
+      try {
+        return super._testEdgeInclusion(edge, edgeTypes);
+      } finally {
+        config.type = "darkness";
+      }
+    }
+  };
+
+  Object.defineProperty(Patched, "name", { value: "PF1LightingDarknessSweep" });
+  CONFIG.Canvas.polygonBackends.darkness = Patched;
 }

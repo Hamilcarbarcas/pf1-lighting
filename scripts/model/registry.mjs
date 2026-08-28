@@ -29,8 +29,9 @@
 
 import { MODULE_ID, isSynthetic } from "../constants.mjs";
 import { brightnessAt, contributionAt, emissionOf, ZONE } from "./ramp.mjs";
-import { DEFAULT_EMITTER, DEFAULT_SUPPRESSOR } from "./contest.mjs";
+import { DEFAULT_EMITTER, DEFAULT_SUPPRESSOR, extinguishes } from "./contest.mjs";
 import { TIER, tierCeiling, tierFromDarkness } from "./tiers.mjs";
+import { ambientTierAt } from "./areas.mjs";
 
 /* -------------------------------------------- */
 /*  Entries                                     */
@@ -122,8 +123,8 @@ class Entry {
  *
  * @returns {number} 0..1
  */
-export function ambientBrightness() {
-  return tierCeiling(ambientTier());
+export function ambientBrightness(point) {
+  return tierCeiling(ambientTier(point));
 }
 
 /**
@@ -136,11 +137,18 @@ export function ambientBrightness() {
  *
  * Read live rather than cached on an entry: Foundry *animates* darkness transitions, so
  * `darknessLevel` slides between values without firing a document update.
+ *
+ * **Position-dependent since §10.7.** A region carrying an *Ambient Light Level* behaviour moves
+ * the base inside it, so this takes an optional point. Omitting it gives the scene's own tier,
+ * which is what the field's whole-scene reads want; the point query passes one. On a scene with
+ * no such region the two answers are identical and `areas.ambientTierAt` returns immediately.
+ *
+ * @param {{x: number, y: number}} [point]
  */
-export function ambientTier() {
+export function ambientTier(point) {
   const darkness =
     canvas?.environment?.darknessLevel ?? canvas?.scene?.environment?.darknessLevel ?? 0;
-  return tierFromDarkness(darkness);
+  return ambientTierAt(point, tierFromDarkness(darkness));
 }
 
 /** An emitter: contributes brightness. */
@@ -160,7 +168,7 @@ class EmitterEntry extends Entry {
   contributionAt(point) {
     // Global illumination is a set level with no origin and no band. `ambientTier` is read
     // live, so a darkness *animation* cannot leave it stale.
-    if (this.isGlobal) return { zone: ZONE.INNER, tier: ambientTier() };
+    if (this.isGlobal) return { zone: ZONE.INNER, tier: ambientTier(point) };
     const distance = Math.hypot(point.x - this.source.x, point.y - this.source.y);
     return contributionAt(distance, this.emission);
   }
@@ -178,7 +186,7 @@ class EmitterEntry extends Entry {
    * @returns {number} 0..1
    */
   brightnessAt(point, base = TIER.DARK) {
-    if (this.isGlobal) return ambientBrightness();
+    if (this.isGlobal) return ambientBrightness(point);
     const distance = Math.hypot(point.x - this.source.x, point.y - this.source.y);
     return brightnessAt(distance, this.emission, base);
   }
@@ -192,6 +200,7 @@ class SuppressorEntry extends Entry {}
 /* -------------------------------------------- */
 
 let emitterList = null;
+let activeEmitterList = null;
 let suppressorList = null;
 let generation = 0;
 
@@ -288,9 +297,49 @@ function buildSuppressors() {
   return out;
 }
 
+/**
+ * Put out every emitter **standing inside** a suppressor entitled to block it. DESIGN.md §3.3.1.
+ *
+ * @remarks
+ * **The rule is about the source, not about the ground.** A torch carried into a *darkness*
+ * does not light the corridor thirty feet away just because the corridor is outside the
+ * bubble — it has gone out. Everything else in this model is pointwise, so without this a
+ * suppressed light was merely *clipped*: dark where the darkness covered it, and shining
+ * normally everywhere its radius reached beyond. Reported 2026-08-25.
+ *
+ * Marked rather than removed, and the full list still comes back from {@link emitters}. Two
+ * consumers need to see a suppressed emitter: the renderer, which has to notice a source it is
+ * no longer drawing and withhold its mesh, and every readout, which should be able to say *why*
+ * a light contributes nothing. {@link activeEmitters} is what resolution reads.
+ *
+ * **Geometry and eligibility only — the contest is not re-run here.** The consequence is one
+ * second-order case this gets wrong: a *daylight* that annihilates the darkness at the torch's
+ * own position would leave the torch lit, and this still puts it out. Resolving it properly
+ * would mean running the regional contest to decide which emitters exist, which is the input to
+ * that contest. Deliberate, and cheap to revisit if a scene ever produces it.
+ */
+function markOriginSuppression(emitterEntries, suppressorEntries) {
+  for (const emitter of emitterEntries) emitter.suppressedAtOrigin = false;
+  if (!suppressorEntries.length) return;
+
+  for (const emitter of emitterEntries) {
+    // Global illumination has no origin to stand anywhere.
+    if (emitter.isGlobal) continue;
+    const origin = { x: emitter.source.x, y: emitter.source.y };
+    for (const suppressor of suppressorEntries) {
+      if (!extinguishes(suppressor, emitter)) continue;
+      if (!suppressor.contains(origin)) continue;
+      emitter.suppressedAtOrigin = true;
+      break;
+    }
+  }
+}
+
 function rebuild() {
   emitterList = buildEmitters();
   suppressorList = buildSuppressors();
+  markOriginSuppression(emitterList, suppressorList);
+  activeEmitterList = emitterList.filter((entry) => !entry.suppressedAtOrigin);
   generation++;
 }
 
@@ -301,6 +350,7 @@ function rebuild() {
 /** Mark the registry stale. Cheap; the rebuild happens on next read. */
 export function invalidate() {
   emitterList = null;
+  activeEmitterList = null;
   suppressorList = null;
 }
 
@@ -313,10 +363,34 @@ export function version() {
   return generation;
 }
 
-/** @returns {EmitterEntry[]} */
+/**
+ * Every emitter the registry knows about, **including ones that are out**.
+ *
+ * @returns {EmitterEntry[]}
+ * @see activeEmitters — what resolution should read. This list is for the renderer, which has
+ *   to notice a source it has stopped drawing, and for readouts, which should be able to
+ *   explain a light that contributes nothing.
+ */
 export function emitters() {
   if (emitterList === null) rebuild();
   return emitterList;
+}
+
+/**
+ * The emitters that actually contribute — {@link emitters} less those put out at their origin.
+ *
+ * @remarks
+ * **Resolution reads this, and every part of it must read the same thing.** `field()` and
+ * `emittersAt()` answer the same question at different granularities, and this project has
+ * already shipped one bug from letting the two derive an answer separately (`tierOf` versus
+ * `resolveTier`, 2026-08-22), where the model and the picture disagreed for a week about how
+ * dark a *darkness* was. One list, computed once per rebuild.
+ *
+ * @returns {EmitterEntry[]}
+ */
+export function activeEmitters() {
+  if (emitterList === null) rebuild();
+  return activeEmitterList;
 }
 
 /** @returns {SuppressorEntry[]} */
@@ -343,7 +417,7 @@ export function suppressors() {
  */
 export function emittersAt(point) {
   const out = [];
-  for (const entry of emitters()) {
+  for (const entry of activeEmitters()) {
     // Global illumination covers everything and has no polygon to test.
     if (!entry.isGlobal && !entry.contains(point)) continue;
     const contribution = entry.contributionAt(point);
@@ -369,6 +443,9 @@ export function stats() {
     dirty: isDirty(),
     generation,
     emitters: emitters().length,
+    // Lights standing inside a darkness that can block them (§3.3.1). Above zero with a
+    // darkness on the scene is ordinary; above zero *without* one would be the bug.
+    extinguished: emitters().filter((e) => e.suppressedAtOrigin).length,
     suppressors: suppressors().length,
     global: emitters().filter((e) => e.isGlobal).length,
   };

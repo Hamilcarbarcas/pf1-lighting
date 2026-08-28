@@ -1,0 +1,115 @@
+/*
+ * The Lighting Configuration fieldset, injected into the light and token config sheets.
+ *
+ * Every selector is scoped to `.pf1-lighting-config` or to a `pf1-lighting-` prefixed class.
+ * Module CSS is unlayered and so outranks all of Foundry's `@layer` rules — a bare element or
+ * utility-class selector here would repaint parts of the core UI that have nothing to do with
+ * this module, which is a bug this project has already shipped once.
+ */
+
+/* The rows whose inputs we moved into our own fieldset. Kept in the DOM so a re-render finds
+ * the structure it built, hidden because their labels now describe fields that are elsewhere. */
+.pf1-lighting-moved {
+  display: none;
+}
+
+/* Branch and sub-branch switching. A class rather than `hidden` or an inline style: `hidden`
+ * loses to any `display` rule the sheet's own stylesheet carries, and inline styles mean
+ * fighting whatever wrote them last. */
+.pf1-lighting-config .pf1-lighting-off {
+  display: none;
+}
+
+/* A control that is present but inert — a mundane light's spell level. Disabled already greys
+ * the input; this carries the same signal to its label and hint, so the row reads as one
+ * thing. */
+.pf1-lighting-config .pf1-lighting-dim > label,
+.pf1-lighting-config .pf1-lighting-dim > .hint {
+  opacity: 0.5;
+}
+
+/* The inline `<label>`s inside a `.form-fields` row — "Level", "Radius", "Steps". Core styles
+ * these in its own slim rows; ours need the same treatment to line up with the Placement
+ * fieldset directly above. */
+.pf1-lighting-config .form-fields > label {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 0.25rem 0 0;
+  font-size: var(--font-size-13, 0.8125rem);
+  white-space: nowrap;
+}
+
+/* Our slot and branch spans are wrappers, not layout: `display: contents` lets the input they
+ * hold participate in the parent flex row as if the span were not there.
+ *
+ * **The `:not()` is load-bearing.** An attribute selector outranks a plain class, so without it
+ * `display: contents` would beat `.pf1-lighting-off`'s `display: none` and a hidden control
+ * would stay on screen. Excluding the off state from the match leaves the hide rule unopposed
+ * rather than trying to out-specify it. */
+.pf1-lighting-config .form-fields > span[data-slot]:not(.pf1-lighting-off),
+.pf1-lighting-config .form-fields > span[data-effect]:not(.pf1-lighting-off) {
+  display: contents;
+}
+
+.pf1-lighting-config .form-fields > input[type="number"] {
+  flex: 1 1 4rem;
+  min-width: 3.5rem;
+}
+
+.pf1-lighting-config .hint {
+  margin: 0.25rem 0 0;
+}
+
+/* The scene's light-level dropdown. It holds core's real darkness input out of sight and drives
+ * it, so the slot must take no space and must not be resurrected by a `display` rule from
+ * anywhere else — `[hidden]` alone loses to any such rule, since it comes from the UA sheet. */
+.pf1-lighting-scene-tier > span[data-slot="darkness"] {
+  display: none;
+}
+
+.pf1-lighting-scene-tier .hint {
+  margin: 0.25rem 0 0;
+}
+
+/* -------------------------------------------- */
+/*  The preset editor                           */
+/* -------------------------------------------- */
+
+/* Its own scope rather than reuse of `.pf1-lighting-config`: that class marks the fieldset
+ * injected into somebody else's sheet, and this is our own window. Sharing it would make either
+ * one's rules reach the other by accident, which is exactly the failure the file header names. */
+.pf1-lighting.preset-editor .pf1-lighting-off {
+  display: none;
+}
+
+.pf1-lighting.preset-editor .form-fields > span[data-effect]:not(.pf1-lighting-off) {
+  display: contents;
+}
+
+.pf1-lighting.preset-editor .form-fields > label {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 0.25rem 0 0;
+  font-size: var(--font-size-13, 0.8125rem);
+  white-space: nowrap;
+}
+
+.pf1-lighting.preset-editor .form-fields > input[type="number"] {
+  flex: 1 1 4rem;
+  min-width: 3.5rem;
+}
+
+.pf1-lighting.preset-editor .hint {
+  margin: 0.25rem 0 0;
+}
+
+/* The New / Duplicate / Delete cluster beside the preset select. `flex: 0 0 auto` so they keep
+ * their size while the select takes the row, and a fixed square so the three read as a group
+ * rather than as three differently-sized buttons. */
+.pf1-lighting.preset-editor .form-fields > button.icon {
+  flex: 0 0 auto;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  line-height: 1;
+}

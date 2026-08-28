@@ -27,7 +27,7 @@
  * So there are exactly two jobs here, and neither is a reimplementation.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
 
 export const SETTING_GM_OBSERVER = "gmObserverMode";
 
@@ -93,12 +93,31 @@ export function registerSettings() {
     hint:
       "When on, selecting a token as GM shows you what that token perceives. When off, you keep the " +
       "god's-eye view even with a token selected. Per-client, and toggleable from the token controls.",
+    // **Client-scoped and GM-only, which Foundry has no single answer for.** The value has to be
+    // per-client — two GMs must be able to disagree about their own view, and §5.1's whole point
+    // is that changing your own view must never write to the scene — but a player has no use for
+    // it: the keybinding is `restricted` and the scene-control toggle returns early for non-GMs,
+    // so the settings row was the one place it leaked (Patrick, 2026-08-26).
+    //
+    // Registered visible and hidden at `ready`, because `game.user` does not exist yet here.
     scope: "client",
     config: true,
     type: Boolean,
     default: true,
     onChange: () => refreshVision(),
   });
+}
+
+/**
+ * Hide the row from players.
+ *
+ * @remarks
+ * `ready`, not `init`: `game.user` is assigned during `Game#setupGame`, well after settings are
+ * registered. Nothing else about the setting changes — a non-GM's stored value stays whatever it
+ * was and `isGmObserverMode` already returns early for them.
+ */
+export function registerHooks() {
+  Hooks.once("ready", () => setSettingVisibility(SETTING_GM_OBSERVER, game.user?.isGM === true));
 }
 
 export function registerKeybindings() {

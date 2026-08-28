@@ -25,7 +25,7 @@ import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
 import { isNativeSuppressionDisabled } from "../suppression.mjs";
 import * as field from "../model/field.mjs";
 import {
-  emitters as registryEmitters,
+  emitters as allEmitters,
   suppressors as registrySuppressors,
 } from "../model/registry.mjs";
 import { TIER, stepTier, tierOf } from "../model/tiers.mjs";
@@ -33,6 +33,8 @@ import { levelForTier } from "./levels.mjs";
 import * as ambientTakeover from "./ambient.mjs";
 import * as clip from "./clip.mjs";
 import * as darknessTexture from "./darkness-texture.mjs";
+import * as gradient from "./gradient.mjs";
+import * as lightRamps from "./light-ramps.mjs";
 import * as tierPaint from "./paint.mjs";
 import * as pool from "./pool.mjs";
 
@@ -200,7 +202,7 @@ const animateDarkness = () => {
  * @returns {{inner: number|undefined, band: number|undefined}} Foundry lighting levels
  */
 function levelsFor(emission, base) {
-  if (!emission) return { inner: undefined, band: undefined };
+  if (!emission) return { inner: undefined, band: undefined, tiers: undefined };
   const bandTier = Math.max(
     base,
     Math.min(stepTier(base, emission.steps ?? 1), emission.cap ?? emission.tier)
@@ -208,7 +210,59 @@ function levelsFor(emission, base) {
   return {
     inner: levelForTier(emission.tier, base),
     band: levelForTier(bandTier, base),
+    // **The same two zones as tiers, and it is not a duplicate of the two above** (§6.2.9). A
+    // Foundry lighting level is an instruction — *brighten relative to the ground* — and the
+    // approximation named in this function's own note is a consequence of that: `base` is one
+    // scalar per cell, so a level is only as absolute as the background it is measured against.
+    // A tier is the answer outright, and `clip.applyAbsoluteZones` turns it into the same pixel
+    // value the ground at that tier is painted.
+    tiers: { inner: emission.tier, band: bandTier, base },
   };
+}
+
+/**
+ * Withhold a light's *illumination* contribution, leaving colour and animation.
+ *
+ * @remarks
+ * §7.0 step 6. Once a light's brightness is a region in the darkness-level texture, the source
+ * drawing it a second time is not a duplicate — it is a **different shape**. A Foundry light is a
+ * radial falloff by construction (`FALLOFF` and `SWITCH_COLOR`, `base-lighting.mjs:341-347`), so
+ * it reaches its nominal level only at the centre and interpolates toward the background
+ * everywhere else; painting that over a flat tier region would put the falloff straight back and
+ * undo the whole step.
+ *
+ * **Nothing is hidden and nothing is patched.** The zones are simply set equal to the ground the
+ * light stands on, which is §6.2.9's `UNLIT` case: all three colours equal, `FRAGMENT_END` mixes
+ * toward the background, the mesh paints exactly what the texture already said. The coloration
+ * layer is a separate mesh with its own shader and is untouched, so a torch keeps its warmth and
+ * its flicker; `canvas.visibility` reads a light's **polygon** rather than its illumination mesh,
+ * so what a creature can see by is untouched as well.
+ *
+ * With the takeover off — or step 6 off — this returns the zones unchanged and the light is drawn
+ * exactly as Foundry would.
+ */
+function withheld(zones, base) {
+  if (!lightRamps.isEnabled()) return zones;
+  void base;
+  // **`tiers: undefined`, and that is the whole of the fix** (Patrick, 2026-08-27, who found it by
+  // bisecting the layers: hiding the light illumination meshes removed a hard line the brightness
+  // field did not contain).
+  //
+  // The first version passed `{inner: base, band: base, base}`, which looks like the same statement
+  // — *this light is no brighter than its ground* — and is not. §6.2.9's absolute path answers it
+  // by setting `computeIllumination = false` and handing the shader three **constant** colours, so
+  // the mesh painted `tierColor(base)` flat across the light's whole footprint. The ground under it
+  // is not flat: a *darkness* overlapping the light is Dark in the texture, illumination composites
+  // `MAX_COLOR`, and a constant at the ambient level beats it. The light was re-lighting the very
+  // region the model had darkened, cut off hard at its clip boundary — which is exactly where the
+  // line was.
+  //
+  // Leaving `tiers` unset keeps `computeIllumination = true`, so `computedBackgroundColor` is
+  // sampled **per fragment** from the darkness-level texture. `getCorrectedColor(UNLIT)` then
+  // returns that same per-fragment value for all three zones and `FRAGMENT_END` mixes it with
+  // itself: the mesh paints exactly what the texture already said, everywhere, and contributes
+  // nothing at any brightness. Which is what withholding was supposed to mean.
+  return { ...zones, inner: 0, band: 0, tiers: undefined };
 }
 
 /**
@@ -277,6 +331,10 @@ export function rebuild({ force = false } = {}) {
     const split = cells.length > 1;
 
     if (clip.assign(source, primary.clipped ? primary.polygon : null)) restage.add(source);
+    // The other half of the hide below: a source put out on one rebuild and lit again on the
+    // next has to be told, or it stays dark for the rest of the session. Every per-source flag
+    // this file sets needs both directions — the same rule as `pool.fill`'s.
+    clip.setHidden(source, false);
     // A split cell's pieces must abut with no fade, or the seam shows — as a dark line
     // if they meet, or a bright one if they overlap (coloration blends additively).
     if (clip.setHardEdges(source, split)) restage.add(source);
@@ -285,11 +343,24 @@ export function rebuild({ force = false } = {}) {
     // its set tier; the band paints one rung up from the ambient it sits on, ceiling `cap`.
     // Where two bands overlap the shader cannot sum — `MAX_COLOR` — and the `stack` cells
     // handle it through the darkness texture instead.
-    const zones = levelsFor(emitter.emission, sceneTier);
-    if (clip.setLevel(source, zones.inner, zones.band)) restage.add(source);
+    // **Per cell, not per emitter, since §10.7.** `levelForTier` returns `UNLIT` whenever the
+    // light's tier is no better than the ground it stands on, so a torch is correctly invisible
+    // at noon — and a torch in a room a region has made Dark is *not*, even though the scene
+    // outside is still Bright. `cell.base` is the ambient where that piece of the cell actually
+    // is; `sceneTier` is the answer on every scene with no ambient region, which is most of them.
+    const zonesFor = (cell) => {
+      const base = cell.base ?? sceneTier;
+      return withheld(levelsFor(emitter.emission, base), base);
+    };
+
+    const primaryZones = zonesFor(primary);
+    if (clip.setLevel(source, primaryZones.inner, primaryZones.band, primaryZones.tiers)) {
+      restage.add(source);
+    }
 
     for (const cell of rest) {
       clones++;
+      const zones = zonesFor(cell);
       const clone = pool.fill({
         kind: "light",
         polygon: cell.polygon,
@@ -297,6 +368,25 @@ export function rebuild({ force = false } = {}) {
         y: source.y,
         elevation: source.elevation ?? 0,
         emission: emitter.emission,
+        // **The three the clone was missing, and each showed as its own artefact**
+        // (Patrick, 2026-08-25: a seam on the light, and the far side of the annulus brighter).
+        //
+        // Without `level`/`bandLevel` the clone painted at Foundry's stock lighting levels
+        // instead of §3.2.1's corrected ones, so the cloned piece read a rung brighter than the
+        // piece the real source kept — which is why it showed up on the side *away* from the
+        // light, that being the larger remainder when a darkness sits off-centre.
+        //
+        // Without `attenuation` its falloff curve was a different function from the original's,
+        // so the two pieces did not meet: the seam. `SWITCH_COLOR` and `FALLOFF` both read it
+        // (`base-lighting.mjs:312-318`), which is exactly why the `stack` clones below already
+        // pass it — the reasoning was written there and never carried back here.
+        level: zones.inner,
+        bandLevel: zones.band,
+        // §6.2.9 — the absolute half of the same two zones. A clone that carried only the levels
+        // would paint relative while the piece the real source kept painted absolute, which is
+        // the seam this list of properties exists to prevent.
+        tiers: zones.tiers,
+        attenuation: source.data?.attenuation,
         color: source.data?.color ?? undefined,
         // **The comment above claimed this for months and the code never did it.** A split
         // cell's clones were built with no `animation`, so an animated light stopped animating
@@ -316,12 +406,23 @@ export function rebuild({ force = false } = {}) {
     }
   }
 
-  // An emitter with no `clip` cell at all is fully suppressed. It has no cells, so it is
-  // *not* reachable from `current.cells` — the registry is the only place it still
-  // exists, and without this its stale clip would keep painting last frame's shape.
-  for (const entry of registryEmitters()) {
+  // An emitter with no `clip` cell at all contributes nowhere — it is standing inside a
+  // darkness that puts it out (§3.3.1), or a suppressor covers every inch it reaches. It has no
+  // cells, so it is *not* reachable from `current.cells`; the registry is the only place it
+  // still exists.
+  //
+  // **Clearing the clip is not enough, and on its own it is the opposite of the fix.** A null
+  // clip means *unclipped*, so a light that should be contributing nothing rendered its **full
+  // circle** — which is how a torch inside a *darkness* went on lighting the ground beyond the
+  // bubble (Patrick, 2026-08-25). The clip is cleared so no stale polygon lingers, and the mesh
+  // is then withheld, which is the only thing that actually stops a source drawing.
+  //
+  // `allEmitters` here is the **full** list on purpose: an emitter that has just been put
+  // out has to be reached in order to be hidden, and `activeEmitters` no longer contains it.
+  for (const entry of allEmitters()) {
     if (entry.isGlobal || touched.has(entry.source)) continue;
     if (clip.assign(entry.source, null)) restage.add(entry.source);
+    clip.setHidden(entry.source, true);
   }
 
   // --- `reduced` — the emitter's own geometry at a lowered set tier (§3.2.1). ---
@@ -333,7 +434,8 @@ export function rebuild({ force = false } = {}) {
   for (const cell of current.cells) {
     if (cell.kind !== "reduced" || !cell.emitter) continue;
     reduced++;
-    const zones = levelsFor(cell.emission, sceneTier);
+    const base = cell.base ?? sceneTier;
+    const zones = withheld(levelsFor(cell.emission, base), base);
     pool.fill({
       kind: "light",
       polygon: cell.polygon,
@@ -343,6 +445,12 @@ export function rebuild({ force = false } = {}) {
       emission: cell.emission,
       level: zones.inner,
       bandLevel: zones.band,
+      tiers: zones.tiers,
+      // Same reason as the `clip` clones above: attenuation drives both `SWITCH_COLOR` and
+      // `FALLOFF`, so omitting it gives the fill a different curve from the light it stands in
+      // for. Harmless while `reduced` stays unreachable under the `darkness` preset, and one
+      // fewer thing to rediscover when it stops being.
+      attenuation: cell.emitter.source.data?.attenuation,
       color: cell.emitter.source.data?.color ?? undefined,
     });
   }
@@ -367,12 +475,25 @@ export function rebuild({ force = false } = {}) {
   //
   // One clone per emitter, not one per region: a single clone would only match wherever that
   // light happened to be the strongest of them.
+  // **Superseded by `render/light-ramps.stackRampFor` once the lights are in the texture**
+  // (Patrick, 2026-08-27: *"I want those areas to be incorporated into `render.texture` and
+  // rendered that way rather than illuminated individually."*).
+  //
+  // The clones below draw on the **illumination** layer with a constant tier colour, which is the
+  // exact path §6.4.6's `withheld()` found re-lights a region and cuts off hard at its clip
+  // boundary — and they were not revisited when §7.0 step 6 moved every other light into the
+  // field. Running both would also mean the overlap was painted twice by two mechanisms that
+  // disagree about shape.
+  //
+  // Kept for the `lightsInTexture: false` path, where the note above about flat fills reading as a
+  // step against a Foundry falloff is still true and these clones are still the right answer.
   let stacked = 0;
-  const drawStacks = showStacks();
+  const drawStacks = showStacks() && !lightRamps.isEnabled();
   for (const cell of current.cells) {
     if (!drawStacks) break;
     if (cell.kind !== "stack" || !cell.emitters?.length) continue;
-    const band = levelForTier(cell.tier, sceneTier);
+    const base = cell.base ?? sceneTier;
+    const band = levelForTier(cell.tier, base);
     for (const emitter of cell.emitters) {
       const source = emitter.source;
       stacked++;
@@ -383,8 +504,11 @@ export function rebuild({ force = false } = {}) {
         y: source.y,
         elevation: source.elevation ?? 0,
         emission: emitter.emission,
-        level: levelForTier(emitter.emission?.tier ?? TIER.NORMAL, sceneTier),
+        level: levelForTier(emitter.emission?.tier ?? TIER.NORMAL, base),
         bandLevel: band,
+        // The overlap's resolved tier is the *band*'s; the inner zone stays the emitter's own, so
+        // a clone still has the two-zone shape it is cloning. §6.2.9.
+        tiers: { inner: emitter.emission?.tier ?? TIER.NORMAL, band: cell.tier, base },
         color: source.data?.color ?? undefined,
         // The three that make the clone's curve identical to the original's. Attenuation drives
         // both `SWITCH_COLOR` and `FALLOFF`, so a default here would reintroduce the step it is
@@ -457,6 +581,16 @@ export function rebuild({ force = false } = {}) {
     clip.setHidden(source, !drawn);
 
     for (const cell of rest) {
+      const clonePlan = darkeningPlan(ambientTier, cell.tier ?? TIER.DARK, source);
+      // **Decide before filling, not after.** Almost every `dark` cell resolves to "not drawn",
+      // and a pooled darkness source that is not drawn is not a cheap no-op — it is a *black
+      // disc*, because neither strength nor alpha turns a darkness source off (§6.2.3). The
+      // earlier version filled unconditionally and set only the strength, so every piece of a
+      // split `dark` cell but the largest rendered at full darkness. A darkness enclosing
+      // another darkness is an annulus, an annulus is always split, and so it always showed the
+      // cut (Patrick, 2026-08-25).
+      if (!(clonePlan.animationOnly || clonePlan.strength > 0)) continue;
+
       darkClones++;
       const bounds = cell.polygon.getBounds();
       const clone = pool.fill({
@@ -469,7 +603,6 @@ export function rebuild({ force = false } = {}) {
         animation: source.data?.animation,
         seed: source.data?.seed,
       });
-      const clonePlan = darkeningPlan(ambientTier, cell.tier ?? TIER.DARK, source);
       clip.setStrength(clone, clonePlan.strength, clonePlan.animationOnly);
     }
 
@@ -556,6 +689,7 @@ export function reset() {
   // the renderer being switched off, and they are the one piece of state here that lives in a
   // container whose owner never asked for it.
   tierPaint.invalidate();
+  gradient.clear();
   darknessTexture.clear();
 
   // Safe to use the broad signal here: with the renderer off, the hook's `rebuild()` call
@@ -585,9 +719,16 @@ export function registerSettings() {
       "controls only whether that is drawn. The level is computed either way, so the readout, " +
       "what creatures can see, and every other rule still use it.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
-    default: false,
+    // **`true` since 2026-08-27**, when the overlap moved into the brightness field. It defaulted
+    // to `false` for as long as the only implementation was the illumination clones below, which
+    // is why two lights never visibly brightened each other and why the model and the picture
+    // disagreed for months without anyone hitting a bug — the feature was simply switched off.
+    default: true,
     onChange: () => rebuild({ force: true }),
   });
 
@@ -598,9 +739,13 @@ export function registerSettings() {
       "boundaries, five brightness tiers, darkness-spell semantics. Requires 'Disable native " +
       "darkness suppression' to also be on.",
     scope: "world",
-    config: true,
+    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // switch was a development bisection aid and the module is past needing one in the menu.
+    // Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
     type: Boolean,
-    default: false,
+    // Flipped from `false` with the control. See `suppression.mjs` for the reasoning.
+    default: true,
     onChange: (value) => (value ? rebuild({ force: true }) : reset()),
   });
 }

@@ -61,6 +61,11 @@
  * So core is handed an empty polygon and the mask contribution is drawn here instead, with
  * `beginHole`/`endHole`. That is the only version that survives a fully enclosed umbra.
  *
+ * **And it has to be drawn *during* the refresh, not after it.** `refreshVisibility` ends by
+ * committing fog, and the commit renders the whole `vision` container — so a contribution added
+ * once the method has returned is correct on screen and invisible to exploration. That cost fog
+ * of war entirely for a while (2026-08-24); see {@link drawPending}.
+ *
  * ## What this deliberately does not do
  *
  * **It hides; it does not dim** — a mask is binary. That is a limitation and *not* the whole
@@ -108,8 +113,18 @@ const EMPTY = new PIXI.Polygon([]);
 
 let patched = false;
 
+/**
+ * Rings awaiting the `visibilityRefresh` hook, or null between refreshes.
+ *
+ * @remarks
+ * Module-scoped rather than closed over per call so {@link drawPending} can be a plain listener
+ * registered once, and so a refresh that throws before the hook leaves nothing behind for the
+ * next one to draw.
+ */
+let pending = null;
+
 /** Diagnostics for the last pass; see {@link status}. */
-let lastPass = { observers: 0, trimmed: 0, rings: 0, holes: 0 };
+let lastPass = { observers: 0, trimmed: 0, rings: 0, holes: 0, drawn: 0 };
 
 /**
  * The umbra paths that actually hide something from this observer.
@@ -198,10 +213,10 @@ export function applyPatch() {
 
   const original = proto.refreshVisibility;
   proto.refreshVisibility = function pf1LightingUmbraRefreshVisibility(...args) {
-    lastPass = { observers: 0, trimmed: 0, rings: 0, holes: 0 };
+    lastPass = { observers: 0, trimmed: 0, rings: 0, holes: 0, drawn: 0 };
 
     const swapped = [];
-    const pending = [];
+    pending = [];
 
     for (const source of canvas.effects?.visionSources ?? []) {
       if (!source.active) continue;
@@ -227,18 +242,67 @@ export function applyPatch() {
       return original.apply(this, args);
     } finally {
       for (const [source, light] of swapped) source.light = light;
-      const mask = this.vision?.light?.mask;
-      if (mask) {
-        for (const rings of pending) {
-          try {
-            drawTrimmed(mask, rings);
-          } catch (error) {
-            console.error("PF1 Lighting | umbra mask draw failed", error);
-          }
-        }
-      }
+      // The draw itself happens in `visibilityRefresh`, mid-call — see {@link drawPending}. All
+      // that is left here is dropping anything the hook did not consume, so a throw before the
+      // hook cannot leave stale rings for the next refresh to draw.
+      pending = null;
     }
   };
+
+  // **Ordering is the whole point of using the hook.** Core calls `visibilityRefresh`
+  // immediately before its `endFill`s and before `canvas.fog.commit()`
+  // (`groups/visibility.mjs:588-606`), which is the only window where a contribution to
+  // `vision.light.mask` is both inside the fill and visible to fog.
+  Hooks.on("visibilityRefresh", drawPending);
+}
+
+/**
+ * Draw the trimmed light perception this refresh computed, into the mask core is still filling.
+ *
+ * @remarks
+ * **This used to run in the wrapper's `finally`, and that broke fog of war** (found 2026-08-24;
+ * reported as *non-darkvision tokens clear no fog at all, darkvision tokens clear only their
+ * darkvision radius*).
+ *
+ * `refreshVisibility` ends with `if ( commitFog ) canvas.fog.commit()`, and `commit()` renders
+ * the **whole `vision` container** — which is masked by `vision.light.mask`
+ * (`perception/fog.mjs:330-355`). Drawing after `original` returned put our contribution in
+ * after that snapshot. The mask is a persistent `LegacyGraphics`, so the *screen* was right from
+ * the next frame onward and only the exploration texture was wrong, which is exactly why this
+ * survived every visual check: **a deferred write is invisible to everything except the one
+ * consumer that reads mid-call.**
+ *
+ * The symptoms follow directly from what was left in the mask at commit time. Each swapped
+ * source had been handed {@link EMPTY}, so light perception contributed nothing, and
+ * `vision.sight` — a sibling of `vision.light` and so *not* masked — was all fog ever saw. A
+ * token with no darkvision has `visionSource.radius === 0` and draws no sight FOV at all, so it
+ * explored nothing; a token with darkvision explored its darkvision radius and no further.
+ *
+ * Note that `commitFog` is unaffected by the swap: core sets it from
+ * `lightRadius > 0 && !blinded && !isPreview`, never from what the polygon contains, so handing
+ * it an empty shape still schedules the commit. That is why fog updated *at all* rather than
+ * freezing, which would have been a much louder failure.
+ *
+ * @param {CanvasVisibility} visibility
+ */
+function drawPending(visibility) {
+  const rings = pending;
+  // Only ever consume what our own wrapper set on this call. A `visibilityRefresh` raised from
+  // anywhere else finds nothing, and the `finally` clears it if we never got here.
+  pending = null;
+  if (!rings?.length) return;
+
+  const mask = visibility?.vision?.light?.mask;
+  if (!mask) return;
+
+  for (const ring of rings) {
+    try {
+      drawTrimmed(mask, ring);
+      lastPass.drawn++;
+    } catch (error) {
+      console.error("PF1 Lighting | umbra mask draw failed", error);
+    }
+  }
 }
 
 /**
@@ -251,6 +315,10 @@ export function applyPatch() {
  *
  * `holes` is the one worth watching. A dark umbra fully enclosed by a dim one produces exactly
  * one, and mishandling it is what made an enclosed umbra vanish.
+ *
+ * **`drawn` must equal `trimmed`.** They differ only if the `visibilityRefresh` hook did not
+ * reach {@link drawPending} — which is the shape the fog-of-war bug had, and the shape it would
+ * have again if anything ever swallowed that hook. The screen looks correct either way.
  */
 export function status() {
   const observers = [];

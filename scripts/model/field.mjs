@@ -48,14 +48,15 @@
 import {
   ambientBrightness,
   ambientTier,
-  emitters as registryEmitters,
+  activeEmitters as registryEmitters,
   suppressors as registrySuppressors,
   version,
 } from "./registry.mjs";
 import { CLIPPER_SCALE, groupRings, toClipperPath } from "../geometry.mjs";
 import { applyTransform, breaks, eligibilityFn } from "./contest.mjs";
 import { normaliseEmission, transformEmission } from "./ramp.mjs";
-import { TIER, resolveTier, stepTier, tierOf } from "./tiers.mjs";
+import { TIER, resolveTier, stepTier, tierCeiling, tierOf } from "./tiers.mjs";
+import * as areas from "./areas.mjs";
 
 /**
  * Core uses 100 wherever it touches Clipper (`common/constants.mjs:2146`).
@@ -415,6 +416,173 @@ function ambientDomain(scale) {
 }
 
 /**
+ * The scene rect split by ambient areas, one entry per resolved tier. DESIGN.md §10.7.
+ *
+ * @remarks
+ * **Returns `null` when there are no areas**, and every caller branches on that rather than
+ * treating "one domain covering everything" as the general case. A scene without an ambient
+ * region has to take the path it took before this existed, down to the op count — the same
+ * discipline as the no-suppressor fast path below, and for the same reason: §7.0's ambient
+ * cell is on the hot path of every scene, and most scenes will never carry a region.
+ *
+ * The split is done by folding one area at a time over the domains so far, cutting each into
+ * `D ∩ A` and `D \ A`. That is two ops per (domain × area) and it is exponential in *overlapping*
+ * areas — which is why the result is **collapsed by tier** before it leaves: `emitStacks` is the
+ * expensive consumer, and after the collapse it runs at most five times however many regions
+ * are drawn, rather than once per partition cell.
+ *
+ * Folding in document order also makes this agree with {@link areas.ambientTierAt} by
+ * construction rather than by a rule stated in two places. Overlapping areas therefore compose
+ * in that order, which matters only when a *set* meets an *at most*.
+ *
+ * `box` is the combined extent of the **areas**, not of the domains — the base domain's extent is
+ * the whole scene rect and would reject nothing. It is what lets an emitter nowhere near a region
+ * skip the split entirely, which is most emitters on most scenes.
+ *
+ * @param {number} scale
+ * @param {number} base - The scene's own ambient tier
+ * @returns {{list: {tier: number, paths: {X: number, Y: number}[][]}[], box: object}|null}
+ */
+function ambientDomains(scale, base) {
+  const list = areas.areas();
+  if (!list.length) return null;
+
+  const rect = ambientDomain(scale);
+  if (!rect) return null;
+
+  let domains = [{ tier: base, paths: [rect], derived: false }];
+  const areaPaths = [];
+
+  for (const area of list) {
+    const clip = areas.pathsFor(area, scale);
+    if (!clip.length) continue;
+    areaPaths.push(...clip);
+
+    const next = [];
+    for (const domain of domains) {
+      const inside = intersection(domain.paths, clip);
+      if (inside.length) {
+        next.push({
+          tier: areas.foldTier(domain.tier, area),
+          paths: inside,
+          // **Carried purely to decide `hardEdge`.** A drawn region's boundary follows a wall and
+          // must stay sharp; a §3.4 spill band's boundary is a falloff between two light levels
+          // and must not. They arrive here in the same list and are otherwise identical, so this
+          // is the only place the difference survives to the painter.
+          derived: domain.derived || area.derived === true,
+        });
+      }
+
+      const outside = difference(domain.paths, clip);
+      if (outside.length) next.push({ tier: domain.tier, paths: outside, derived: domain.derived });
+    }
+    if (next.length) domains = next;
+  }
+  if (!areaPaths.length) return null;
+
+  // Collapse. The parts are disjoint by construction, so concatenating their paths is a valid
+  // Clipper subject without a union op — which is the point of doing it here rather than
+  // letting the consumers each pay for one.
+  //
+  // Keyed on tier **and** softness: two parts at one tier that disagree about their edges cannot
+  // share a mesh, and merging them would silently hard-edge a spill band that abutted a region
+  // at the same level.
+  const byTier = new Map();
+  for (const domain of domains) {
+    const key = `${domain.tier}|${domain.derived ? 1 : 0}`;
+    const merged = byTier.get(key);
+    if (merged) merged.paths.push(...domain.paths);
+    else byTier.set(key, { tier: domain.tier, derived: domain.derived, paths: [...domain.paths] });
+  }
+  return { list: [...byTier.values()], box: boundsOfPaths(areaPaths) };
+}
+
+/**
+ * Give every **emitter-drawn** cell the ambient tier it stands on, splitting it where it
+ * crosses from one domain into another.
+ *
+ * @remarks
+ * **This is the half of §10.7 that is not about the ground at all**, and leaving it out produced
+ * a report that read as the region "blocking light sources" (Patrick, 2026-08-26). It did not.
+ * The renderer turns a light's tier into one of Foundry's lighting levels through
+ * `levelForTier(target, background)`, which returns `UNLIT` whenever `target <= background` — a
+ * torch adds nothing at noon, correctly — and `background` was **one scalar for the whole
+ * scene**, `tierOf(stats.ambientB)`. So on a Bright map every ordinary light was already being
+ * drawn unlit, which was right while the ground really was Bright everywhere and became wrong
+ * the moment a region made one room Dark. The lights were never blocked; they were unlit for a
+ * reason that had stopped being true in that room.
+ *
+ * The model never had this bug — `evaluate()` reads `ambientTier(point)` through the global
+ * emitter's contribution, so the torch in the cellar always resolved to Normal. It was purely
+ * the picture, which is why it is fixed here and in `renderer.mjs` and nowhere else.
+ *
+ * `stack` cells are stamped where they are made, since `emitStacks` is already told its base.
+ * `ambient` and `dark` cells need nothing: the first is a mesh and the second is drawn by a
+ * darkness source, and neither goes through `levelForTier`.
+ *
+ * @param {object[]} cells
+ * @param {object|null} domains
+ * @param {number} sceneTier
+ * @returns {object[]}
+ */
+function stampDomains(cells, domains, sceneTier) {
+  if (!domains) return cells;
+
+  const out = [];
+  for (const cell of cells) {
+    if (cell.kind !== "clip" && cell.kind !== "reduced") {
+      out.push(cell);
+      continue;
+    }
+
+    const path = toClipperPath(cell.polygon, SCALE);
+    // Nowhere near a region, so it stands on the scene's own ambient and needs no Clipper at
+    // all. The common case, and the reason the extent of the *areas* is what is tested.
+    if (!path?.length || !boxesOverlap(boundsOf(path), domains.box)) {
+      out.push({ ...cell, base: sceneTier });
+      continue;
+    }
+
+    for (const domain of domains.list) {
+      const part = intersection([path], domain.paths);
+      if (!part.length) continue;
+      // `splitAnnuli` because these cells are drawn by a **source**, and a source shape is one
+      // closed ring (§6.2.1). Intersecting a disc with "the scene minus this room" produces
+      // exactly the annulus that rule exists for.
+      for (const polygon of toPolygons(splitAnnuli(part))) {
+        out.push({ ...cell, polygon, base: domain.tier, clipped: true });
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * Does a domain need a ground cell of its own?
+ *
+ * @remarks
+ * Reduces to the pre-existing `ambientB > 0` test when nothing overrides the base, which is what
+ * keeps an unlit scene emitting no ambient mesh at all. The second clause is the whole feature:
+ * a *set Dark* area on a Bright map has a tier ceiling of 0 and **must** still be painted, since
+ * the mesh is the only thing that tells §7.0's shader threshold to discard global light there.
+ */
+const domainNeedsCell = (tier, base) => tierCeiling(tier) > 0 || tier !== base;
+
+/**
+ * Everything outside a domain, as a clip for `emitStacks`.
+ *
+ * @remarks
+ * `emitStacks` already subtracts a path set from every cell it emits — that is how suppressor
+ * regions are kept out of it — so restricting a run to one domain is the same operation with a
+ * different argument, and needs no new parameter.
+ */
+function outsideOf(domain, scale) {
+  const rect = ambientDomain(scale);
+  if (!rect) return [];
+  return difference([rect], domain.paths);
+}
+
+/**
  * Compute the whole-scene cell decomposition.
  *
  * @param {object} [options]
@@ -430,6 +598,49 @@ export function compute({ filter = true } = {}) {
 
   const cells = [];
 
+  /**
+   * Emit a ground fill **with its holes intact**, unsplit.
+   *
+   * @remarks
+   * `splitAnnuli` exists because a cell rendered by a *light source* must be one closed ring
+   * (§6.2.1). An ambient cell is not: since §7.0 step 3 it is a mesh in the darkness-level
+   * texture, and `PIXI.utils.earcut` takes hole indices natively.
+   *
+   * Splitting it was actively harmful, which is why this is a separate path rather than a
+   * tidy-up. The complement carries **one hole per darkness on the scene**, so the recursive
+   * cuts run the full width of the map — and every full-width artefact of 2026-08-23 was one
+   * of those cuts made visible by some difference between two abutting fills. Holes remove the
+   * cuts rather than making them meet better, which is the only fix that cannot regress.
+   *
+   * One cell per outer ring. Several outers only arise if a suppressor spans the scene rect
+   * edge to edge, or if an ambient area is drawn in two pieces; holes are assigned by
+   * containment rather than assumed to belong to the first.
+   */
+  const emitAmbient = (paths, emitter, tier, hardEdge = false, spill = false) => {
+    for (const { outer, holes } of groupRings(toPolygons(paths))) {
+      cells.push({
+        kind: "ambient",
+        polygon: outer,
+        holes,
+        // Carried for the painter alone, and it is the *inverse* of `hardEdge` rather than a
+        // second copy of it: §3.4's bands are the one ground boundary the model asserts a
+        // *ramp* across, so they want a wider feather than the ordinary ground default, which is
+        // tuned as anti-aliasing for edges that really are steps.
+        spill,
+        emitter,
+        suppressor: null,
+        emission: null,
+        tier,
+        // **Ambient-area cells are never feathered** (Patrick, 2026-08-26): a region boundary is
+        // drawn along a wall, and a wall is a hard edge. The ground blur (§6.4.2a) exists for
+        // the boundary between a *darkness* and open ground, which has no architecture on it and
+        // reads as a stencilled disc without one. Blurring a room's outline instead makes the
+        // room bleed through its own walls.
+        hardEdge,
+      });
+    }
+  };
+
   // Tested on `shape`, not `path()`, so that scenes taking the fast path below never
   // build a Clipper path at all.
   const hasShape = (e) => e.shape?.points?.length > 0;
@@ -441,12 +652,21 @@ export function compute({ filter = true } = {}) {
   // scene-wide remainder can be cut from it directly. See {@link emitAmbient}.
   //
   // Its brightness also still sets what a suppressor transforms *down from*.
+  // **`activeEmitters`, not `emitters`** — a light standing inside a darkness that can block it
+  // is out, and an emitter that is out has no cells at all rather than cells that happen to be
+  // empty. See `registry.markOriginSuppression` (§3.3.1).
   const all = registryEmitters();
   const emitters = all.filter((e) => !e.isGlobal && hasShape(e));
   const ambient = all.find((e) => e.isGlobal) ?? null;
 
   // Strongest first, so `carveRegions` can subtract what is already claimed.
   const suppressors = [...registrySuppressors()].filter(hasShape).sort((a, b) => b.level - a.level);
+
+  // The scene's own ambient tier, and the split of the map by any regions that override it
+  // (§10.7). `null` means there are no such regions and every ambient path below is the one it
+  // was before the feature existed.
+  const sceneTier = ambientTier();
+  const domains = ambientDomains(SCALE, sceneTier);
 
   // --- No suppressors: every emitter renders untouched. The common case by far, and it
   //     must not cost a single Clipper op — nor a scale-and-round trip out to integer
@@ -466,10 +686,13 @@ export function compute({ filter = true } = {}) {
     // Nothing governs any part of the scene, so the ambient cell *is* the scene rect —
     // no union, no difference, no Clipper at all. Preserving that is the point of having
     // this branch: §7.0 must not make the common case pay for a feature it does not use.
-    if (ambient) {
+    if (ambient && !domains) {
       const B = ambient.brightnessAt();
       const rect = canvas?.dimensions?.sceneRect;
-      if (B > 0 && rect) {
+      // Unguarded on `B`, for the reason given at the other ambient branch below: the ground has
+      // to be painted even when it is fully dark, or the two composited passes of §7.0 step 6 have
+      // nothing underneath them.
+      if (rect) {
         cells.push({
           kind: "ambient",
           polygon: rect.toPolygon(),
@@ -479,19 +702,39 @@ export function compute({ filter = true } = {}) {
           tier: tierOf(B),
         });
       }
+    } else if (ambient) {
+      // Ambient areas, with no darkness anywhere to cut them against (§10.7). Each domain is
+      // already the shape it should be painted at; nothing is subtracted from it here.
+      for (const domain of domains.list) {
+        if (!domainNeedsCell(domain.tier, sceneTier)) continue;
+        emitAmbient(domain.paths, ambient, domain.tier, !domain.derived, domain.derived);
+      }
     }
     // Band overlaps still apply with no suppressor on the scene — this is in fact the
     // *usual* place they occur, two torches in a dark corridor (§3.2.1). It costs Clipper
     // ops, so it goes after everything above and self-cancels at `bands.length < 2`, which
     // is what keeps the single-light case on the no-op path this branch exists to protect.
-    const soloStacks = emitStacks(emitters, ambientTier(), []);
+    //
+    // Once per **domain**, not once: a band raises by rungs, so what it resolves to depends on
+    // the ambient it is standing on, and two torches overlapping in an unlit cellar are not the
+    // same cell as two torches overlapping in the street outside it.
+    const soloStacks = [];
+    if (!domains) soloStacks.push(...emitStacks(emitters, sceneTier, []));
+    else {
+      for (const domain of domains.list) {
+        soloStacks.push(...emitStacks(emitters, domain.tier, outsideOf(domain, SCALE)));
+      }
+    }
     for (const cell of soloStacks) cells.push(cell);
 
-    return finish(cells, t0, {
+    return finish(stampDomains(cells, domains, sceneTier), t0, {
       filtered: filter,
       emitters: emitters.length,
       suppressors: 0,
       stacks: soloStacks.length,
+      // How many distinct ambient tiers the map was split into. 0 means no region overrides it
+      // and every path above was the pre-§10.7 one.
+      domains: domains?.list.length ?? 0,
       ambientB: ambient ? +ambient.brightnessAt().toFixed(3) : 0,
     });
   }
@@ -503,37 +746,6 @@ export function compute({ filter = true } = {}) {
   const emit = (kind, paths, emitter, suppressor, emission, tier, clipped = false) => {
     for (const polygon of toPolygons(splitAnnuli(paths))) {
       cells.push({ kind, polygon, emitter, suppressor, emission, tier, clipped });
-    }
-  };
-
-  /**
-   * Emit the ambient complement **with its holes intact**, unsplit.
-   *
-   * @remarks
-   * `splitAnnuli` exists because a cell rendered by a *light source* must be one closed ring
-   * (§6.2.1). An ambient cell is not: since §7.0 step 3 it is a mesh in the darkness-level
-   * texture, and `PIXI.utils.earcut` takes hole indices natively.
-   *
-   * Splitting it was actively harmful, which is why this is a separate path rather than a
-   * tidy-up. The complement carries **one hole per darkness on the scene**, so the recursive
-   * cuts run the full width of the map — and every full-width artefact of 2026-08-23 was one
-   * of those cuts made visible by some difference between two abutting fills. Holes remove the
-   * cuts rather than making them meet better, which is the only fix that cannot regress.
-   *
-   * One cell per outer ring. Several outers only arise if a suppressor spans the scene rect
-   * edge to edge; holes are assigned by containment rather than assumed to belong to the first.
-   */
-  const emitAmbient = (paths, emitter, tier) => {
-    for (const { outer, holes } of groupRings(toPolygons(paths))) {
-      cells.push({
-        kind: "ambient",
-        polygon: outer,
-        holes,
-        emitter,
-        suppressor: null,
-        emission: null,
-        tier,
-      });
     }
   };
 
@@ -599,6 +811,18 @@ export function compute({ filter = true } = {}) {
   // carved out, because those do still light the ground.
   const ambientB = ambient ? ambient.brightnessAt() : 0;
 
+  // What each domain's ground is worth before any suppressor touches it (§10.7). A darkness
+  // transforms down from **the ambient where it is standing**, so a *darkness* cast inside an
+  // unlit cellar reduces Dark, not the Bright street outside — without this it renders brighter
+  // than the room around it, which is the failure backwards.
+  //
+  // `null` on a scene with no ambient areas, and also when global illumination is off: there is
+  // then no ambient to override, and `ambientB` is already 0 for the same reason.
+  const domainBases =
+    domains && ambient
+      ? domains.list.map((d) => ({ paths: d.paths, B: tierCeiling(d.tier) }))
+      : null;
+
   for (const region of regions) {
     const lighting = emitters.filter(
       (e) =>
@@ -619,10 +843,24 @@ export function compute({ filter = true } = {}) {
     // supernatural its source, which silently disabled the renderer's black fill and the
     // umbra's top rank alike.
     const floor = region.suppressor.floor ?? TIER.DARK;
-    const B = applyTransform(ambientB, region.suppressor.transform, floor);
-    // `clipped: true` — a `dark` cell is always a Clipper product, never a source's own
-    // outline, and the darkness source drawn for it is narrowed to exactly this region.
-    emit("dark", fill, null, region.suppressor, null, resolveTier(B, { floor }), true);
+
+    if (!domainBases) {
+      const B = applyTransform(ambientB, region.suppressor.transform, floor);
+      // `clipped: true` — a `dark` cell is always a Clipper product, never a source's own
+      // outline, and the darkness source drawn for it is narrowed to exactly this region.
+      emit("dark", fill, null, region.suppressor, null, resolveTier(B, { floor }), true);
+      continue;
+    }
+
+    // One `dark` cell per domain the region crosses. A darkness lying half in a cellar and half
+    // in the street is genuinely two different tiers, and drawing it as one would have to pick
+    // the wrong answer for half of it.
+    for (const base of domainBases) {
+      const part = intersection(fill, base.paths);
+      if (!part.length) continue;
+      const B = applyTransform(base.B, region.suppressor.transform, floor);
+      emit("dark", part, null, region.suppressor, null, resolveTier(B, { floor }), true);
+    }
   }
 
   // --- `ambient` — everywhere a suppressor does *not* govern. DESIGN.md §7.0. ---
@@ -640,24 +878,48 @@ export function compute({ filter = true } = {}) {
   // this, so it is unioned once — it was two identical ops when `stack` landed.
   const governed = union(regions.map((r) => r.effective).filter((p) => p.length).flat());
 
-  if (ambient && ambientB > 0) {
+  if (ambient && !domains) {
+    // **No `ambientB > 0` guard, since §7.0 step 6.** An unlit scene used to emit no ambient cell
+    // at all and let the container's clear colour stand in, which was invisible only because that
+    // clear is `canvas.environment.darknessLevel` and the default table puts Dark at 1.0 as well.
+    // Two things now depend on the ground actually being painted: `MIN_COLOR` light meshes need an
+    // opaque base to blend down from, and any retuned table would have made a *darkness* spell
+    // render lighter than the night around it.
     const rect = ambientDomain(SCALE);
     if (rect?.length) {
       const open = governed.length ? difference([rect], governed) : [rect];
       emitAmbient(open, ambient, tierOf(ambientB));
     }
+  } else if (ambient) {
+    // The same complement, taken per domain (§10.7). Each is already confined to its own part
+    // of the map, so the only thing still to remove is what a suppressor governs.
+    for (const domain of domains.list) {
+      if (!domainNeedsCell(domain.tier, sceneTier)) continue;
+      const open = governed.length ? difference(domain.paths, governed) : domain.paths;
+      // Hard unless the domain owes its tier to a computed area — see `ambientDomains`.
+      if (open.length) emitAmbient(open, ambient, domain.tier, !domain.derived, domain.derived);
+    }
   }
 
   // --- `stack` — where two or more relative bands overlap. DESIGN.md §3.2.1. ---
-  const stacks = emitStacks(emitters, ambientTier(), governed);
+  const stacks = [];
+  if (!domains) stacks.push(...emitStacks(emitters, sceneTier, governed));
+  else {
+    for (const domain of domains.list) {
+      stacks.push(
+        ...emitStacks(emitters, domain.tier, [...governed, ...outsideOf(domain, SCALE)])
+      );
+    }
+  }
   for (const cell of stacks) cells.push(cell);
 
-  return finish(cells, t0, {
+  return finish(stampDomains(cells, domains, sceneTier), t0, {
     filtered: filter,
     emitters: emitters.length,
     suppressors: suppressors.length,
     regions: regions.length,
     stacks: stacks.length,
+    domains: domains?.list.length ?? 0,
     ambientB: +ambientB.toFixed(3),
   });
 }
@@ -841,6 +1103,10 @@ function emitStacks(emitters, base, governed) {
             emitters: combo.map((i) => bands[i].emitter),
             bands: combo.length,
             steps,
+            // The ambient this overlap was summed from, carried so the renderer converts the
+            // result against the same background the model used (§10.7). Stamped here rather
+            // than by `stampDomains`, because this is the one cell kind that already knows.
+            base,
           });
         }
       }
@@ -898,7 +1164,11 @@ let signature = null;
  * it slides continuously during a darkness animation.
  */
 function currentSignature() {
-  const parts = [version(), ambientBrightness()];
+  // `areas.version()` and not the areas themselves: a region's geometry lives on the document
+  // rather than on a per-frame object, so there is no reference to compare that changes when it
+  // moves. The counter is bumped by the region hooks in `model/areas.mjs`, which is the only
+  // thing that can change any of it.
+  const parts = [version(), ambientBrightness(), areas.version()];
   for (const entry of registryEmitters()) {
     // **The global source is excluded.** It contributes nothing: its domain is the scene rect
     // and that is fixed per scene (see {@link ambientDomain}), while its brightness rides in

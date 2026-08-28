@@ -419,6 +419,40 @@ is what makes the spell do something outdoors. 3rd-level *daylight* isn't eligib
 `eligibility` (which emitters get blocked, by kind) is **orthogonal** to the §4.1
 contest (what happens among effects that do interact).
 
+#### 3.3.1 A light *inside* a darkness is out everywhere — 2026-08-25
+
+Everything above is pointwise, and one rule is not. **If an emitter's own origin lies inside a
+suppressor entitled to block it, that emitter contributes nothing anywhere** — not merely
+nothing inside the bubble.
+
+Reported by Patrick as a torch carried into a *darkness* that went on lighting the corridor
+thirty feet away, because its radius reached past the bubble and every point out there resolved
+without a suppressor over it. Pointwise resolution has no way to see the difference: the light
+is genuinely present at those points, and the fact that matters is where the *source* is
+standing. A torch inside a *darkness* has gone out; it does not shine out of the far side.
+
+`contest.extinguishes(suppressor, emitter)` is `eligibility && !breaks` — the suppressor is
+entitled to block it, and the emitter does not counter or annihilate the suppressor first. So a
+*daylight*, and any magical light out-levelling the darkness, is unaffected, which is the
+exemption Patrick named.
+
+`registry.markOriginSuppression` applies it once per rebuild and marks the entry;
+`registry.activeEmitters()` is the list resolution reads, and `emitters()` still returns
+everything. Both are needed and for opposite reasons: the renderer has to *reach* an emitter it
+has stopped drawing in order to withhold its mesh, and the readouts should be able to say why a
+torch is dark rather than simply omitting it.
+
+**Two consumers had to be moved together**, which is the hazard this design keeps
+re-encountering: `field()` and `emittersAt()` answer the same question at different
+granularities, and letting each derive "which emitters count" separately is exactly the shape
+of the 2026-08-22 `tierOf`/`resolveTier` divergence. One list, computed once.
+
+**One second-order case is knowingly wrong.** The test is geometry and eligibility only — the
+contest is not re-run — so a *daylight* that annihilates the darkness at the torch's own
+position would leave the torch lit, and this still puts it out. Resolving it properly means
+running the regional contest to decide which emitters exist, which is that contest's input.
+Cheap to revisit if a scene ever produces it.
+
 **Authoring:** no GM writes a predicate. Ship presets — Darkness, Deeper Darkness, Fog
 — as a dropdown, with a raw override behind an advanced toggle.
 
@@ -450,40 +484,242 @@ Note `CONFIG.Canvas.lightLevels` holds **mix fractions, not brightness values** 
 `halfdark: 0.5` means "half way back from full darkness toward ambient", which is why
 it reads larger than `dim: 0.25` despite being darker (`environment.mjs:231-232`).
 
-### 3.4 Derived emitters — diffuse spill
+### 3.4 Light spill through apertures — rewritten 2026-08-26
 
-*Poor-man's diffuse lighting.* A wedge of light entering a dark room cuts a hard shadow
-line at the wall; stepping one square sideways out of a doorway shouldn't drop you into
-pitch black.
+*Poor-man's diffuse lighting.* A window or an open door in an interior region should let the
+outdoor light in, falling off with distance rather than stopping dead at the wall.
 
-**Mechanically real, not a render trick** — these are emitters in the model and flow
-through the pipeline like any other, so `evaluate()` sees them.
+**The original framing is retired.** This section used to describe a `SpillEmitter`: a derived
+*emitter*, dilated from any wall-cut shadow edge, clipped to an aperture sweep that §7.1 would
+compute. Three things about it did not survive contact with the built model.
+
+- **It is not an emitter.** `EmitterEntry` is welded to a Foundry source — `contributionAt` is
+  `Math.hypot` from `source.x`, `contains` is `source.shape.contains`, and `usable()` excludes
+  synthetic sources outright (§6.6). Spill is a flat-tier polygon with no origin. The one
+  originless emitter we have is global illumination, and it is a hard-coded special case in
+  three methods; a second would make that a pattern by accident.
+- **It is an *ambient area*** — §10.7's mechanism with a computed polygon instead of a drawn
+  one. Not a convenience: everything downstream already reads the ambient through
+  `ambientTierAt`, so the contest, `evaluate()`, suppressors, umbra, perception, detection and
+  the readout see spill with no new plumbing, and §7.0's shader lights it **as global
+  illumination**, through the same texture and the same threshold test. Patrick's requirement
+  was that spill be treated identically to global light by every other facet of the module;
+  this makes it the same mechanism rather than a matching one.
+- **§7.1 is not a dependency.** Aperture emitters were the plan's answer to occlusion. The
+  answer is one sweep.
+
+#### The geometry
+
+Patrick's diagram, 2026-08-26: an L-shaped interior, one window in the top wall, a bright cone
+spreading inward and cut off by walls, then constant-width bands beside and beyond it, each one
+tier lower, ending at dim. Two things in that picture settle the construction, and both were
+read wrong first.
+
+**The cone's angle is emission, not occlusion.** The band beside the cone is not in shadow — a
+point there can see the window perfectly well, it is merely outside an *artistic* angular limit.
+So the visibility clip must not use the cone's angle. Clipping the bands to `sweep(origin,
+angle)`, which is what this section proposed for years, would delete every band and leave the
+cone alone.
+
+**The bands are constant width, not proportional** — measured off the drawing at ~85–90 px on
+the near flank and at the far end alike. That is a Minkowski dilation, not a wider cone.
 
 ```
-SpillEmitter {
-  source     : the emitter whose shadow edge this spills from
-  bandWidth  : distance per tier step (config, default 10 ft / 2 squares)
-  clip       : polygon the spill may not escape
-}
+wedge  = Minkowski(segment[a,b], cone(angle, R[spillTier]))   — analytic, full window width
+vis    = ⋃_i sweep(o_i, R_max, 360°)                          — o_i sampled along the aperture
+bend   = vis ∪ ⋃_{c ∈ C} sweep(c, R_max, 360°)                — C = wall corners visible from it
+white  = wedge ∩ vis  ∩ region
+band_k = ((white ⊕ k·d) ∩ bend ∩ region) \ band_{k-1}
 ```
 
-- **Bands step down from the tier at the edge**, not to fixed tiers. Bright edge →
-  normal → dim → ambient; a *dim* edge goes straight to ambient. Absolute bands would
-  produce spill brighter than the light casting it.
-- **Max-combine only — spill may raise a light level, never lower it.** This is what
-  makes it safe. Dilation ignores occlusion so a band can leak, but leaking can only
-  make somewhere too bright. A too-bright corner is cosmetic; a too-dark one hides a
-  creature.
-- **Occlusion fix:** clip the bands to the aperture's own sweep (§7.1 computes it
-  anyway). Anything visible from the doorway gets spill; anything behind the wall
-  doesn't.
-- **Observer-independent** — depends on geometry and the light, not on who's looking.
-  Compute once into the god's-eye field and cache; re-derive on light/wall changes, not
-  on token movement. Being an emitter, §4.4 low-light vision extends it like any other.
+`vis` at 360° costs nothing extra — the walls do the work, and `∩ region` stops the sweep
+escaping back out through its own window. The dilation is the **only** distance bound on a band;
+every clip above it is visibility, which is what lets both sweep sets be taken once at `R_max`
+and reused across every tier and every band.
 
-The fully general case — any wall-cut shadow edge, e.g. a torch behind a pillar — has no
-cheap correct form. Options are one sweep per silhouette vertex, or §7.2 multi-sampling.
-**Apertures first; general case behind a flag.**
+> **Both halves of this were wrong in the first build, and play-testing found them in one pass —
+> 2026-08-26.** Kept because each mistake is the obvious one.
+>
+> **The wedge was a point, not a window.** `white` was a single `angle`-limited sweep from one
+> origin, unioned with a thin quad across the opening. A `ClockwiseSweepPolygon` emanates from a
+> *point*, so the lit wedge left the wall at zero width and widened from nothing — reported as
+> *"it comes almost to a point, when it should have a starting width of the entire length of the
+> window"*. Sampling more origins does not fix it: adjacent cones only close their scallops some
+> way in, and the window's own width is still never expressed. The shape wanted is the Minkowski
+> sum of the aperture segment with the cone, and since a circular sector and a segment are both
+> convex, that sum is just their convex hull — `a`, a's outer flank, an arc about `a` round to
+> the normal, the straight tangent across to `b`, an arc about `b` out to b's flank, `b`. So the
+> wedge is built analytically and the sweeps do occlusion only.
+>
+> **The bands could not reach a shadow.** `vis` was swept **from the same origin as the cone**,
+> so every wall-cut edge of the wedge was also an edge of the clip, and `(white ⊕ k·d) ∩ vis`
+> could never cross one. A band could therefore only appear past the wedge's *angular* or
+> *radial* limit, and in the direction of a wall-cut edge there was nothing at all — reported as
+> *"the dimmer bands aren't offsetting from all sides of the initial cone, it's not counting the
+> sides that exist because they were trimmed by walls"*.
+>
+> Light gets into that shadow by bending round the corner that cast it, so the clip has to admit
+> what those corners can see. `bend` is that, and the corner test is *visible from the aperture* —
+> a corner no light reaches has nothing to bend. This is the "one sweep per silhouette vertex"
+> this section deferred two paragraphs below, arriving as a requirement rather than as an option;
+> what it cost was one union per window, not one per band, because the dilation was already
+> carrying the distance bound.
+>
+> **Two follow-ups, both about which corners get admitted — 2026-08-27.**
+>
+> *Ranking by distance from the window is not relevance.* The corners nearest an aperture are its
+> own jambs and the near wall, which cast nothing into the room; the corner that gates a far leg
+> is far away by definition. With the cap at 8 the queue filled with the former and culled the
+> latter. The honest test is proximity to the **lit wedge** — a band cannot reach a corner it is
+> not near, because the dilation says so — taken against the wedge at `R_max` so it stays
+> tier-independent and cacheable. Distance from the window survives only as a tiebreak.
+>
+> *Test the nudged point, never the corner.* A corner that casts a shadow **is a vertex of
+> `vis`**, because the sweep turns at exactly that point, and ray-crossing containment at a
+> polygon's own vertex answers by floating-point accident. Whether the corner gating a room was
+> admitted therefore depended on where the wall happened to sit, and moving a free-standing wall
+> one square re-rolled it — reported as spill *"behaving somewhat erratically… edges that just
+> aren't getting looked at"*, which was the opposite of what was happening: they were looked at
+> and given an arbitrary answer.
+>
+> Nudging toward the light first makes it exact rather than merely likelier, and the reason is
+> structural: each sample's sweep is **star-shaped about its own origin**, so the segment from an
+> origin to any point of that sweep lies inside it, and a boundary corner moves strictly *into*
+> `vis` for any offset. An occluded corner stays out, because a few pixels do not cross a wall.
+> The nudged point is also the sweep origin, so there is one point per corner and no way for the
+> tested point and the swept point to disagree.
+
+Every sweep is `type: "light"`, and `_testEdgeInclusion` drops any edge whose `light` is `NONE`
+before it can occlude (`geometry/clockwise-sweep.mjs:244`). So a second window, or another open
+door, lets the spill straight through — and it must, because that is the *same* predicate that
+finds a window in the first place. The two cannot disagree. Nothing else in the construction
+consults a wall: the dilation is a Minkowski sum and the region clip is a polygon.
+
+**The wedge is anchored across the window, and that is a correctness requirement.** Its near edge
+is pushed ε *outside* the wall so the region clip lands on the wall rather than a rounding error
+short of it. That makes the wall carrying the window cut every ring, so each band is a C or a U
+opening onto it rather than an annulus — Patrick predicted exactly that from the shape of the
+problem (2026-08-26), and it is why `splitAnnuli` is the exception here and not the rule. The
+first build got the same property from a separate aperture quad; the analytic wedge supersedes
+it, since it already reaches the wall at full width.
+
+#### What still does not bend
+
+Bands bend around **one** corner. A point reachable only by turning twice gets nothing, and that
+shadow edge is hard — a real occlusion boundary, which §6.2 wants sharp anyway.
+
+Two things bound how much that costs. `MAX_CORNERS` caps the sweeps per aperture at the eight
+nearest, so a wall-dense room degrades by losing its least relevant bends rather than by getting
+slow. And the dilation caps reach at `N·d` regardless, so a second bend has at most one band's
+width left to travel by the time it would matter.
+
+If it ever needs more, the next step is the same shape again — sweep from the corners of `bend`
+rather than of `white` — and it needs no rework, only a second pass.
+
+#### The tier
+
+`spillTier` is the **ambient emitter's** resolved tier just outside the window:
+
+```js
+const ambientOnly = emittersAt(out).filter((e) => e.entry.isGlobal);
+const { B, applied, winner } = contest(ambientOnly, suppressorsAt(out));
+const spillTier = resolveTier(B, { suppressed: applied, floor: winner?.floor });
+```
+
+**Not `evaluate()`, and the difference is the whole point.** A candle on the windowsill already
+shines through the window — the edge passes light, Foundry sweeps it, and §7.1 says so in its
+own parenthesis. Reading the full emitter set would spill forty feet of *bright* from a candle
+and double-count light that is already being drawn. Global illumination is the only thing with
+no geometry to stream through the gap, so it is the only thing spill exists for.
+
+Running the *contest* rather than reading `ambientTierAt` is what makes a darkness over the
+window work: the spell clamps the ambient at that point and the spill starts one or two rungs
+lower, with `floor`, eligibility and *daylight* cancellation honoured by the code that already
+owns those rules. It also removes any question of spill feeding spill — the ambient emitter is
+the only input, so the recursion cannot arise.
+
+Bands step down one rung per `d` and stop at Dim, and not by choice: `globalLightCutoff` is
+`darknessTable()[TIER.DIM]` and `darknessFor` returns `erase: level > cutoff`, so Dim is the
+last rung at which global illumination still lights and still reveals. Below it there is nothing
+to spill.
+
+**No spill when `spillTier <= interiorTier`.** The same comparison as eligibility, so it is one
+test rather than two: a Bright scene clamped to Dim indoors, with a *deeper darkness* over the
+window, gives Dim against Dim and no window qualifies. Nothing is computed, which is also the
+correct answer.
+
+#### Reach
+
+Per-tier caps on the cone radius, every number configurable (§10.10): 40 / 20 / 10 ft for
+Bright / Normal / Dim, band width 10 ft, angle 105°.
+
+The cap keys off `spillTier` alone, **never off each band's own tier** — otherwise a Normal
+spill's Dim band would be capped at 10 ft with 20 already spent. So Bright reaches 40 + 10 + 10
+and Dim reaches 10.
+
+These caps are the only statement in the model that diffuse light through an aperture falls off
+with distance. Nothing else expresses it, which is why they survive even though §3.4's original
+reason for a distance limit — reining in a disproportionate spill from a small light — is
+answered better by taking the ambient alone.
+
+#### Eligibility
+
+A wall is a window if its **edge** passes light and the ambient differs across it.
+
+- `edge.type === "wall"`. Non-negotiable: `Edge.light` defaults to `NONE` for *every* edge type
+  (`geometry/edges/edge.mjs:41`), and this module puts its own umbra edges into `canvas.edges`
+  with exactly that (`vision/umbra-edges.mjs`). Without the type test, every umbra boundary on
+  the scene is a window.
+- `edge.light === CONST.WALL_SENSE_TYPES.NONE`.
+- **Open doors need no special case.** `Wall##createEdge` zeroes all four restrictions when
+  `isOpen` (`placeables/wall.mjs:225`), so a door's edge stays in the collection with its
+  geometry intact and reads as a window exactly while it is open — and stops when it shuts.
+- `spillTier > ambientTierAt(inward sample)`. **Not a border test.** Collinearity between a
+  drawn region outline and a drawn wall is a tolerance exercise with no right answer. The
+  differential is the actual semantics; it reuses the fold that already handles overlapping
+  regions, modes and holes; it hands back the magnitude the bands need; and it switches the
+  whole feature off at nightfall with no special case, because once the sky is darker than the
+  room no window qualifies.
+
+#### Invalidation — two clocks
+
+**Geometry** depends on walls and regions only. **Tier** additionally depends on the ambient and
+on suppressors, because the contest is in the loop — a darkness carried past a window moves it.
+So the expensive half rebuilds on wall and region change, and the cheap half, one contest per
+window, re-runs on registry version.
+
+Baking the tier into cached geometry would leave spill stale through a darkness *animation*,
+which fires no document update at all. That is the same trap `ambientTier` is read live to
+avoid.
+
+**No suppression during wall editing, by decision** (Patrick, 2026-08-26: *"let's disable the
+rebuild suppress when editing walls — I want to see what kind of latency this actually
+creates"*). It is the worst case by construction: every wall change bumps the geometry epoch,
+which drops the sweep cache, so each edit re-sweeps every window on the scene.
+`spill.stats().sweeps` is the number that decides whether a brake is needed, and the hook to
+apply one is written and idle (`deactivateWallsLayer`).
+
+#### Cost
+
+Per window: up to `MAX_ORIGINS + MAX_CORNERS` = 14 sweeps at ~0.25 ms (§9.4), then `N` offsets
+and ~3N boolean ops. The sweeps are the whole cost and they are cached on the geometry epoch, so
+a tier change — a darkness drifting past a window — pays only the offsets.
+
+Meshes merge by level before drawing, so four windows in one room produce one ring per tier
+rather than four sets of bands. And every spill band is Dim or brighter, so `darknessFor` gives
+`erase: false` and none of them carries an `il` mesh or touches the visibility mask — half the
+cost of the §10.7 region that darkened the room in the first place.
+
+**Spill bands are the one ambient area drawn with a soft edge.** `ambientDomains` carries a
+`derived` flag through the fold purely to decide this, and `field` passes `hardEdge: !derived`.
+§10.7's regions stay hard because their boundary follows a wall and blurring it makes a room
+bleed through its own walls; a spill band's boundary is a falloff between two light levels and
+is the one place in the module where the brightness genuinely *is* continuous. The domains are
+therefore keyed on `tier|derived` rather than on tier alone — two parts at one level that
+disagree about their edges cannot share a mesh.
+
+All of it is charged at rebuild and none of it per frame. That is the whole difference from the
+retired ground feather (§6.4.2), which died because it rebuilt on every repaint of a drag.
 
 ### 3.5 Where sources come from
 
@@ -1057,6 +1293,36 @@ remaining known hole in this approach.
 cached on its identity, so modifying it would invalidate the cache that produced the
 modification.
 
+### 4.3.1 A wall is an umbra — 2026-08-27
+
+Patrick's suggestion, and it is the right shape rather than a workaround: the model already owns
+*"this observer cannot perceive here, so clamp it"*, and a wall is the most basic case of not
+perceiving. Ground outside an observer's `los` is clamped to Dark exactly as an umbra clamps, so
+every unseen part of a scene renders consistently instead of showing whatever the model painted
+there.
+
+**It also ends the leak three patches missed**, and the way it does so is the argument for it.
+The darkness discs visible through fog were `dark` **regions in the darkness-level texture**, not
+meshes — the locator run on 2026-08-27 reported `parent: "none"`, `visible: false` for every
+darkness source on the scene, which is §6.4.1's `darkeningStrength` measurement taken to its
+limit. §6.2.7 masked a layer that was drawing nothing. §6.2.8 stopped fog *reading* the texture
+for its replacement colour and fixed the base, but a residue survived through the partial `mix`
+where the vision mask is neither 0 nor 1. Each of those blocked one route out of the texture.
+This removes the discs from the texture instead, so there is no route left at any mask value.
+
+**Render-only, and that is deliberate.** It lives in `render/paint.mjs`, not in `umbra.clampAt`,
+so `perceivedTier` and every mechanical consumer are untouched. §6.1 keeps the model and the
+picture agreeing by construction, and this is a claim about *drawing*: a blindsighted creature
+perceives past a wall perfectly well, and a model reporting Dark there would be wrong about the
+rules in order to fix something about pixels.
+
+Cost is one Clipper difference per observer, and it composes with the umbra for free — it is
+another entry in the same per-observer region list, so §5.3's `max` over observers still falls
+out as the intersection, and a point one creature can see is unclamped for everyone.
+
+`hideUnseenGround`, default on. With no observer there is no point of view to be unable to see
+from, so god's eye clamps nothing.
+
 ### 4.4 Low-light vision — pre-contest, geometric
 
 A per-observer transform on the **emitter set**: multiply each emitter's band radii for
@@ -1201,6 +1467,43 @@ perceives, it does not *see*, and should not let you read a scroll in the dark.
 > property on a source (§6.2.4 cost several rounds to learn that), and the leak is narrow:
 > lit ground, beyond a supernatural darkness, beyond the creature's blindsight. Over-blocking
 > a sense the creature definitely has is the worse error of the two.
+
+#### 4.5.1a The blinded *condition* does not take blindsight — 2026-08-26
+
+A rules change Patrick asked for, and it lands in this section because it is the same shape as
+everything else here: a sense that should survive something, and a *rendering* path that took it
+away anyway.
+
+**PF1 already had the detection half right.** Its `blindSight` mode is type `OTHER` with
+`_canDetect() { return true }`, so core's status gate on sight modes
+(`perception/detection-mode.mjs:107`) never reaches it — a blinded creature went on detecting
+whatever it could hear or feel.
+
+**Terrain was what was lost.** `Token#_getVisionBlindedStates` sets `blinded.blind` from the
+status effect (`placeables/token.mjs:911`); `isBlinded` is any-true over that record, and it
+swaps the vision mode to `blindness`, after which `refreshVisibility` draws no sight FOV. So the
+creature detected every token in range while standing in an unpainted void — precisely the
+failure §4.5.1's `darkSightRadius` was written for, arriving down a different path.
+
+Two halves, and both are needed:
+
+1. **`blinded.blind` reports `false` for a creature with blindsight.** The record already
+   overrode `darkness` for §4.5.1; `blind` joins it on the same principle — Foundry's *behaviour*
+   is right and only its *trigger* is too broad.
+2. **The radius is then clamped to the blindsight range**, assigned rather than maximised.
+   Without this, `_syncSenses` has already set `sight.range` to
+   `max(base, darkvision, blindsight)`, so a blinded creature would see as far as its
+   **darkvision** — which is sight, and is exactly what the condition removes.
+
+**A third subset of the same trait data**, which is why `perception.blindsightRange` exists
+beside `darkSightRange` and `visualDarkSightRange`. The senses that survive *darkness* are not
+the senses that survive *blinding*: *true seeing* and *see in darkness* are still sight, and a
+blinded creature gets neither. One function per question rather than one function with a flag —
+using the wrong subset is invisible at the call site.
+
+What stays blocked is the part that should: core gates sight-based detection on the **status
+effect** rather than on this record, so `basicSight` and `lightPerception` still fail. That
+division is what makes the change safe — the creature perceives, and does not see.
 
 ### 4.5.2 Seeing *into* darkness — sight-blocking edges
 
@@ -1620,6 +1923,35 @@ on the source and Foundry already has a colour for it. A synthetic fill is a sou
 covering its cell with `attenuation: 0` and its lighting levels pinned to the target
 tier.
 
+> **That table is the mapping, with one qualification — restored 2026-08-25.** §7.0 made the
+> background whatever our texture put there rather than always Dark, and `levelForTier` was
+> rewritten to return the *rung distance* from background to target. That was a step too far.
+> The middle levels are relative but they are not **evenly** relative: `deriveWeights` solves
+> `weightDim` and `weightBright` against a **Dark** background, so `DIM` only means our Dim when
+> the ground is Dark, and a rung of our ladder is not a rung of Foundry's.
+>
+> Symptom, reported by Patrick: with ambient set to **Dim**, Normal and Dim were nearly
+> indistinguishable even with the two set to 0.1 and 0.9 — and *every other ambient behaved*.
+> That is the diagnosis stated as a symptom. Dim is the only background on which a one-rung step
+> asks for a **middle** level: from Dark you ask for `DIM` (the case the weight is solved for),
+> from Normal you ask for `BRIGHTEST` (absolute), from Bright nothing. Only from Dim do you ask
+> for a middle level with the wrong weight behind it — a torch's Normal ring came out at
+> luminance ≈0.23 on a ground of ≈0.145, where Normal should be ≈0.905.
+>
+> So `levelForTier` is this table again, floored at `UNLIT` when the target is not brighter than
+> the ground — which is the one thing the relative form was needed for (a torch's band capped at
+> Normal must add nothing on Normal ground). **Exactly one cell of the matrix changed**: Normal
+> on Dim ground, `DIM` → `BRIGHT`.
+>
+> It is safe because "absolute" only has to hold where each level is reachable. `DIM` is asked
+> for only when the target is Dim and the ground darker — so the ground is Dark, its solved
+> case. `BRIGHT` is asked for on Dark or Dim ground, and `mix(bg, ambientBrightest,
+> weightBright)` barely moves between them because `weightBright` is large. `BRIGHTEST` and
+> `UNLIT` do not read the weights at all.
+>
+> *Lesson, and it is the second time this exact shape has bitten: a quantity being relative does
+> not make it linear in the units you happen to be counting.*
+
 **A `dark` fill needs no source at all.** Clipping the light away *is* the render. Only a
 fill above Dark — a *darkness* at noon, capped at Normal — or one at Supernatural Dark
 requires anything to be drawn.
@@ -1670,6 +2002,92 @@ will be needed:
 - Clipping a darkness source through `_visualShape` rather than `shape`
   (`point-darkness-source.mjs:165`), which also keeps what is *drawn* separate from what
   is *measured*.
+
+#### 6.2.7 A darkness source ignores the vision mask too — 2026-08-27
+
+The same finding as §6.2.5 from one layer higher up, and found the same way: by observing that
+players could watch darkness bubbles move through rooms they had no vision into.
+
+Three of the four effect layers install a `VisualEffectsMaskingFilter` in `_draw` —
+`background-effects.mjs:58`, `illumination-effects.mjs:119`, `coloration-effects.mjs:45`. The
+fourth, `darkness-effects.mjs:27`, installs a plain `VoidFilter`. That filter's core is one line
+(`effects-masking.mjs:173`):
+
+```glsl
+finalColor = mix(getReplacementColor(), finalColor, texture2D(visionTexture, vMaskTextureCoord).r);
+```
+
+So light and colour are withheld where the vision mask reads zero, and **darkness is not**.
+
+**Why it read as two separate bugs.** Umbras looked right while darkness circles did not, which
+sent the first round of diagnosis at `vision/umbra-mask.mjs` — wrongly, and its own readout
+disproved it: with `umbraPerception` off it reported `trimmed: 0, drawn: 0`, meaning that patch
+swapped nothing and drew nothing while the symptom persisted. The real split is a rendering one.
+With the §7.0 takeover on, `darkeningStrength` withholds the source mesh for every tier **but**
+Supernatural Dark, so an ordinary *darkness* is a `dark` region in the illumination texture and
+is already masked, while a supernatural one is a source mesh on the unmasked layer.
+
+It also explains, with no second cause, why it only showed at normal or bright scene darkness:
+the leak is a *darkened* copy of the map, and that is only distinguishable from its surroundings
+when the surroundings are bright.
+
+**Fixed in `render/darkness-mask.mjs`**, a prototype patch on the layer's `_draw` — there is no
+CONFIG slot; `groups/effects.mjs:125` constructs the class directly. Mode `BACKGROUND`, whose
+replacement colour is `vec4(0.0)` (`effects-masking.mjs:154`): an unseen area gets *nothing* from
+the layer rather than a substituted colour, which is what a `NORMAL`-blended layer needs.
+Registered in `canvas.effects.visualEffectsMaskingFilters` so core's `toggleMaskingFilters` owns
+the `enableVisionMasking` uniform — without that, the darkness layer would stay masked on a scene
+with token vision off, which is a worse asymmetry than the one being fixed.
+
+It changes core behaviour for every darkness source, including other modules'. Patrick's call,
+2026-08-27, with that stated. It follows observer mode for free, since `canvas.masks.vision` is
+whatever the current viewer's mask is.
+
+**And it fixed almost nothing, because the leak was one layer lower.** Kept anyway — Supernatural
+Dark genuinely is drawn as a source mesh here and genuinely did draw through walls — but the
+report it was aimed at is §6.2.8.
+
+#### 6.2.8 Fog renders the model on purpose — 2026-08-27
+
+The actual cause of "players can see darkness circles in rooms they cannot see into", and the
+third wrong guess before it. Core paints unseen ground from `getReplacementColor()`
+(`effects-masking.mjs:153-158`):
+
+```glsl
+float darknessLevel = texture2D(darknessLevelTexture, vMaskTextureCoord).r;
+return vec4(mix(ambientDaylight, ambientDarkness, darknessLevel), 1.0);
+```
+
+and `illumination-effects.mjs:120` supplies `darknessLevelTexture:
+canvas.effects.illumination.renderTexture`, which is `darknessLevelMeshes.renderTexture` — the
+container §7.0 writes the model into.
+
+**Fog is not failing to hide the model. It is rendering it, per fragment, on purpose.** In stock
+Foundry that texture holds nothing but static region data, so sampling it for the unseen colour is
+free coherence. Once this module writes five tiers of live state into it, the same line publishes
+every darkness bubble and every umbra to anyone who cannot see them.
+
+Two facts that never fitted any other story fall out of it. The circles were *texture regions*,
+not meshes — §6.4.1 measured one darkness source drawn out of seven with the takeover on — which
+is why §6.2.7 had almost nothing to act on. And it only showed at normal or bright scene darkness
+because at high darkness both ends of `mix(ambientDaylight, ambientDarkness, …)` are nearly the
+same colour and the discs vanish into it.
+
+**Fixed in `render/darkness-mask.mjs`** by swapping `CONFIG.Canvas.visualEffectsMaskingFilter`
+(a real config slot, `config.mjs:701`, read fresh by every layer's `_draw`) for a subclass whose
+mode-1 replacement reads a `pf1SceneDarkness` uniform instead of the texture. The uniform is set
+per `apply`, because Foundry animates darkness transitions without firing a document update — the
+same trap `registry.ambientTier` is read live to avoid. A negative value is the sentinel for
+core's original behaviour, so the setting toggles live and needs no second shader.
+
+The header is **copied from core with one line changed**, not produced by `replace()` on the
+original. String surgery against a shader fails silently the first time upstream reformats a line,
+and a shader that has quietly stopped masking is indistinguishable from one that is working.
+
+**Accepted consequence:** §10.7's ambient regions stop showing through fog as well, so an unlit
+cellar reads at scene brightness in unexplored area. Patrick's call, 2026-08-27. Separating them
+would mean a second darkness-level texture holding only the static half — a great deal of
+machinery to reveal architecture the map already shows.
 
 #### 6.2.5 A darkness source ignores the vision mode's colour
 
@@ -1746,6 +2164,32 @@ but changing the selected token triggers only a *vision* one — so without a ho
 keeps the previous observer's appearance until something else dirties lighting, which reads as
 the feature working intermittently. Guarded on the answer actually changing, and it requests
 lighting only, so it cannot feed back into the hook that drives it.
+
+> **§7.0 left this half-finished, and the half that remains is the visible one.** Reported by
+> Patrick 2026-08-25 as *"blindsight removes animations from darkness sources"*, which it does,
+> exactly as written above — withholding the mesh withholds everything the mesh carries, and
+> since §6.2.6 that includes the GM's chosen animation.
+>
+> The report is worth more than the symptom, because it says the reasoning has expired. When
+> this was written the darkness **source** was what made the region dark, so withholding it did
+> make the bubble indistinguishable from the ground around it. Since §7.0 the *texture* carries
+> the ground's tier and the source only carries the violet and the animation — so withholding it
+> now removes the overlay and leaves the region **still painted Dark**. A blindsighted creature
+> gets a region that is dark, static, and unexplained, which is neither the old behaviour nor the
+> intended one.
+>
+> Three ways out were put to Patrick — leave it; stop withholding; or finish the intent by making
+> the texture observer-relative for blindsight as well, which `render/paint.mjs` already has the
+> machinery for. **Decided 2026-08-26: leave it**, and darkness animations are shelved as a
+> feature besides.
+>
+> So the section stands as written with one correction to its scope: withholding the mesh no
+> longer makes the bubble indistinguishable from the ground, and cannot, while the texture owns
+> the tier. What it does today is remove the violet and the animation for a blindsighted
+> observer. That is a smaller claim than the one above and it is the true one.
+>
+> **Do not "fix" the animation in isolation** if this is revisited — the animation is a symptom
+> of the withholding, and the withholding is right or wrong as a whole.
 
 ##### Superseded: unveiling in the shader
 
@@ -1894,6 +2338,546 @@ should reject here for the same reason.
 > *a uniform named like an opacity is not necessarily one*; the correct reading was available in
 > one line of shader source and I inferred it from the name instead.
 
+#### 6.2.9 A tier is a brightness, not a brightening — BUILT AND PLAY-TESTED, 2026-08-27
+
+Patrick, 2026-08-27: *"I don't like that the different brightness levels vary in actual brightness
+based on the global illumination of a scene. I want a fixed brightness for each level."*
+
+He is right, and the cause is one line of core's shader rather than anything in the model.
+
+##### Where the scene's illumination was leaking in
+
+The **ground** was already fixed and has been since §7.0. The baseline sampler turns our texture
+into colour with `mix(ambientDaylight, ambientDarkness, level)`
+(`baseline-illumination.mjs:21`), and those two colours come from the scene's *palette*, not from
+its darkness slider — so a region painted Dim is the same pixel value on every scene.
+
+**Light sources were not.** Every light draws its own mesh on top, and computes its zones from the
+ground beneath (`base-lighting.mjs:361-366`):
+
+```glsl
+computedBackgroundColor = mix(ambientDaylight, ambientDarkness, texture2D(darknessLevelTexture, …).r);
+computedBrightColor     = mix(computedBackgroundColor, ambientBrightest, weightBright);
+computedDimColor        = mix(computedBackgroundColor, computedBrightColor, weightDim);
+```
+
+`deriveWeights` (§6.2.3) solves those weights so a light's bright zone lands exactly on our Normal
+**when the background is Dark**. Every other background drifts, and which background a light stands
+on is what the scene's global illumination decides. In luminance, with the default palette:
+
+| ground | zone `levelForTier` asks for | rendered | should be |
+| --- | --- | --- | --- |
+| Dark (0.188) | `BRIGHT` | **0.685** | 0.685 — Normal ✓ |
+| Dim (0.436) | `BRIGHT` | **0.781** | 0.685 — Normal ✗ |
+
+A torch's Normal ring in a dim room reads a third of the way from Normal to Bright. §6.2.3 recorded
+this as a deliberate bargain — *"lights must stay relative to the background, because the background
+is the only channel through which the model can reach them"* — and that reasoning was sound while
+the background was the only channel. It stopped being true when §7.0 gave us a tier table the
+ground is painted from directly.
+
+##### The fix, and why it is core's own branch
+
+`COMPUTE_ILLUMINATION` has an `else` (`base-lighting.mjs:373-378`) that takes `colorBackground`,
+`colorDim` and `colorBright` as **uniforms**. Setting `computeIllumination = false` selects it. So
+`render/clip.mjs` hands each source the three colours outright, computed with the *same expression
+the ground uses*:
+
+```
+tierColor(tier) = mix(ambientDaylight, ambientDarkness, darknessTable()[tier])
+```
+
+There is one expression of the ladder, so a light asking for Normal and ground at Normal cannot
+drift apart.
+
+Three things make this exact rather than an approximation, and each is a debt §6.1 or §7.0 already
+paid:
+
+- **A per-source constant is enough** because every source is clipped to a *cell*, and a cell is a
+  region of uniform treatment — the ground tier under a source does not vary across the part of it
+  that draws. The relative path needs a per-fragment background precisely because it has no such
+  guarantee.
+- **`levelForTier` is not used on this path at all.** The `else` branch skips `getCorrectedColor`,
+  so there is no translation into one of Foundry's four levels — and translating first is exactly
+  what would put the relative step back. The tier is the answer.
+- **`UNLIT` falls out rather than being special-cased.** A zone no brighter than its ground is given
+  the ground's own colour; `FRAGMENT_END` mixes toward `computedBackgroundColor`, so all three equal
+  leaves the ground exactly as the texture painted it. A torch at noon draws nothing, as before.
+
+> **The illumination layer only, and it crashed on the first run for saying so badly.** All three
+> layers — background, illumination, coloration — share `_updateCommonUniforms`, and the GLSL
+> declares all three colour uniforms for every one of them (`base-lighting.mjs:107-112`). But only
+> `AdaptiveIlluminationShader` seeds `colorDim`/`colorBright` in `defaultUniforms`
+> (`illumination-lighting.mjs:84-85`), so on the other two they are `undefined` in JS and
+> `Color#applyRGB` threw once per frame inside the ticker.
+>
+> The guard is a test for those two uniforms, which is the fix and is also the correct *selection*
+> rather than a defensive one. They are read by exactly one thing — `TRANSITION`
+> (`base-lighting.mjs:341`) — which only the illumination fragment program includes. The background
+> layer tints the map artwork and the coloration layer paints the light's colour, and neither was
+> part of the problem: the background layer already computes `computedBackgroundColor` per fragment
+> from our texture, which is absolute. Switching it to a per-source constant would have been a
+> change nobody asked for, arrived at by accident.
+
+##### Both paths are kept
+
+`LEVEL`/`BAND_LEVEL` are still set beside `TIERS`, and the level corrections are still uploaded.
+The absolute path is gated on **`ambientTakeover`**, not on the renderer, for the reason that ties
+`applyLightWeights` to the same switch: with the takeover off, Foundry's own darkness level drives
+the ground and the tier table describes nothing that is on screen — pinning lights to it would make
+them the one thing ignoring the scene. Off, the relative path is Foundry's behaviour rather than a
+fallback we maintain.
+
+##### What this does not fix
+
+Two further places the scene's slider still reaches a pixel, both outside the light sources:
+
+- **Fog colour.** `colors.fogExplored = colors.background × sceneFogColor`, and `colors.background`
+  is `mix(darkness, daylight, 1 − sceneDarkness)` (`environment.mjs:226`). Inert at the default fog
+  colour of black — black times anything is black — and live the moment a GM sets a coloured fog.
+- **Unpainted ground.** The darkness-level container clears to `canvas.environment.darknessLevel`
+  (`effects.mjs:240`), so anywhere no mesh covers falls back to the scene's own value. Invisible
+  with the default table, where Dark is 1.0 and so *is* that fallback; an inversion with any table
+  that puts Dark below 1, since at full scene darkness a *darkness* spell would then paint lighter
+  than the night around it.
+
+And one that is stable but not equal: blocked vision is Dark in the texture (§4.3.1) and then has
+the fog-of-war overlay composited on top — 50% black where explored, solid black where not. So
+"everything blocked reads as one brightness" is two brightnesses, neither of them the Dark tier.
+Left alone deliberately: the fog overlay is how a player tells *unseen* from *unvisited*, which is
+information the light model has no business removing.
+
+#### 6.2.10 Nothing but the model may set a pixel's brightness — BUILT AND PLAY-TESTED, 2026-08-27
+
+Patrick, 2026-08-27, after §7.0 step 6 and still seeing it: *"Global illumination should have no
+impact on any brightness levels within a scene save that it may change the levels of cells. A dark
+cell as identified by our model should be the exact same pixel coloration regardless of
+illumination settings. The only thing that affects how each cell is painted is the brightness level
+provided by the model, whether or not the current view has vision of that cell, and whether or not
+it's on the edge of a different light level."*
+
+That is the specification. Three things were still violating it, and **two of them were ours** —
+each introduced to fix something real, each reaching for `canvas.environment.darknessLevel` because
+at the time it was the nearest available stand-in for "ambient".
+
+**1. The fog replacement colour — the big one, and it is §6.2.8's.** The masking filter replaces
+every fragment the viewer cannot see, and §6.2.8 fed it `canvas.environment.darknessLevel` so that
+darkness discs would stop showing through fog. It worked, and it made *most of a player's screen*
+render at whatever the slider said. It is also no longer needed for its original purpose: §4.3.1
+clamps unseen ground to Dark **in the texture**, so there are no discs left in it to bleed through.
+The uniform now carries `darknessTable()[TIER.DARK]` — the same answer, arrived at from the other
+side, and constant.
+
+**2. Global illumination painting over the finished map — ours, §7.0's.** `ambient.mjs` narrows the
+global source's upper threshold so it discards where the model says *darker than Dim*. Correct while
+the ground's brightness still came from light sources; wrong afterwards, because it leaves the
+source painting everywhere *else*, and what it paints is
+`mix(computedBackgroundColor, ambientBrightest, weightBright)` — a wash laid over the tier the
+texture just wrote. Worse, the wash appears and disappears as the scene's darkness crosses the
+source's own `darkness.min/max` band, which is a brightness change with no model change behind it.
+
+Under step 6 the band is inverted instead, so every fragment discards. **The reveal half is
+untouched** — `#refreshDynamicIllumination` reads the source's *shape* into the visibility mask
+(`visibility.mjs:637-640`), not this uniform — so global illumination still lights the map for the
+purpose of what a creature can see. Only its opinion about brightness is withdrawn, which the
+texture now owns outright.
+
+**3. The coloration layer's unseen replacement — core's.** `canvas.effects.coloration` blends
+**`ADD`** (`coloration-effects.mjs:47`), and core replaces its unseen fragments with
+`canvas.colors.background` (`effects.mjs:239`), which is `mix(darkness, daylight, 1 − sceneDarkness)`.
+So a grey scaling with the slider was being *added* to every pixel the viewer could not see. Now
+black — not a tuning choice but the identity for an additive layer: no coloured light reaches
+ground you cannot see.
+
+##### The rule this leaves behind
+
+> **`canvas.environment.darknessLevel` is not an input to anything this module draws.** It selects
+> which *tier* open ground is, through `registry.ambientTier`, and there its involvement ends. Any
+> other read of it — in a shader uniform, a replacement colour, a clear colour — is a leak, because
+> it lets the scene's slider move a pixel the model did not move.
+
+Three further reads of it survive and are named so they are not rediscovered as bugs. The container
+**clear colour** (`effects.mjs:240`) is now unreachable, since §7.0 step 6 made the ground cover the
+scene rect unconditionally. **Fog-of-war colours** are `colors.background × sceneFogColor` and inert
+at the default fog colour of black. The **renderer background** is what shows outside the scene
+rect, where there is no model to disagree with.
+
+#### 6.2.11 Greyscale, taken over — BUILT 2026-08-27
+
+Patrick, 2026-08-27: *"Rather than hacking together a bunch of rules, I want to do more like what we
+did with lighting and create one centralized implementation that disables existing routes and
+implements its own singular application according to our rules."*
+
+A creature that sees in black and white falls back on that sense **where there is no light**. Where
+there is light it uses its eyes, and its eyes see colour. So the boundary between grey and colour is
+a brightness boundary, and this module computes, rasterises and blurs exactly one of those. Foundry
+instead greys the entire canvas the moment a darkvision token becomes the viewer.
+
+##### The first attempt, and why it produced nothing
+
+Built first as two shader patches — the primary sprite's `ColorAdjustmentsSamplerShader`, whose
+per-pixel darkness link core ships and disables, plus the coloration masking filter. Both landed;
+`render.greyscale()` reported every switch on; the picture was unchanged inside a darkvision radius.
+
+The cause is one line, which every vision-source layer begins on (`base-lighting.mjs:395`):
+
+```glsl
+vec4 baseColor = useSampler ? texture2D(primaryTexture, vSamplerUvs) : vec4(1.0);
+```
+
+with `u.primaryTexture = canvas.primary.renderTexture` (`point-vision-source.mjs:428`) — the **raw**
+cached terrain, sampled before the primary sprite's shader ever runs. A vision source does precisely
+what §6.2.5 found a *darkness* source doing: it takes its own copy of the map and repaints it on its
+own terms. `background.visibility: REQUIRED` makes darkvision do that across its whole field of
+view, so the sprite's output was overpainted everywhere it would have mattered.
+
+> **The general lesson, and it is the fifth face of §6.2.3's finding.** No shader that samples
+> `canvas.primary.renderTexture` can be corrected by changing what the primary sprite does. Three of
+> the five routes below sample it independently. This is now twice that a per-source repaint has
+> defeated a per-layer correction, and the second time it was the same file that documented the
+> first.
+
+##### The five routes greyscale reached the screen by
+
+| # | Route | Applies to | Samples |
+| --- | --- | --- | --- |
+| 1 | `visionMode.canvas.shader` + `canvas.uniforms.saturation` | the whole canvas | raw primary texture |
+| 2 | vision source **background** layer, `vision.defaults.saturation` | inside the FOV | raw primary texture — **overpaints 1** |
+| 3 | vision source illumination + coloration layers, same uniform | inside the FOV | — |
+| 4 | `lighting.*.postProcessingModes: ["SATURATION"]` via `VisualEffectsMaskingFilter` | whole effects layers | — |
+| 5 | §6.2.5's darkness-shader wrap (ours) | inside a darkness disc | raw primary texture |
+
+Five places, four of them core's. Correcting them one at a time is unwinnable, because route 2 wins
+wherever a vision source paints.
+
+##### The takeover
+
+Same shape as §7.0's. **Zero every route, then add one pass nothing can repaint over.**
+
+`neutralise()` rebuilds PF1's darkvision `VisionMode` with routes 1–4 at zero, at `setup` because
+PF1 assigns the mode during `init` (`pf1.mjs:261`). Route 5 falls silent on its own:
+`desaturate.currentSaturation()` reads `visionModeOverrides.saturation`, which route 2 has just set
+to 0, so the darkness wrap mixes by nothing without that file being edited. After it runs, nothing
+in Foundry's pipeline desaturates anything, on any layer, for any observer.
+
+One pass replaces them, on **`canvas.environment`**. That group is `CanvasGroupMixin(PIXI.Container)`
+— an ordinary container, none of `CachedContainer`'s complications — and it holds `primary` (terrain,
+tokens, tiles, weather) and `effects` (every lighting layer). `visibility` and `interface` are its
+*siblings* under `rendered`, so the fog overlay, the grid, nameplates and the UI are outside it and
+stay in colour. The filter runs after all of that has composited: it cannot be overpainted, and it
+does not care which source sampled which texture.
+
+Built on `AbstractBaseMaskFilter` for its vertex shader alone. `vMaskTextureCoord` is
+`(vTextureCoord × inputSize.xy + outputFrame.xy) / screenDimensions` — the screen UV, correct even
+when the filter is handed a sub-rect, which `vTextureCoord` on its own is not.
+
+```
+grey = clamp((level - dimLevel) / (darkLevel - dimLevel), 0, 1) x greyness x fogGate
+```
+
+At or above Dark, fully grey; at or below Dim, full colour; and **the blurred band between the two
+rungs is the gradient**, so the greyscale edge is exactly as soft as the brightness edge beside it
+and moves with §6.4.3's width without reading it. Both rungs come from `darknessTable()`, so
+retuning the ladder in *Configure Visuals* moves this too.
+
+##### The gold halo was the clamp, not the rule — 2026-08-27
+
+Reported as: *"getting a colour halo around a darkness source when looking out of it. Only appears
+where the light beyond the darkness source is brighter than dark."*
+
+**Diagnosed twice, and the first diagnosis was wrong in an instructive way.** The first reading took
+the ring as the field being *right* — a light out-reaching the darkness that suppresses it, so the
+annulus between the two radii is genuinely lit — and moved `colourLevel` from Dim to Normal so that
+dim light no longer reached full colour. Patrick rejected it on both counts: Dim in full colour is
+what darkvision should look like, and, decisively:
+
+> *"The umbra does a good job of blocking (360 degree from within the darkness), but it looks like
+> the gradient from dark to not-dark is escaping either our umbra or our grey-ification, even though
+> it doesn't actually gradient away from dark from the token's perspective."*
+
+Which is exactly right, and names the bug. An observer inside a darkness has **everything** beyond
+it clamped to Dark (§4.3). There is no gradient to read. The field had one anyway, and the greyscale
+reported it faithfully.
+
+The gradient came from `clampRamps`. Its collar is built as `offsetPaths(paths, -half)` — and a
+negative Clipper offset shrinks the *region*, which means it **grows every hole**. The umbra's holes
+are the darkness sources that cast it, so the collar wrapped each of those too, fading the clamp to
+0 over ground the observer cannot see. `MAX_COLOR` then let whatever was beneath show through, and a
+light out-reaching its own darkness came back as a bright ring at the rim.
+
+Fixed by eroding the outer rings only (`splitRings`, then subtracting the untouched holes). Not a
+judgement about holes in general — it is that a hole here is a boundary the clamp shares with
+something **at least as dark**, so there is no step to soften. The hard edge that leaves is softened
+by §6.4.4's field blur along with every other boundary nobody enumerated, and that blur works on the
+*composited* field, so it cannot reveal a brighter value from beneath the way the collar could.
+
+> **The rule this leaves behind.** A feature keyed to the brightness field reports that field
+> faithfully, including its faults — so **a wrong picture in `render/greyscale.mjs` is usually a
+> right reading of a wrong field.** Reach for `render.transect()` and `overlay.levels()` before
+> touching the rule. Three rounds now: the sprite was not the terrain's only painter, a tier
+> boundary is not always a broad one, and a clamp's collar is not only on its outside. Each was
+> refuted by one look at a screenshot, and the third would have been reached faster by taking the
+> reporter's geometry at face value the first time.
+
+##### The takeover destroys its own input
+
+`visionModeOverrides.saturation` was how the observer's greyness was read, and after routes 1-4 are
+zeroed it reports 0 for everyone — so the filter would correctly compute that nobody sees in black
+and white, and do nothing, for ever. The value is captured by vision-mode id at neutralise time and
+read back from there. Worth naming because it is a general hazard of this pattern: **a takeover that
+zeroes a field cannot also read that field**, and the failure is silent and total.
+
+##### What changes visibly beyond the intent
+
+**Tokens grey too.** They live in `primary`. A creature standing in a dark room should not be in
+colour to an observer who can only see it by darkvision, and today it always is — a correction, but
+a conspicuous one, and the first thing that will look different.
+
+**Darkvision only.** `monochromatic` and `lightAmplification` keep every route they have.
+Monochromatic models an eye that cannot see colour *at all*, which is not a statement about where
+the light is; amplification is a different effect wearing the same shader.
+
+##### Blocked vision is a dial
+
+Excluding fog inverts the semantics on screen: ground you *can* see goes grey, ground you *cannot*
+returns to colour, with your vision polygon as a moving hard-edged boundary between them. A real
+risk of looking worse than the muddiness it fixes, which is why `greyscaleInFog` is a 0..1 slider
+defaulting to **0.5** rather than a switch. The argument on the other side is genuine: the tier field
+is painted scene-wide and already shows through fog as a documented leak, and colouring the fog
+removes one channel of it.
+
+##### What this now closes that the first attempt did not
+
+The coloration gap. §"Colour in an umbra is the coloration layer, never the map" (2026-08-23)
+established that a light's tint survives on top of grey terrain because nothing removes a placed
+light from an umbra. A pass after compositing greys the tint along with everything else, so a torch
+in a Dark region is grey light. It is still *light* — removing it there remains per-observer
+clipping and remains the §9.5 cost this design avoids — but the colour half is gone.
+
+That entry also carried the sentence *"It physically cannot be grey in one place and coloured in
+another."* True of the code as it stood, false as a general claim, and struck there.
+
+#### 6.4.3 One gradient, everywhere — BUILT AND PLAY-TESTED, 2026-08-27
+
+Patrick, 2026-08-27: *"our implementation looks very piecemeal right now. Can we consolidate that
+to a single gradient system that covers all transitions between brightnesses?"*
+
+It was, and the reason is that each boundary got a mechanism invented for it at the time, each
+with its own units:
+
+| Boundary | Was | Width expressed as |
+| --- | --- | --- |
+| region edge, darkness rim, umbra | a `PIXI.BlurFilter` per mesh | blur strength in world px |
+| §3.4 spill band | per-vertex ramp | a *fraction of a band* |
+| §7.0 step 6 light zone | per-vertex ramp | a *fraction of the narrower zone* |
+| clamp edge | a blur again | blur strength |
+
+So "half a transition" meant three different distances depending on what it was next to. And one
+of the four was not a gradient at all: a blur fades a mesh's **alpha** to reveal what is beneath,
+which is why §7.0 step 5 could never make one read as a ramp however wide it went.
+
+##### The rule
+
+> **Every brightness boundary ramps over the same distance, centred on the boundary.**
+
+One number, in grid squares, in `render/transition.mjs`. A two-rung boundary is deliberately *not*
+made wider for it — a wider fade reads as *less* of a step, and a two-rung boundary is more of one.
+
+Everything calls one function, `levelAtDistance(d, zones)`, with zones in scene pixels. Only the
+distance differs:
+
+| Producer | Distance is |
+| --- | --- |
+| `render/halo.mjs` | across a ground cell's boundary |
+| `render/gradient.mjs` (§3.4) | out from the lit wedge |
+| `render/light-ramps.mjs` (§7.0 step 6) | from the light's origin |
+| `render/paint.mjs` clamps | in from the shadow's edge |
+
+##### Ground boundaries, and why no cell needs to know its neighbour
+
+A halo is the collar around a cell, half a transition either side of its boundary, inner edge at
+the cell's own level and outer edge at whatever cell is found there. Painted **`MIN_COLOR`**, which
+is what makes it composable: the *brighter* cell's halo bleeds into the darker one and is the
+visible transition, while the darker cell's halo over the brighter one is min'd away because every
+value in it is darker than what is already painted. Both cells emit one, no coordination happens,
+and the blend picks the correct half of each pair by itself.
+
+That is the same mechanism §7.0 step 6 uses for two overlapping torches, which is the point: one
+rule wherever brightness meets brightness.
+
+##### The clamp edge is the `MAX` mirror of it
+
+A clamp region is eroded and its collar ramps from the clamp level down to **zero** — the brightest
+value the channel holds, and `max(x, 0) = x`, so the outer end of the collar contributes nothing.
+A soft vision boundary out of the same profile, with no filter.
+
+##### What came off
+
+- **The ground blur**, and with it `groundSoftness`'s effect. The setting stays registered so an
+  existing world keeps its value; it reads nothing.
+- **The seam backstop** (§6.4.2a). It existed for one failure — two blurred meshes fading at a
+  shared boundary, neither covering it, letting the container's clear through as a bright ring.
+  With no blur the meshes are opaque to their own edges; and §7.0 step 6 made the ground cover the
+  scene rect unconditionally, so the clear is unreachable regardless. Kept as a guarded no-op
+  rather than deleted, because both of its reasons are worth reading before anyone reintroduces a
+  filter here.
+- **`spillPlateau`**, with the fractional widths it expressed. A plateau is no longer a thing to
+  set: it is whatever is left of a zone once its two transitions are taken out. A zone narrower
+  than a transition now simply never reaches its nominal level, which is the honest picture rather
+  than a squeezed-in plateau.
+
+##### Four rings, one-sided — corrected 2026-08-27
+
+The first build used two rings, inner and outer, and it did not survive being turned up. Patrick at
+three squares: *"the transitions work, but not well, especially along rounded surfaces."*
+
+Two rings put every vertex at one of two distances, so the rasteriser has nothing to interpolate but
+a straight line — no S-curve. Worse, and this is the part that showed on curves: the interpolation
+runs along the **chords** of a polygonalised circle rather than along its radius, so the band
+scallops with the period of the source polygon. Most boundaries in this module are circles.
+
+Four rings make each band a quarter of the width, so the chord error falls with its square, and the
+levels carry a real smoothstep.
+
+The rings also run **outward only**, which is a second correction and a simplification. A centred
+collar needs each *inner* vertex to know what lies beyond the edge, and a point inside the cell
+cannot be asked — `levelAtPoint` answers with the cell itself. Ramping outward removes the question:
+every vertex that needs a neighbour is already outside, where the lookup is exact.
+
+It composes correctly for the same reason the whole scheme does. Both cells emit a ramp; the bright
+one's runs outward into the dark and is the visible transition, and the dark one's runs outward into
+the bright where every value is darker than what is already painted, so `MIN` discards it. **A
+transition therefore always sits on the darker side of a boundary** — predictable, and what a light
+bleeding past an edge actually looks like.
+
+#### 6.4.4 Blur the field, not the meshes — BUILT AND PLAY-TESTED, 2026-08-27
+
+Patrick, 2026-08-27: *"is this the best way to resolve these gradients? All we really need is a
+decent blurring between the two edges of brightness — perhaps there's a simpler way?"*
+
+Probably, and the reason the module was not already doing it is that an earlier finding had been
+applied to the wrong object.
+
+**"A blur cannot make a gradient" was true of a *mesh*, not of the *field*.** §7.0 step 5 is
+correct as written: a `PIXI.BlurFilter` fades a mesh's **alpha** at its rim, so what appears there
+is whatever lies beneath — and beneath a stripe is only the next stripe. Three attempts died on it
+and the conclusion hardened into a general one it does not support. Blurring the **composited
+scalar field** is a different operation: a hard step from `0.35` to `1.0` convolved with a kernel
+*is* a smooth ramp in the value, and the consumer turns it into a smooth colour by the same
+`mix(ambientDaylight, ambientDarkness, level)` it applies to any other value. No alpha, nothing
+beneath.
+
+§6.4.2's second conclusion — that the container takes no filter — was read off
+`cached-container.mjs`'s redirect, which fires only when the container is *already* nested inside a
+filtered parent. That is a statement about the nested case. In the plain case `CachedContainer#render`
+binds the cached texture and *then* calls `super.render`, which is where PIXI pushes the filter; the
+filter's output goes to whatever render texture was bound at push time, which is the cached one.
+
+##### Why it would be better rather than merely shorter
+
+`render/halo.mjs` softens a boundary by **enumerating** it: four polygon offsets, a boolean per
+ring, a triangulation and a containment test per vertex, per ground region, per repaint. It has cost
+41 ms of a repaint. And every artefact of the last three rounds was a property of that machinery
+rather than of the picture — round joins curving a corner, a fixed arc tolerance faceting a circle,
+two rings interpolating along a chord. A blur has none of them because it never looks at the
+geometry, and it softens **every** boundary at one width including the ones nobody enumerated.
+
+##### What it gives up
+
+- **Shape** — the ramp is the kernel's; no plateau control, and a flat region's corners round.
+- **Selectivity** — it softens boundaries the model might want hard. A live concern while a region
+  boundary following a wall was meant to stay crisp (§6.4.2a); not one since §6.4.3.
+- **Tap count** — §7.0 step 5's limitation is real here too, but bites far less: the input is a
+  step rather than a stripe, so the taps land on a ramp, and 8 bits leaves ~85 codes between
+  adjacent tiers to absorb it.
+
+##### One risk worth naming before it is measured
+
+A filtered container renders its children into a **temporary** texture cleared to transparent black,
+not to the container's own clear colour. The `MIN_COLOR` meshes of §7.0 step 6 blend against
+whatever is there, and zero in this channel is the brightest value — so a light or a halo drawn
+where no opaque ground had been laid first would come out white. §7.0 step 6 already made the ground
+cover the scene rect unconditionally, which is what keeps that from biting; outside the scene rect
+it is untested.
+
+Kept **alongside** `render/halo.mjs` and switched by `blurTransitions`, so the two can be compared on
+one scene. If the blur wins, the halos and most of the per-vertex machinery come out with it.
+
+#### 6.4.5 What the field blur reaches, and the one thing it does not
+
+Two follow-ups from the same play session, both found by Patrick describing *when* the defect
+appears rather than what it looks like.
+
+**The reveal boundary — the last hard edge.** *"It doesn't seem to be applying to borders between a
+light and dark source when the darkness is overriding the light"*, then *"only has this effect when
+the global illumination is brighter than dim"*. The second clause names the mechanism: `darknessFor`
+sets `erase` when a region is darker than `globalLightCutoff()`, which **is** the Dim threshold, and
+an erasing region gets a second mesh in `canvas.visibility.vision.light.global.meshes` blended
+`ERASE`. That container is not the darkness-level texture, so §6.4.4's blur cannot reach it — and it
+only *matters* where global light is actually revealing, which is exactly "brighter than Dim".
+
+§6.4.2a called this permanent, and `create()` refused to blur those meshes on the grounds that
+"blurring a mesh whose only content is *yes* produces a soft-edged yes, which is not a softer
+boundary but a partially transparent one."
+
+**The objection had the sign backwards.** The quantity that mesh carries *is* coverage: it writes
+`vec4(1.0)` and composites `ERASE`, so a blurred rim is a partially transparent erase — a *partial
+reveal*, which is a gradient in precisely the variable the boundary is made of. It is the one place
+in the module where blurring alpha is the correct operation rather than a substitute for a gradient,
+which is why it survives §6.4.3's removal of every other filter. Matched to the field blur's width,
+because it is the same edge to look at.
+
+**Big lights faceted.** *"With bigger light sources the polygons start to show."* §7.0 step 6's
+radial grid subdivides by `radius / RADIAL_STEPS`, so a band's thickness grows with the light — and
+between two rings the level interpolates along the **chords** of a polygonalised circle rather than
+along its radius, turning the iso-level contours into a polygon whose facets widen with the light.
+The same two-ring failure §6.4.3 hit on halos, scaled by radius.
+
+With the field blur on it does not need fixing, it needs deleting: a light is drawn as **two flat
+zones** and the blur finds both boundaries. Flat regions have no interior interpolation, so there is
+nothing to facet, and the inner circle is generated at a density we choose rather than inherited
+from a wall sweep that was subdivided to answer a different question. The radial grid stays for the
+`blurTransitions: false` path.
+
+That is the shape of the whole §6.4.4 bet: **every producer gets simpler, not just cheaper.** If the
+blur holds up, the per-vertex ramp machinery has one consumer left — §3.4's spill bands — and
+probably none.
+
+#### 6.4.6 Withholding a light is not the same as clamping it — BUILT AND PLAY-TESTED, 2026-08-27
+
+The last hard edge, and it was §7.0 step 6's own. Found by bisection rather than by reasoning:
+`render.transect()` showed the brightness field ramping smoothly across the boundary
+(`biggestStep: 0.134` over ~60 screen px), which proved the line belonged to a layer the texture
+does not contain; `render.isolate("lights")` then named it in one call.
+
+`withheld()` set a light's zones to `{inner: base, band: base, base}` — which reads as *this light
+is no brighter than its ground* and is not that statement. §6.2.9's absolute path answers it by
+setting `computeIllumination = false` and handing the shader three **constant** colours, so the
+mesh painted `tierColor(base)` flat across the light's entire footprint.
+
+The ground under a light is not flat. A *darkness* overlapping it is Dark in the texture,
+illumination composites `MAX_COLOR`, and a constant at the ambient level beats a dark one — so the
+light was **re-lighting the region the model had just darkened**, cut off hard at its clip
+boundary. That boundary is precisely where the line was, which is also why a *daylight* light
+rendered perfectly: it cancels the darkness outright, so there is no clip and no edge.
+
+Leaving `tiers` unset keeps `computeIllumination = true`, so `computedBackgroundColor` is sampled
+**per fragment** from the texture. `getCorrectedColor(UNLIT)` returns that same per-fragment value
+for all three zones and `FRAGMENT_END` mixes it with itself: the mesh paints exactly what the
+texture already said, everywhere, and contributes nothing at any brightness.
+
+> **The general shape of this one is worth keeping.** "Contributes nothing" and "contributes a
+> constant equal to the ambient" are the same sentence and different shaders, and they diverge
+> exactly where the ambient is not constant — which is everywhere this module is interesting. Any
+> future *withhold* should be spelled as a per-fragment identity, never as a value.
+
+##### On the two instruments this took
+
+Neither `transect` nor `isolate` existed at the start of the session, and the three rounds before
+them were spent guessing at edges from screenshots. They are cheap, they are permanent, and the
+division between them is the useful part: `transect` answers *is the field smooth here*, and only
+when the answer is yes is `isolate` the right next question. Reach for them in that order.
+
 ### 6.3 Visual control surface
 
 Gradients are Foundry's **default**; hard edges are the imposition. One uniform,
@@ -1949,6 +2933,138 @@ clear every frame (`groups/effects.mjs:240-242`).
 
 **So the darkness-level texture takes no post-processing at all.** Anything that must vary
 within it has to be geometry.
+
+> **Corrected 2026-08-24 — that sentence is true of the *container* and false of a *child
+> mesh*.** Core's own `AdjustDarknessLevelRegionBehaviorType` blurs its darkness mesh, at
+> `adjust-darkness-level.mjs:70-73`:
+>
+> ```js
+> if ( canvas.performance.mode > CONST.CANVAS_PERFORMANCE_MODES.LOW ) {
+>   dlMesh._blurFilter = canvas.createBlurFilter(8, 2);
+>   dlMesh.filters = [dlMesh._blurFilter];
+> }
+> ```
+>
+> A filtered *child* renders through its own filter into the container in the ordinary way,
+> before the container is ever cached — the `CachedContainer` redirect above governs filters
+> **on** the cached container, not inside it. `render/darkness-texture.mjs` builds meshes of the
+> same class into the same container, so the identical two lines apply to `entry.dl`.
+>
+> Not a discovery so much as a distinction we never drew: the comment in `create()` already
+> named core's blur and declined it, but declined it **for suppressor meshes**, on §6.2's
+> grounds that a suppressor edge is the one thing the model asserts a step in. It was never
+> weighed for the `ambient`/`dark` ground fills, where the argument does not apply and the cost
+> is a fixed per-mesh filter rather than the per-frame geometry that killed the version above.
+
+#### 6.4.2a The blur route — built 2026-08-24
+
+Setting `groundSoftness`, **default 0.1, on** (Patrick, 2026-08-24, after seeing it at 0.2), in
+`render/soften.mjs`; the filter itself in `render/darkness-texture.mjs` (`syncFilter`,
+`refreshFilters`, `dropFilter`).
+
+The default is small on purpose and the number is the argument: at 0.1 of a square the filter
+removes the aliased staircase along a region boundary and leaves the boundary itself legible.
+Wider reads as a *gradient*, which is the wrong claim — §6.1 has the model asserting a step
+across that line, and a soft ramp says the brightness is continuous there when it is not. This
+is anti-aliasing that happens to be adjustable, not a falloff.
+
+Why it should look right, and it is worth stating in advance because the mechanism is
+indirect. `invalidateDarknessLevelContainer` sorts the container by darkness level
+**descending** (`illumination-effects.mjs:106-110`), so the darkest mesh draws first and the
+brightest draws last, on top. A blur fades a mesh's **alpha** at its rim, so the topmost
+(brightest) mesh stops fully covering its own boundary and the darker mesh beneath shows
+through progressively. The gradient is between the two real levels, not toward an arbitrary
+colour, and it needs no interpolation code because the compositor is doing the interpolation.
+The container is cleared to `canvas.environment.darknessLevel`, so a region with nothing
+beneath it fades toward the scene's own value.
+
+Four things it is deliberately **not**:
+
+- **Not on `entry.il`.** That mesh answers the *binary* reveal question by being in or out of
+  the global light's band and writes `vec4(1.0)` without reading a level. Blurring it produces
+  a partially transparent *yes*, not a softer boundary. The reveal edge stays hard, which is
+  the subject of `eraseDisabled` and a separate question.
+- **Not zeroed when off — detached.** A `BlurFilter` at strength 0 still costs a filter texture
+  and two blits per mesh per container render. `filters = null` costs nothing.
+- **Not in screen pixels.** `Canvas#addBlurFilter` keeps `_configuredStrength` and multiplies by
+  `stage.scale.x`, re-applying on zoom (`board.mjs:1657`, `:1670`), so the setting is a distance
+  on the map. Authored in grid squares for the reason the 2026-08-23 attempt needed: 16 raw
+  pixels on a 100px grid is 0.8 ft, which is indistinguishable from a mechanism that does not
+  work.
+- **Not per frame.** `DarknessLevelContainer` is a `CachedContainer` with `autoRender` following
+  its child count; a filtered child costs its pass when the container re-renders. That is the
+  whole difference from the retired version, which rebuilt 41 cells into 166 meshes and 38k
+  triangles on every repaint.
+
+#### The halo, and why cells must merge by level — 2026-08-24
+
+First play test produced bright rings around every darkness disc that sat inside an umbra, on
+otherwise uniformly dark ground. Patrick asked whether the softening could be suppressed inside
+an umbra. It could, and it would have treated a symptom: the umbra is where the artefact is
+*visible*, not where it comes from.
+
+**A feather cannot brighten a boundary between two equal values.** Both sides of those rings
+were Dark, so whatever was showing through had to be arriving from underneath — and underneath
+a `CachedContainer` is its clear colour, `canvas.environment.darknessLevel`, which on a lit map
+is far brighter than either neighbour.
+
+How two same-level meshes come to share a boundary is ordinary rather than exotic. §6.1 has the
+cells partitioning the scene by **treatment**, not by brightness, and `applyShadows` skips any
+cell already at or below the clamp — so inside a shadow a *darkness* disc stays its own `dark`
+cell while the ambient around it is cut down to the same Dark. Two meshes, one brightness, an
+exact shared edge. Opaque, that is invisible. Blurred, both rims fade, neither covers the seam,
+and the clear shows through it.
+
+So `paint()` now unions cells by resolved level before assigning meshes (`mergeByLevel`). The
+boundary is removed rather than papered over, which is also the more honest geometry — a region
+at one brightness is one region, and the split was an artefact of how the field reached the
+answer. **Level, not tier:** Dark and Supernatural Dark share a level deliberately and are told
+apart by the darkness source's overlay, so merging them here loses nothing, and `erase` derives
+from the level too. Cost is one Clipper union per distinct level, at most five and usually one
+or two, with single-cell groups skipping Clipper entirely.
+
+`render.texture()` reports `merged` — cells the union collapsed. Above zero inside an umbra is
+the expected state.
+
+**The residual case — fixed the same day with a backstop.** Two *different* levels that are both
+darker than the clear still leave a seam showing the clear between them: a Dim region abutting a
+Dark one on a Normal-lit map. Merging cannot help, because they really are different
+brightnesses.
+
+`backstopFor` adds a scene-rect region at `max(level)`. Sorting is descending by level, so it
+draws first, sits under everything, and is covered by every other mesh's opaque interior — the
+only thing that changes is what a seam reveals: the darkest level present rather than the
+scene's own. That biases every soft boundary slightly dark, which is the right direction, since
+one side of any such boundary *is* the darker value and the seam then reads as part of the
+feather rather than as a line of its own.
+
+Three properties make it safe, and each of them is a thing that would otherwise break something:
+
+- **Never `erase`.** The illumination half of a mesh pair cuts global light out of a region; a
+  scene-wide one would cut it out of the map. The backstop makes no claim about revelation.
+- **Never a claimant.** Its `rings` are empty, so `region.document.testPoint` answers false and
+  `canvas.effects.getDarknessLevel` never returns its level. Core walks the children backwards
+  and returns the first that claims the point (`effects.mjs:391-396`), so the backstop would
+  only ever be reached where no cell covers the point at all — and there the honest answer is
+  the scene's own darkness, which is exactly what the clear colour already gives.
+- **Never blurred, and never present without a reason.** It is what every other mesh's rim fades
+  *into*, so blurring it would fade its own edge at the scene rim and cost a full-scene filter
+  pass to soften something nothing abuts. It is omitted entirely when the blur is off or when
+  one level covers the scene.
+
+`render.texture()` reports `backstopped`.
+
+Open questions for the first play test, in the order they would show up:
+
+1. **Does the filter reach the texture at all?** The container's render texture is
+   `PIXI.FORMATS.RED` with `multisample: NONE`, and PIXI's filter system allocates its
+   intermediates from its own pool. If the blit into a red-only target misbehaves, the symptom
+   is the region vanishing or going flat rather than softening. `render.texture()` reports
+   `blurred`, `blurStrength` and `stageScale` so a no-op can be told from a miss.
+2. **The ambient mesh is scene-sized**, so its filter pass allocates a scene-rect texture. Core
+   only ever does this for region behaviours, which are small. If cost bites, it bites here.
+3. **A soft vignette at the scene rim**, where the ambient mesh fades into the clear colour with
+   nothing beneath it. Cosmetic, and only visible past the scene rect.
 
 #### A correct no-op is indistinguishable from a broken mechanism
 
@@ -2117,6 +3233,85 @@ accepted by §6.2.
 
 ### 6.6 Hazards
 
+- **A wrapper's `finally` is not "the end of the method" if the method publishes mid-call.**
+  Cost fog of war entirely, 2026-08-24. `umbra-mask.mjs` swapped each vision source's `light`
+  polygon for an empty one, let core run, and drew the trimmed contribution into
+  `vision.light.mask` afterwards. But `refreshVisibility` ends with
+  `if ( commitFog ) canvas.fog.commit()`, and the commit renders the whole `vision` container
+  — masked by that same graphics object (`perception/fog.mjs:330-355`). So the exploration
+  texture was snapshotted before our contribution existed.
+
+  The mask is a persistent `LegacyGraphics`, so **the screen was correct from the next frame
+  onward and only fog was wrong**, which is why it survived every visual check. Symptoms all
+  followed from what was in the mask at commit time: light perception contributed nothing, and
+  `vision.sight` — a sibling of `vision.light`, and so not masked — was all fog ever saw. A
+  token with no darkvision has `radius === 0`, draws no sight FOV, and explored nothing at all;
+  a darkvision token explored its darkvision radius and no further.
+
+  Note what did *not* fail: `commitFog` is set from
+  `lightRadius > 0 && !blinded && !isPreview`, never from the polygon's contents, so an empty
+  shape still schedules the commit. Fog kept updating — just with less in it. A frozen fog
+  texture would have been a far louder failure.
+
+  Fix is core's own seam: `Hooks.callAll("visibilityRefresh", this)` fires immediately before
+  the `endFill`s and the commit (`groups/visibility.mjs:588-606`), which is the only window in
+  which a contribution to that mask is both inside the fill and visible to fog. **General rule:
+  before deferring a write past a wrapped call, find out whether anything reads it *during*
+  the call.**
+- **A darkness sweep asks each wall for a restriction that does not exist.** Core, not us, but
+  this module is what makes it visible. `_testEdgeInclusion` decides whether an edge blocks by
+  indexing it with the polygon's own type — `edge[type] === WALL_SENSE_TYPES.NONE`
+  (`clockwise-sweep.mjs:244`) — which works for the four `WALL_RESTRICTION_TYPES` that `Edge`
+  carries a property for. **`darkness` is not one of them**; it is a *source* type. So
+  `edge.darkness` is `undefined`, never equals `NONE`, and every edge blocks every darkness
+  source regardless of what the wall allows.
+
+  The **open door** is what makes it unambiguous rather than a matter of taste: `Wall#createEdge`
+  zeroes all four restrictions on an open door (`placeables/wall.mjs:225`) and leaves the edge in
+  place, blocking nothing. A darkness sweep asks for a fifth restriction that was never zeroed
+  because it never existed, and stops at the doorway. `applyThreshold` has the same shape one
+  level down (`edges/edge.mjs:213-215`), so proximity and attenuation walls never applied to
+  darkness either.
+
+  `clip.patchDarknessWalls` swaps `config.type` to `"light"` around core's own method — after
+  `edgeTypes` has been computed from `"darkness"`, which is the part that must not change, since
+  that is what makes a darkness sweep respect `light`-type edges at `priority + 1`. Fixes the
+  threshold half for free, which a `darkness` accessor on `Edge.prototype` could not have —
+  `threshold` is a plain per-instance object. **General shape: one string used as two kinds of
+  name, and the type system that would have caught it is absent.** Reported 2026-08-26.
+- **Clearing a clip is not hiding a source — it is the opposite.** `clip.assign(source, null)`
+  means *unclipped*, so the renderer's "this emitter has no cells, it must be fully suppressed"
+  branch was making such a light render its **full circle**. Latent since the branch was
+  written, and §3.3.1 would have made it fire constantly. Both halves are needed: clear the clip
+  so no stale polygon lingers, then `setHidden` so the mesh is withheld — and set `setHidden`
+  *false* on the path that does draw, or a source put out once stays dark for the session.
+- **A clone must carry every uniform that shapes the original's curve.** Three were missing from
+  the `clip` clones — `level`, `bandLevel` and `attenuation` — and each showed as its own
+  artefact: the first two made a cloned piece paint at Foundry's stock lighting levels instead
+  of §3.2.1's corrected ones, so it read a rung brighter; the third gave it a different falloff
+  function, so the pieces did not meet and the cut showed as a seam. Reported 2026-08-25 as a
+  light with a darkness inside it. The `stack` clones below already passed all three, with a
+  comment explaining why — the reasoning was written down and never carried back.
+- **A pooled source that is "not drawn" is not a no-op — for a darkness it is a black disc.**
+  Third instance of the same pooling bug, 2026-08-25, and the one that finally names the rule.
+  `pool.fill` assigned `animation` and (after 2026-08-23) `HARD_EDGES` on every fill, but never
+  `HIDDEN` — and `HIDDEN` is *the only thing that stops a darkness source drawing*, since
+  neither strength nor alpha does (§6.2.3). The renderer hid the real source of a split `dark`
+  cell and then cloned the remaining pieces without hiding them, so every piece but the largest
+  rendered at full darkness.
+
+  It surfaced as *"a darkness enclosing another darkness goes black below the inner one"*: an
+  enclosed darkness makes the outer cell an **annulus**, an annulus is always split (§6.2.1),
+  and `splitAnnuli` cuts horizontally through the hole's centre — which is exactly where the
+  straight edge in Patrick's screenshot was. Any nesting reproduced it; nothing else did.
+
+  Fixed at both ends: `pool.fill` takes and always assigns `hidden`, and the renderer decides
+  the plan *before* filling and skips the clone entirely when nothing would be drawn — which is
+  almost always, since only Supernatural Dark and a GM-chosen animation draw at all.
+
+  **Every per-source property a pooled fill can carry must be assigned on every fill.** A
+  default of "leave whatever the last tenant set" is never right, and this is the third flag to
+  prove it.
 - **Synthetic sources land in `canvas.effects.lightSources`** and will be seen by
   anything iterating it. PF1 carries a live comment about that collection causing an
   infinite loop (`low-light-vision.mjs:130-133`). **Tag our sources and make them
@@ -2137,9 +3332,11 @@ accepted by §6.2.
 
 ### 7.0 Global illumination as a real emitter — the prerequisite
 
-**Proposed 2026-08-23, not built.** §7.1 below assumed this "falls out of §4.3 making global
-illumination clippable". §4.3 shipped without it — umbra went via sweeps and edges instead — so
-it is now its own work item, and it is the one blocking three separate visible defects:
+**Proposed 2026-08-23; steps 1–4 built the same day** — see the *As built* subsections below,
+and note that this section stays in §7 because §7.1 and §7.2, which depend on it, do not. §7.1
+below assumed this "falls out of §4.3 making global illumination clippable". §4.3 shipped without
+it — umbra went via sweeps and edges instead — so it became its own work item, and it was the one
+blocking three separate visible defects:
 
 1. A *darkness* on a lit map is computed correctly and **drawn not at all** (§6.2.3).
 2. An umbra shadows what lies beyond it but **does not paint it** (§4.3 stage B).
@@ -2706,6 +3903,30 @@ contribution outright, since the illumination layer is masked by the vision text
 **Dim-clamped torchlight is unexpressed** and needs either per-observer clipping of the light
 (the §9.5 cost this design exists to avoid) or the absolute-palette change above.
 
+> **The same gap shows up as *colour*, and that is the form it gets reported in** — Patrick,
+> 2026-08-25: *"darkvision and see in darkness show light sources within a dark umbra in colour
+> instead of black and white."*
+>
+> Not a second bug, and not the §6.2.5 desaturation wrap failing. Darkvision desaturates through
+> `visionMode.canvas.uniforms.saturation = -1` (`config.mjs:989-992`), which is a
+> `ColorAdjustmentsSamplerShader` on the **primary sprite** — the terrain. Its
+> `vision.defaults.saturation` reaches the *vision source's own* layers. Neither touches an
+> ambient light source's illumination or coloration layers, and that is correct core behaviour:
+> where there is real light, you see real colour, because darkvision is what you fall back on
+> when there is not.
+>
+> So inside a Dark-clamped umbra a darkvision observer gets grey terrain (the texture wrote the
+> tier, the vision shader greyed it) with a fully coloured torch on top of it — because the
+> torch is still being *drawn* there. `vision.sight` is not gated by `light.mask`, so the region
+> is revealed, and the illumination layer is masked by the whole vision texture rather than by
+> the light half of it.
+>
+> The fix is the same fix: the light must not be drawn there **for that observer**, which is
+> per-observer clipping. Nothing cheaper reaches it — the desaturation wrap cannot, because there
+> is no darkness *source* in an umbra to wrap, only a texture region. Worth stating plainly
+> because "the umbra is grey but the torch in it is not" reads like a shader bug and is a
+> geometry one.
+
 That also sets expectations for testing: umbra painting acts on ground lit by **global
 illumination**, so a scene at darkness 1 has no `ambient` cell for it to cut and correctly shows
 nothing. `render.paint()` reports `quiet` saying which of those two it is.
@@ -2803,11 +4024,22 @@ path, same vision mode, same `saturation`, same rasterised darkness level of 1.0
 project's own signal that the diagnostics were aimed a layer too high.
 
 They were. **A vision mode's desaturation is applied to the primary sprite, uniformly across the
-whole canvas** (`primary.mjs:192-205`). It physically cannot be grey in one place and coloured in
-another. So regional colour is never the map image: it is the **coloration layer** compositing a
-light's tint on top of an already-grey map. Ambient-lit umbra reads correctly grey, because
+whole canvas** (`primary.mjs:192-205`). So regional colour is never the map image: it is the
+**coloration layer** compositing a light's tint on top of an already-grey map. Ambient-lit umbra
+reads correctly grey, because
 global light is discarded there by `globalLightThresholds`; torch-lit umbra comes back in colour,
 because nothing removes a *placed* light from an umbra.
+
+> **A sentence has been struck from the paragraph above — 2026-08-27.** It read *"It physically
+> cannot be grey in one place and coloured in another."* That was true of the code as it stood and
+> false as a general claim, and §6.5 is built on the difference: the per-pixel path is written into
+> `ColorAdjustmentsSamplerShader` (`color-adjustments.mjs:61-64`) and gated behind
+> `vision.darkness.adaptive`, which core's darkvision sets to `false`. Everything else this entry
+> concludes is unaffected — the diagnosis was correct and the umbra gap it names is still open.
+>
+> Recorded rather than quietly deleted because the striking is the useful part: *"physically
+> cannot"* was reached by reading one call site that a flag was routing around. The measurements
+> in this entry were right; only the impossibility was invented.
 
 Worth being explicit about why nothing did. The texture governs the background, and a light's
 mesh composites over it. `umbra-mask` removes the region from `light.mask`, and `vision.sight`
@@ -2878,6 +4110,263 @@ it is a *texture mesh* writing one scalar — even less of a home for a shader a
 pooled light fill was. Making it work would mean routing the region through the real darkness
 source after all, which §6.2.3 measured as a dead end. §6.2.6 stands.
 
+#### Step 5 — the gradient mesh — BUILT AND PLAY-TESTED, 2026-08-27
+
+**Status: built, not yet play-tested.** Written first, because the geometry rule is the part that
+is obvious until there is a hole in the ring; the sections below are as designed, and *Built* at
+the end records the three places the implementation went somewhere the design had not.
+
+##### Why
+
+The texture takeover made the ground's brightness a **field**, and everything since has drawn that
+field as *flat regions plus a blur*. Three separate attempts to make a spill falloff read as a
+gradient all failed against the same wall, and the wall is the representation rather than any of
+the attempts:
+
+- **Widening the blur** spread each step further and added none. §6.4.2a's mechanism is one mesh's
+  rim fading to reveal *the mesh beneath*; there is nothing beneath a stripe but the next stripe.
+- **Sub-rings** worked and were declined on looks (§3.4) — a linear ramp across a whole band
+  leaves no plateau, so it reads as a smear.
+- **The blur's tap count** was the visible banding: `PIXI.BlurFilter` spreads a fixed number of
+  taps across its width, so a wide blur samples five points eleven pixels apart.
+
+A blur is an approximation of a gradient by a filter. The rasteriser can just draw one.
+
+##### The mechanism
+
+`AdjustDarknessLevelRegionShader` writes a **constant** — the level is a uniform, so one mesh can
+express exactly one brightness. That single fact is why the field has to be chopped into flat
+pieces at all. Replace it with a shader carrying the level as a **per-vertex attribute** and the
+GPU interpolates it barycentrically across every triangle, for free, at no extra pass.
+
+The consequence that matters is not smoothness, it is **mesh count**: once the level is per-vertex
+rather than per-mesh, an entire spill falloff is *one* mesh with one draw and no filter. The
+current picture is 69 meshes with 55 filtered render passes.
+
+##### The geometry rule
+
+Rings are kept as **tessellation** and dropped as **levels**. That distinction is the whole design.
+
+1. Generate rings as §3.4 already does — `(white ⊕ t) ∩ domain` at a fine spacing, `d/4` or so.
+   These exist only to give the triangulator small, thin polygons; they carry no tier.
+2. Triangulate each ring with `earcut`, exactly as `setGeometry` does today.
+3. Give every vertex a level from its **distance to `white`**, mapped through the tier ladder —
+   not from which ring it came out of.
+4. Concatenate every ring's triangles into **one** geometry with one `aLevel` attribute buffer.
+
+Point 3 is the load-bearing one, and it is what makes the rule survive the case that breaks the
+obvious version. Assigning a level per *ring boundary* — inner vertices get A, outer get B — works
+only while a ring is a clean annulus whose two boundaries are separable by vertex index. A ring
+clipped by a wall is not: Clipper returns one snaking ring in which a wall cut runs *across* the
+band, joining inner boundary to outer, and there is no index range that identifies either. Distance
+to `white` is defined for every vertex however the ring was cut, so the wall-cut edge interpolates
+along its own length, which is also the correct answer.
+
+Thin rings are what keep step 3 accurate. Linear interpolation across a triangle approximates the
+distance field, and the approximation is good exactly when triangles are narrow relative to how
+fast the field changes — which is what a `d/4` ring guarantees and what a single fat polygon
+triangulated from its boundary would not.
+
+##### What stays flat
+
+Ordinary ground cells keep the constant-writing mesh. A region boundary follows a wall and is a
+genuine step (§6.4.2a, §10.7), a darkness rim wants a soft edge rather than a ramp, and both are
+already correct. The two mesh kinds sit in the same container, so this is contained and
+reversible: gradient meshes are an addition, not a replacement.
+
+##### Consequences, including one to accept
+
+- **`canvas.effects.getDarknessLevel(point)` becomes approximate over a gradient mesh.** Core walks
+  the container's children backwards and reads `shader.uniforms.darknessLevel` off the first mesh
+  claiming the point (`effects.mjs:391-396`), and a gradient mesh has no single level to report.
+  Harmless for this module — `evaluate()` is the authority and never reads the texture — but any
+  other consumer sampling that API inside a spill band gets the band's nominal tier. Report the
+  ladder's midpoint and note it; do not try to fake it.
+- **The blur comes off spill entirely**, and with it `spillSoftness`, `spillBlurQuality` and
+  `spillBlurKernel`. They exist to approximate this.
+- **8-bit RED is not a limit here.** The texture quantises to 1/255; the current banding is five
+  taps, not 255 levels.
+- **Light sources are untouched.** Colour, flicker and attenuation stay Foundry's, per
+  *clipped, not replaced*. This owns the ground, which is the half that has been rendering wrong.
+
+##### Cost
+
+One triangulation per ring at rebuild, which is already paid; one attribute buffer; one draw.
+Against 55 filtered render passes and their texture allocations, this is a net reduction. The
+per-frame cost is a `CachedContainer` re-render of one more mesh, which is not measurable.
+
+##### Built — 2026-08-27
+
+The three plumbing risks the design named all came out clean, and the answers are worth keeping
+because each one was a real fork:
+
+- **The container's sort accepts it.** `invalidateDarknessLevelContainer` reads
+  `shader.darknessLevel` (`illumination-effects.mjs:106-110`), which on core's shader is a *getter*
+  derived from `mode`/`modifier` — so a subclass simply answers it. The fallback of one gradient
+  mesh per tier is not needed.
+- **`RegionMesh` carries a custom attribute buffer.** `_render` hands the geometry straight to
+  `renderer.geometry.bind(geometry, shader)` (`regions/mesh.mjs:180-182`), and PIXI matches
+  attributes to the program by name. Adding `aLevel` to the geometry and declaring it in the vertex
+  program is the whole of it — no plain `PIXI.Mesh`, no second `regionStub`.
+- **`RED` was never a constraint.** The format governs what the texture stores, not what a shader
+  may compute; the fragment writes `vec4(vLevel, 0, 0, 1)` exactly where core writes the uniform.
+
+Three things went somewhere the design had not, and they are the parts worth reading before
+changing anything here.
+
+**Distances are read off the iso-lines, not measured.** The design said "a level from its distance
+to `white`" and left the query open; a nearest-point query per vertex is O(V·E) and would have to
+re-run whenever the geometry was re-cut. It is not needed. Ring `k` is generated as
+`white ⊕ t_k`, and **every vertex of an offset boundary is at exactly `t_k`** — so the offsets
+themselves are the distance field, recorded into a `Map` keyed by the *integer* Clipper coordinate
+before the domain clip. Clipper works in integers, so the match is exact rather than approximate.
+Vertices the domain clip introduces — a wall corner, a crossing where a wall cuts across the band —
+are the only unknowns, they are bounded within one ring width by construction, and they are filled
+by arc-length interpolation between the nearest known vertices either way around the loop. That is
+exact at both ends of a wall-cut edge and monotone along it, which is what stops a wall reading as
+a light level of its own.
+
+**The umbra clamp overpaints the gradient rather than cutting it, and that needed a sort ladder.**
+This is the design decision the written version did not reach, and it is what makes the whole thing
+affordable. `paint.mjs` clamps ground an observer cannot see by *cutting* the shadow into each cell
+— the container sorts brightest-last, so a clamp laid over a cell would be erased by it. Cutting a
+gradient mesh means re-triangulating it and re-deriving a distance for every new vertex, on every
+step a token takes. Instead the gradient is drawn once over its whole extent, pinned to the
+**bottom** of the container's sort, and the clamped pieces are painted flat on top of it by the
+ordinary path — so the gradient's geometry does not depend on the point of view at all, and a
+repaint driven by an observer walking costs two comparisons.
+
+Pinning it needs the sort key detached from the painted value, which core's shader couples. Both
+shader classes now live in `render/darkness-shaders.mjs` and both carry a `sortLevel`:
+
+```
+  4      the seam backstop        (bottom — scene-wide, so it must sit under the gradient too)
+  2‥3    gradient meshes          (brighter spill sorts later and wins where two windows overlap)
+  0‥1    ordinary ground cells    (top — a real darkness level, and ≤ 1 by AlphaField)
+```
+
+`darkness-texture.paint` therefore skips exactly the spill cells that were **not** clamped;
+`paint.applyShadows` stamps `clamped` on the pieces it took down so that distinction survives.
+
+**Two windows lighting one floor now resolve by draw order rather than by `max`.** The model is
+unchanged — the bands are still `AT_LEAST` areas and `evaluate()` still folds them with `max` — but
+where two gradient meshes overlap, the one whose *wedge* is brighter is drawn last and wins
+outright, rather than the brighter value winning per point. The error is bounded by one window's
+ladder and only appears where one window's tail crosses another's head. Left as it is: a
+per-fragment `max` would mean a `MIN` blend equation the container does not offer, and the honest
+alternative is clipping the two ramps against each other, which reintroduces exactly the
+re-triangulation the overpainting scheme exists to avoid.
+
+##### What came off
+
+`spillSoftness`, `spillBlurQuality` and `spillBlurKernel` are gone, and so is `spill` as a merge
+key in `darkness-texture.mergeByLevel` — all four existed to approximate this. One setting replaces
+them: **`spillPlateau`**, how much of each band holds a steady level before the next transition
+begins. Zero is a continuous ramp with no tiers visible in it, which is what the retired sub-ring
+experiment amounted to and why it was declined; one is the original hard-stepped ladder. It changes
+the ramp itself rather than a filter over it, so unlike everything it replaces it genuinely adds
+intermediate values instead of spreading the same few further apart.
+
+#### Step 6 — lights in the map — BUILT AND PLAY-TESTED, 2026-08-27
+
+Patrick, 2026-08-27, after §6.2.9 pinned a light's zone *colours* and it still was not right:
+*"generate a map of all the brightness levels in the scene, then paint on the brightness based on
+those regions in one go — fixed alphas, and paint everything covered by blocked vision the same
+brightness. The entire scene rendered in one of a handful of set brightnesses with gradients
+between them."*
+
+##### Why §6.2.9 could not have been enough
+
+The brightness a light renders at is not decided by its zone colours. It is decided one line
+further down (`base-lighting.mjs:347`, `illumination-lighting.mjs:13`):
+
+```glsl
+if ( attenuation != 0.0 ) depth *= smoothstep(1.0, 1.0 - attenuation, dist);
+gl_FragColor = vec4(mix(computedBackgroundColor, finalColor, depth), 1.0);
+```
+
+with `SWITCH_COLOR` blending the two zones across 72% of the ratio on top of that. **A Foundry
+light is a radial falloff by construction.** Its nominal level exists only at the very centre;
+everything else is an interpolation toward the background. So "each level has a fixed brightness"
+is not a property a rendered light source can have, however exactly its endpoints are pinned.
+
+The model has always known the answer — a light has two zones, each at a tier. Step 6 draws that,
+in the one place the module already expresses brightness as a number.
+
+##### Three passes, and the blend equations are the design
+
+The obstacle §7.0 and §4.3 both worked around was that the darkness-level container resolves
+overlap by **sort order**, so anything composited had to be cut in instead. That was true of the
+default blend mode and is not true in general: Foundry registers `MAX_COLOR` and `MIN_COLOR` into
+`PIXI.BLEND_MODES` at startup (`board.mjs:721-722`), and the channel in question holds a *darkness*
+level. So
+
+| Pass | Blend | Means | Draws |
+| --- | --- | --- | --- |
+| ground | normal | a partition, so no overlap to resolve | `ambient` and `dark` cells, plus §3.4 spill |
+| lights | `MIN_COLOR` | **brightest wins**, per fragment | one mesh per light-bearing cell |
+| clamps | `MAX_COLOR` | **darkest wins**, per fragment | umbra and unseen ground |
+
+`MIN` is §3.2.1's combine rule for lights, exactly, taken from the blend equation instead of from
+draw order — which is what lets two torches overlap without one's tail erasing the other's core.
+`MAX` is §4.3's clamp, exactly: *nothing between two points can make the far one brighter*. Order
+between the three comes from the sort ladder in `render/darkness-shaders.mjs`.
+
+**The clamp pass is not optional and it is why the order is that way round.** This texture is
+deliberately *not* vision-masked (§6.2.7) — that is what lets true seeing and god's eye read real
+light levels. Moving a torch's brightness into it therefore makes the torch shine through walls,
+which is §4.3.1's bug arriving by a new route. Clamping after the lights removes the possibility
+rather than the instance.
+
+##### The geometry is arithmetic
+
+A `ClockwiseSweepPolygon` is star-shaped about its own origin — §3.4 already leans on this. So
+scaling every boundary vertex toward the origin stays inside, consecutive rings share an index, and
+each band is a quad strip: no Clipper, no triangulator. And the level per vertex is **analytic**,
+`levelAtRadius(|v − origin|)`, which is the whole difference from §3.4's ramp. Spill has to recover
+distance-to-a-polygon from the iso-lines that produced it; a light's distance field is a closed
+form, so any vertex can be asked directly however it was produced.
+
+That last point is what makes the clipped case cheap too. A light with a *darkness* bitten out of
+it is no longer star-shaped and the strip has to be intersected with the cell — but the levels
+still come from the same closed form. `cell.clipped` selects the path and is false for nearly every
+light.
+
+Rebuilds are cached per source on `shape` **identity** (`_createShapes` replaces rather than
+mutates, the same trick `field.currentSignature` uses), so an observer walking past a torch does
+not rebuild the torch.
+
+##### What the light source still does
+
+Colour, animation, and revealing. Only the *illumination* contribution is withheld, and not by
+hiding or patching anything: the zones are set equal to the ground the light stands on, which is
+§6.2.9's `UNLIT` case — all three colours equal, `FRAGMENT_END` mixes toward the background, the
+mesh paints exactly what the texture already said. The coloration layer is a separate mesh with its
+own shader and is untouched. `canvas.visibility` reads a light's **polygon**, not its illumination
+mesh, so what a creature can see by is unchanged.
+
+##### Two things this does not do
+
+**`applyShadows` is deliberately still running.** It cuts the same clamp into the ground cells, so
+on ground the clamp pass is redundant — `max(Dark, Dark)` — and the two agree by construction
+because they read the same regions. Keeping both is what makes step 6 additive: §4.3.1 was hard
+won, and removing the cut in the same change that introduced the composite would leave no way to
+tell which of them a regression belonged to. The cut should come out once this is proven; it is
+most of what a token drag costs.
+
+**Blocked vision is still two brightnesses, not one.** The texture is clamped to Dark, and then
+Foundry's fog-of-war overlay composites on top — 50% black where explored, solid black where not.
+Left alone on purpose: that overlay is how a player tells *cannot see now* from *never been there*,
+and the light model has no business removing it.
+
+##### One thing it fixed on the way
+
+The ground is now painted even on a fully dark scene. It used to be skipped at `ambientB === 0` and
+the container's clear colour stood in — invisible only because that clear is the scene's own
+darkness and the default table puts Dark at 1.0 as well. `MIN_COLOR` needs an opaque base to blend
+down from, and any retuned table would have made a *darkness* spell render lighter than the night
+around it.
+
 ### 7.1 Interiors on outdoor maps
 
 A house on an outdoor map shouldn't be lit by global illumination, but light should
@@ -2897,6 +4386,16 @@ brighter than the back of the room.
 
 The lit wedge is **static in shape** — only its tier tracks time of day. Moving sunbeams
 explicitly out of scope.
+
+> **Demoted 2026-08-26 — aperture emitters are no longer a dependency of anything.** Two things
+> overtook this section. §10.7 shipped the interior half as a position-dependent ambient *tier*
+> rather than as a subtracted sky-fill emitter, so there is no clippable global emitter and no
+> boundary to synthesise apertures from; and §3.4 now gets its occlusion from a single 360°
+> visibility sweep, so it never needed the aperture sweep this section promised it.
+>
+> What is left here is the **multi-sampled** window of §7.2 — a real area light with a widening
+> penumbra, rather than one sweep from a point. That is a refinement of §3.4's picture, not a
+> prerequisite for it, and §3.4's single-sample limitation is named in place.
 
 ### 7.2 Penumbra via area lights
 
@@ -2971,8 +4470,17 @@ anything to throw away.
    illumination is the *picture*: the shadowed room still renders lit. So §7.1 moved from
    "hard dependency of umbra" to "the other half of the same feature", which is the same
    split that made step 4 separable.
-7. **Interiors, apertures, spill** — §7.1, §7.2, §3.4 land together; spill's free-clip
-   trick needs the aperture sweep.
+7. **Light spill** — §3.4, rewritten 2026-08-26 and **no longer bundled with §7.1/§7.2**. It
+   turned out to need nothing from apertures: the occlusion clip is one 360° sweep, and the
+   interiors half already shipped as §10.7. Lands as `model/spill.mjs` plus a settings submenu,
+   with `model/areas.mjs` growing one branch in each of `areas()`, `pathsFor()` and `covers()`
+   so the spill areas fold through `ambientTierAt` beside the drawn ones. `field.mjs` is
+   untouched.
+
+   **Spill folds after regions.** `ambientDomains` applies areas in list order, and the two
+   modes do not commute: a Bright spill into a room clamped Dark is
+   `max(min(Bright, Dark), Bright)` = Bright only if the `AT_LEAST` runs second. Reversed, the
+   clamp eats the spill and the feature silently does nothing.
 
 ### 8.3 Invalidation
 
@@ -3298,9 +4806,11 @@ produced a wrong number on this module.
 
 ## 10. Configuration surfaces
 
-Planned 2026-08-23, after umbra painting cleared. Everything in §3 through §7 is driven by
-fields with no way to set them; this section is the plan for the controls. It supersedes the
-§3.5 note, which stated the problem and is now the summary of one part of the answer.
+Planned 2026-08-23, after umbra painting cleared; revised 2026-08-24 against Patrick's own
+list of control points, which reordered it substantially. Everything in §3 through §7 is
+driven by fields with no way to set them; this section is the plan for the controls. It
+supersedes the §3.5 note, which stated the problem and is now the summary of one part of the
+answer.
 
 ### 10.1 What actually needs a control
 
@@ -3310,185 +4820,922 @@ page.
 
 | Input | Owner | Surface |
 | --- | --- | --- |
-| `kind`, `level`, `transform`, `floor`, `blocksPath`, `eligibility`, `cancelsDarkness`, `brightRadius` | one light document | **§10.3** — a tab on the light config sheet, a fieldset on the token's Light tab |
-| The tier → darkness-level table | one scene | **§10.5** — a fieldset on the scene config's Lighting tab, over a world default |
+| `kind`, `level`, `cancelsDarkness`, `emitTier`, `steps`, `cap`, `transform`, `floor` | one light document | **§10.3** — a section inside the light's own Basic tab, and a fieldset on the token's Light tab |
+| The tier → darkness-level table, and which tier the scene sits at | one scene | **§10.5** — the Lighting tab of scene config |
 | Feature switches, thresholds, debug toggles | the world / the client | **§10.6** — a settings menu, replacing eleven flat checkboxes |
-| Indoor keepouts, architecture | a region | **not now** — §3.5's fourth row, blocked behind §7.1 |
+| Per-area ambient override, indoor keepouts | a region | **§10.7** — built 2026-08-26, and *not* satisfied by core's behaviour |
+
+**Three fields stay important but stay out of the UI**, decided 2026-08-24. None of them is
+vestigial and none is a candidate for removal — the model reads all three, and they remain
+authorable through `flags["pf1-lighting"].config` and the console. What they are not is a
+*control*, because in each case the value a GM would pick is the value the rule already gives:
+
+- **`eligibility`** — which emitters a suppressor *extinguishes* rather than merely reduces.
+  The distinction is real (`contest()` splits emitters into `blocked`, which contribute
+  nothing at all, and `passthrough`, which survive to be reduced by the transform), but the
+  `darkness` preset already **is** the rule PF1 states: mundane light always goes out, magical
+  light of the suppressor's level or lower goes out, anything above it passes through. There
+  is no second rule a GM would want. `total` and `none` stay reachable from the console
+  because they are how the contest gets isolated when something is wrong; they are debug
+  instruments, not settings.
+- **`blocksPath`** — casting an umbra follows from being magical, and for a *suppressor*
+  "magical" is exactly `level >= 1` (see below). `castsUmbra` already reads
+  `level >= 1 && blocksPath !== false`, so the automatic behaviour is the behaviour, and the
+  flag is left as a console escape hatch for a magical darkness that is deliberately meant not
+  to blind.
+- **`kind` on a suppressor** — never read. `breaks()` and the eligibility preset both test
+  `emitter.kind`; nothing tests a suppressor's. Level carries the whole distinction, so a
+  darkness gets a **level** control whose zero entry is named *Mundane / unlit area* and no
+  "is magical" checkbox. Offering one would be offering a control that does nothing.
+
+On the emitter side `kind` and `level` are genuinely separate axes and both need controls: a
+mundane light at level 3 is meaningless, but a *magical* light at level 0 is real (*light*,
+*continual flame*) and behaves differently from a torch under a level-0 darkness.
 
 ### 10.2 The preset table is the actual feature
 
 The field list is not the deliverable. A GM placing a *deeper darkness* should pick "Deeper
-Darkness", not set `level: 3`, `transform: {op: "reduce", steps: 2}`, `floor: -2` and
-`blocksPath: true` correctly and in agreement with each other. Five fields that must be
-mutually consistent to mean anything is exactly the shape that produced the bug in §3.5's
-note.
+Darkness", not set `level: 3`, `transform: {op: "reduce", steps: 2}` and `floor: -2` correctly
+and in agreement with each other. Fields that must be mutually consistent to mean anything are
+exactly the shape that produced the bug in §3.5's note.
 
 So `model/presets.mjs` — **model, not UI**, because it is PF1's vocabulary rather than a
 widget's convenience, and because `field.explain` and `probe` should eventually be able to
 report "this is a *Darkness*" instead of reciting four flags.
 
-| Preset | `kind` | `level` | Other |
-| --- | --- | --- | --- |
-| *Light* / *continual flame* | magical | 0 | — |
-| Magical light, by level | magical | 1–9 | — |
-| Torch, lantern, fire | mundane | 0 | — |
-| *Darkness* | magical | 2 | `reduce 1`, floor Dark, casts umbra |
-| *Deeper darkness* | magical | 3 | `reduce 2`, floor Supernatural Dark, casts umbra |
-| *Daylight* | magical | 3 | `cancelsDarkness` |
-| Unlit area | mundane | 0 | `clamp` to Dark, **no** umbra |
+#### The preset is stored, and the sync is one-way
+
+**Reversed 2026-08-24.** The plan was to store nothing and re-derive the label on every render
+by matching the current config against the table, falling back to "Custom". Patrick's rule is
+the opposite and it is the better one:
+
+- **Custom is the first option**, and the default.
+- **Selecting a preset pre-fills the fields.** That is the whole of what selecting does — it is
+  a shortcut for typing, not a mode the light is subsequently in.
+- **Changing any governed field flips the select to Custom**, immediately, in the open sheet.
+- **It never flips back.** Setting the fields back to a preset's exact values leaves it Custom.
+  Only choosing the preset again restores the name.
+
+That last clause is what makes it storage rather than derivation, and it is deliberate: a
+one-way sync means the label answers *"where did these numbers come from"*, which is a fact
+about history, and history cannot be recovered by looking at the numbers. Matching-on-render
+answers *"what do these numbers currently resemble"*, which is a different and less useful
+question — it makes a hand-tuned light silently claim to be a torch, and it makes the label
+change under a GM who never touched the select.
+
+So `config.preset` is a stored string, written only by the select and by the field-change
+handler that clears it to `"custom"`. **Nothing in the model reads it.** It is provenance for
+the sheet and, later, a nicer line in `field.explain` — never an input to resolution, so it
+cannot go stale in a way that changes what anything renders. `presetOf(config)` is therefore
+not a matcher; `applyPreset(name)` is the only direction that exists.
+
+**The table itself was deferred until the controls existed** (Patrick, 2026-08-24): filling in
+PF1's radii and step counts before there was a sheet to type them into is guesswork twice over.
+`model/presets.mjs` landed with the mechanism, Custom, and enough entries to exercise both
+branches — one light, one darkness.
+
+#### The table is data — 2026-08-26
+
+`BUILT_IN` is what ships; `table()` is what everything reads, and it is a world setting the GM
+edits through `ui/preset-editor.mjs` (§10.2.1). So the numbers below stopped being
+placeholders-pending-Patrick's-own the moment there was somewhere to type them.
+
+**The setting stores the whole table, not a diff against the built-ins**, and it is empty until
+the editor is saved. Both halves matter:
+
+- *Empty until saved* means a world that never opens the editor tracks the module's built-ins as
+  they change, and *Restore defaults* puts a world back into that state rather than writing the
+  current defaults out as a snapshot.
+- *Whole table, not a diff* means that once a world does edit, it owns the lot. A diff would
+  merge a later change to *Deeper darkness*'s floor into an entry a GM had already retuned,
+  producing a preset with no author. Overriding one field and inheriting the rest reads as
+  convenient and behaves as unpredictable — the same argument this section already makes against
+  a preset matcher.
+
+The table is validated on the way **out** rather than on the way in, because the stored value is
+a plain object a macro or a botched merge can reach as easily as the editor can. A malformed
+entry has to cost a missing row in a select, never a light sheet that fails to render.
+
+| Preset | Kind | Level | Sets | Raises | Cap |
+| --- | --- | --- | --- | --- | --- |
+| Candle | mundane | 0 | — | +1 to 5 ft | Normal |
+| Torch | mundane | 0 | Normal to 20 ft | +1 to 40 ft | Normal |
+| Lamp, common | mundane | 0 | Normal to 15 ft | +1 to 30 ft | Normal |
+| Lantern, bullseye | mundane | 0 | Normal to 60 ft | +1 to 120 ft | Normal |
+| Lantern, hooded | mundane | 0 | Normal to 30 ft | +1 to 60 ft | Normal |
+| Sunrod | mundane | 0 | Normal to 30 ft | +1 to 60 ft | Normal |
+| *Continual flame* | magical | 2 | Normal to 20 ft | +1 to 40 ft | Normal |
+| *Light* | magical | 0 | Normal to 20 ft | +1 to 40 ft | Normal |
+| *Daylight* | magical | 3 | Bright to 60 ft | +1 to 120 ft | Bright, `cancelsDarkness` |
+| *Darkness* | magical | 2 | 20 ft, `reduce 1` | | floor Dark |
+| *Deeper darkness* | magical | 3 | 60 ft, `reduce 2` | | floor Supernatural Dark |
+
+**Patrick's numbers, 2026-08-26**, replacing the placeholders. Three of them are worth having
+written down rather than merely tabulated:
+
+- **The candle has no inner zone at all** — `bright: 0` — because it sets no light level, it only
+  raises whatever is there, so the whole of a candle is its one-step band. `emitTier` therefore
+  never applies (`contributionAt` reaches the inner zone only at the origin point itself,
+  `ramp.mjs:86`) and is set to match the cap regardless: `normaliseEmission` floors `cap` at
+  `tier` (`ramp.mjs:66`), so the two disagreeing would silently raise the ceiling.
+- ***Continual flame* split from *light***. They shared one entry labelled "Light / continual
+  flame" at level 0, which was wrong in the only way that matters: `level` is what §4.1's contest
+  weighs against a darkness, so a *continual flame* was losing to a *darkness* it out-levels.
+- **The bullseye lantern's cone is not expressed.** PF1 lights a 60-foot *cone*; the preset
+  writes radii only. `applyPreset` copies whatever `light` holds, so `angle` would work with no
+  code change — and that is exactly why it is left out. An angle on one preset and not the others
+  leaves a light re-presetted from bullseye to torch stuck in a cone. Either every preset carries
+  one or none does, and what number a "cone" is worth is a table decision, not a module one.
+
+**The *Unlit area* preset is gone**, dropped with the placeholder table. It was the only entry
+exercising the `clamp` branch, so nothing in the shipped table reaches *Set level to* — the
+control is still there and the editor still authors it. Its use case is better served by §10.7's
+region anyway, which takes an arbitrary shape rather than a disc.
 
 `DEFAULT_SUPPRESSOR` is *Darkness* and `DEFAULT_EMITTER` is a mundane light, so the two most
-common cases are already what an unconfigured document does. That is a property worth
-keeping: the presets name the existing defaults rather than replacing them.
+common cases are already what an unconfigured document does — the presets name the existing
+defaults rather than replacing them.
 
-**The preset is not stored.** It is derived on render by matching the current config against
-the table, falling back to "Custom". Storing it creates a second source of truth that goes
-stale the moment someone nudges one field, and there is no useful behaviour that reads it.
+### 10.2.1 The preset editor — built 2026-08-26
 
-### 10.3 The light config sheet
+A `registerMenu` sub-window off the settings, `ui/preset-editor.mjs`. Four decisions in it.
 
-`AmbientLightConfig` is `HandlebarsApplicationMixin(DocumentSheetV2)` with parts
-`tabs / basic / animation / advanced / footer` and a `sheet` tab group.
+**One preset at a time, not all of them at once.** A preset has two mutually exclusive halves, so
+rendering every entry down one page means rendering both halves of each — twelve fields per row,
+most inapplicable. The window edits one preset, chosen from a select, with the same branch
+switching and the *same labels* the light sheet uses. Deliberately the same: the editor and the
+sheet must not develop two vocabularies for one model.
 
-**A tab, injected — not a registered `PARTS` entry.** Adding a real part means mutating
-`AmbientLightConfig.PARTS` (and rebuilding the object so ours lands before `footer`), pushing
-into `TABS.sheet.tabs`, and wrapping `_prepareContext` to supply the part's data, because
-`_preparePartContext` offers no hook. Injecting from `renderAmbientLightConfig` needs none of
-that and buys the same result, because V2 tab switching is entirely DOM-driven: `changeTab`
-queries `.tabs [data-group][data-tab]` and `.tab[data-group]` live
-(`api/application.mjs:1113-1125`), and `data-action="tab"` is a core delegated action. An
-`<a data-action="tab" data-group="sheet" data-tab="pf1-lighting">` in the nav and a matching
-`<section class="tab">` in the content are a fully working tab with no core statics touched.
+**What is edited is a working copy.** Nothing reaches the setting until *Save*. Switching between
+presets harvests the visible pane into that copy first, so a half-finished edit survives a look
+at another entry, and closing without saving discards the lot. Both are what a GM assumes without
+being told; the cost is one field of state.
 
-Two consequences to handle:
+**The key is identity and the label is not.** A document records where its numbers came from, so
+renaming keeps the key and the documents stay attached. Deleting leaves those documents holding a
+dead key, which reports as Custom and changes nothing — because nothing in the model reads
+`preset` at all. `newKey` therefore runs once, at creation, and never on edit.
 
-- `_prepareTabs` builds from the static `TABS`, so on any re-render our tab is absent from the
-  computed set and **no** section gets `active` if ours was the open one. The injector reads
-  `app.tabGroups.sheet` after inserting and restores the active state itself.
-- `_onChangeForm` re-renders `["animation", "advanced"]` when `config.negative` changes
-  (`ambient-light-config.mjs:169`). Our field set differs entirely between a light and a
-  darkness, so the injector must rebuild on every render, including partial ones — which it
-  does, since `renderAmbientLightConfig` fires after `_onRender` on every render.
+**Editing a preset does not reach back into lights already placed from it.** That is the one-way
+sync seen from the far side: `applyPreset` writes values at the moment it is chosen and nothing
+re-reads the table afterwards. The window says so in a hint rather than leaving it to be found.
 
-**Token light gets a fieldset, not a tab.** `TokenApplication` (the mixin behind both
-`TokenConfig` and `PrototypeTokenConfig`) already has five tabs, and its Light tab is a single
-scrollable column of three fieldsets. A fourth fieldset is the consistent shape, and one
-`renderTokenApplication` listener covers both sheets — `#callHooks` walks the inheritance
-chain, so the mixin's own class name fires for both (`api/application.mjs:1226-1232`).
+Two implementation notes:
 
-Same context builder, same template, two mount points and two field-name prefixes
-(`flags.pf1-lighting.…` against the light document, versus the same path on the token
-document — the registry reads `source.object.document.getFlag`, which resolves to
-`TokenDocument` for a token light, so no model change is needed).
+- **Built by hand, not through `HandlebarsApplicationMixin`.** The module has no `templates/`
+  directory and this would be the only thing in it — half of one window's markup in a second
+  file and a second language, for a list and a form. §10.6's settings menu is where that trade
+  changes.
+- **The change listener is a stable bound field, removed before it is added.** `_onRender` fires
+  on every render and `this.element` survives them — only the content inside is replaced — so an
+  anonymous handler stacks one copy per render, each of which harvests and re-renders. That is
+  the shape of bug that reads as the window getting slower the longer it is open.
 
-**Field names go straight into `FormDataExtended`.** `flags.pf1-lighting.config.level`
-expands to the right nested object, `_previewChanges` hands it to `preview.updateSource`, and
-submit puts it through `document.update`. Flags are a free-form `ObjectField`, so nothing
-validates against us.
+`FormDataExtended` is not used: `negative` is a select of two words, a darkness's radius is one
+field standing for two, and `transform` is a nested object whose shape depends on another
+control. Building the entry is exactly the work `#harvest` already does on every change. It also
+applies the two consistency rules the sheet applies — `cancelsDarkness && magical` for
+`contest.mjs:235`'s sake, and *clamp target is the floor* for §10.4's — so a preset **cannot be
+authored inconsistent** in the first place.
 
-**`brightRadius` is retired, not relocated.** It was read as a *top-level* flag while
-everything else lived under `.config`, and §3.2.1's rewrite removes the concept it named: a
-Bright light is now `emission.tier = Bright` against its ordinary inner radius. Nothing needs
-migrating — a light with the old flag simply stops having a third zone, which is the correct
-new reading of it.
+### 10.3 Where the controls go — inside the Basic tab, not beside it
 
-**Do not mirror `level` into native `priority`.** §3.5 floated it. The two fields mean
-different things (§4.1.1), `priority` still has its own job in darkness-vs-darkness ordering,
-and silently overwriting a value the user set on the Basic tab is worse than the confusion it
-would fix. The confusion is a *labelling* problem, so fix it with a label: a hint under our
-Level field saying Foundry's Priority is separate and orders darkness against darkness only.
+**Reversed 2026-08-24.** The plan was a fourth tab on `AmbientLightConfig`. Patrick's
+objection is the right one and it is not about taste: our fields and Foundry's own two radii
+describe *one* light between them, and the radii mean something different now than their
+labels say. "Dim Radius" is §3.2.1's *increase* band and has nothing to do with dim light. A
+separate tab leaves that mislabelling in place on Basic and puts the fields that explain it a
+click away.
 
-**No live preview of our fields, deliberately.** `registry.usable()` excludes previews
+So: **one fieldset injected into the Basic tab, between Placement and Appearance**, carrying
+every control including the two radii, and the rows it supersedes are hidden rather than
+duplicated.
+
+`templates/scene/parts/light-basic.hbs` is two fieldsets — `AMBIENT_LIGHT.SECTIONS.placement`
+and `AMBIENT_LIGHT.SECTIONS.appearance` — so the mount point is `insertAdjacentHTML` before
+the second `<fieldset>` in the `basic` section. Hidden:
+
+- the radius `.form-group.slim` (the `config.dim` / `config.bright` pair), because our section
+  carries both inputs under names that say what they do
+- the `config.negative` group, because "is a darkness source" is the switch our whole section
+  branches on and belongs at its head
+
+**The inputs are the real fields, moved — not mirrored.** `config.bright`, `config.dim` and
+`config.negative` are genuine `LightData` paths, so an input carrying that `name` anywhere in
+the form is bound by `FormDataExtended` exactly as the original was, flows through
+`_onChangeForm` → `_previewChanges` → `preview.updateSource`, and previews live. Two live
+controls for one value would be a bug factory; one control in a different place is not.
+
+`config.priority` stays where it is on Appearance, with a hint added: Foundry's Priority orders
+darkness against darkness and is **not** our spell level (§4.1.1, and §10's earlier note
+rejecting mirroring one into the other).
+
+**Injection, not a registered `PARTS` entry.** Adding a real part means mutating
+`AmbientLightConfig.PARTS`, rebuilding it so ours lands in order, and wrapping `_prepareContext`
+because `_preparePartContext` offers no hook. `renderAmbientLightConfig` fires after `_onRender`
+on every render and needs none of that. Two consequences, both now simpler than the tab version
+would have been:
+
+- Our section lives inside the `basic` part, so a **partial** re-render leaves it alone —
+  and `_onChangeForm` re-renders exactly `["animation", "advanced"]` when `config.negative`
+  changes (`ambient-light-config.mjs:169`), which is to say never `basic`. The injector must
+  therefore guard against double-injection (a marker class) and must handle the light↔darkness
+  swap itself.
+- It handles it by **toggling visibility, not by rebuilding**. Both field groups render; one
+  is hidden. Cheaper, keeps the preview stable, and has a real benefit: a light toggled to
+  darkness and back still has its emission settings, because hidden inputs still submit and
+  the model reads `emitTier`/`steps`/`cap` only for emitters and `transform`/`floor` only for
+  suppressors. Stale irrelevant flags are inert by construction.
+- `#onReset` calls a full `this.render()`, which wipes the section; the hook re-injects.
+
+**Token light gets the same fieldset, one mount point over.** `templates/scene/token/light.hbs`
+has the identical shape — a `TOKEN.SECTIONS.basic` fieldset holding the radius pair and
+`light.negative` — so the same builder runs with a field-name prefix of `light.` instead of
+`config.`, hiding the same two rows and appending our fieldset after that one. One
+`renderTokenApplication` listener covers both `TokenConfig` and `PrototypeTokenConfig`, since
+`#callHooks` walks the inheritance chain and the mixin's own class name fires for both
+(`api/application.mjs:1226-1232`). The registry reads
+`source.object.document.getFlag(MODULE_ID, "config")`, which resolves to `TokenDocument` for a
+token light, so no model change is needed.
+
+**Our flag fields do not preview, deliberately.** `registry.usable()` excludes previews
 (`model/registry.mjs:190`) because a drag creates a second live source and counting both made
-the model resolve a scene that did not exist. The config sheet's preview is the same kind of
-clone. So our fields apply on submit, and the injector calls `registry.invalidate()` plus a
-forced `renderer.rebuild` on close rather than trusting `refreshAmbientLight` to fire for a
-flag-only change. `affectsRegistry` already tests `flags.pf1-lighting`
-(`model/registry.mjs:346`), so the update hooks are correct as they stand.
+the model resolve a scene that did not exist; the config sheet's preview is the same kind of
+clone. The native fields in our section preview normally — they are Foundry's own — and the
+asymmetry needs a hint saying so. On close the injector calls `registry.invalidate()` plus a
+forced `renderer.rebuild()` rather than trusting `refreshAmbientLight` to fire for a flag-only
+change. `affectsRegistry` already tests `flags.pf1-lighting` (`model/registry.mjs:346`), so the
+update hooks are correct as they stand.
 
-### 10.4 What the sheet shows, and when
+**`brightRadius` is retired, not relocated.** It was read as a *top-level* flag while everything
+else lived under `.config`, and §3.2.1's rewrite removes the concept it named: a Bright light is
+now `emitTier = Bright` against its ordinary inner radius. Nothing needs migrating — a light
+with the old flag simply stops having a third zone, which is the correct new reading of it.
 
-Driven by `config.negative`, because that is what decides whether the document becomes a
-`PointLightSource` or a `PointDarknessSource`, which is what decides whether the model reads
-it against `DEFAULT_EMITTER` or `DEFAULT_SUPPRESSOR`.
+### 10.4 What the section shows, and when
 
-**Light:** preset · kind · level · **set light level** · **steps** · **clamp** · counts as
-*daylight*.
+Branching on `config.negative`, because that is what decides whether the document becomes a
+`PointLightSource` or a `PointDarknessSource`, which is what decides whether the model reads it
+against `DEFAULT_EMITTER` or `DEFAULT_SUPPRESSOR`.
 
-The last three are §3.2.1's emission fields, and they sit beside Foundry's own two radius
-inputs rather than replacing them: *this light provides `<set level>` out to `bright`, and
-raises the level `<steps>` from there to `dim`, never above `<clamp>`.* Clamp defaults to the
-set level and steps to 1, so the ordinary case is one dropdown and two fields nobody touches.
-This is what the old `brightRadius` flag becomes — an enum instead of a third radius, and no
-longer at an inconsistent top-level flag path.
+The fieldset's legend is **Lighting Configuration**. Head of the section, always: the
+**preset** select (Custom first, per §10.2), then **is a darkness source**
+(`config.negative`).
 
-**Darkness:** preset · kind · level · effect (`reduce n` / `clamp to tier`) · floor · casts an
-umbra · what it blocks (`eligibility`).
+**Light:**
 
-`kind: mundane` on a darkness is meaningful and needs to read as such — `castsUmbra` keys off
-`level >= 1`, not off `kind` (`model/contest.mjs:104-106`), so a level-0 darkness is an unlit
-cellar: dark, but you can see out of it. The "Unlit area" preset is how that gets named.
+| Group | Controls |
+| --- | --- |
+| Source | is magical (`kind`) · spell level (`level`, disabled unless magical) · counts as *daylight* (`cancelsDarkness`) |
+| Brightness | level (`emitTier` — Dim / Normal / Bright) · radius (`config.bright`) |
+| Increase brightness | radius (`config.dim`) · steps (`steps`) · maximum level (`cap`) |
 
-### 10.5 The scene, and the tier table
+The second and third groups are §3.2.1 read straight off: *this light provides `<level>` out to
+`<radius>`, and raises whatever else is there by `<steps>` out to `<radius>`, never past
+`<maximum>`.* `cap` defaults to the set level and `steps` to 1, so the ordinary case is one
+dropdown and two radii, with the last two fields left alone. `cap` was missing from both the
+original plan and Patrick's list and is the only field either of us dropped that the model
+already implements — it is §3.2.1's second lever, the one that keeps three overlapping torches
+at Normal.
 
-`render/levels.mjs` holds the tier → darkness-level table as a module variable, settable only
-from the console via `render.levels(preset)` and persisted nowhere. It is also the one number
-§7.0 says can only be settled by looking at a map — and different maps want different answers,
-which is precisely why `matched`, `even` and `bands` all exist.
+No "none" entry on the brightness level: a light with no set zone is `config.bright = 0`, which
+is how Foundry already expresses it.
 
-So: **a world setting for the default preset, and a per-scene override.** Mechanically free —
-`ambient.registerHooks` already re-solves the light weights at every `canvasReady`, so reading
-the scene's flag there instead of a module variable is a substitution, not a new pathway.
+**Darkness:**
 
-`SceneConfig` is `PARTS.lighting → templates/scene/config/lighting.hbs`, `data-tab="lighting"`;
-a fieldset appended there via `renderSceneConfig`, same injection technique as §10.3 minus the
-tab. Controls: preset select with a "use world default" blank, plus five number inputs revealed
-for "Custom".
+| Group | Controls |
+| --- | --- |
+| Source | spell level (`level`, with 0 named *Mundane / unlit area*) |
+| Effect | set or decrease · **set** → target level (`transform.op = "clamp"`) · **decrease** → steps (`reduce`) and floor (Dark / Supernatural Dark) |
+
+*Set* and *decrease* are `clamp` and `reduce`, and the labelling has to be honest about what
+`clamp` does: it never brightens. Setting a darkness to Dim over ground that is already Dark
+leaves it Dark. That is the correct behaviour for a darkness and the wrong reading of the word
+"set", so the hint says it.
+
+`floor` appears only under *decrease*. Under *set* the target level **is** the floor, and
+offering both would be offering a contradiction — **but the code does not currently make that
+true, so the UI has to.** `applyTransform` ignores `floor` on the `clamp` branch (correctly:
+clamping toward a named tier needs no lower bound), while `resolveTier(B, {suppressed, floor})`
+applies `floor` separately at the point of thresholding. So a darkness *set* to Supernatural
+Dark yields `B = 0`, which then resolves through the default floor of Dark and comes out
+**Dark**. The fix is one line in the writer, not the model: when *set* is chosen the section
+writes `floor` equal to the clamp target, so the two cannot disagree.
+
+### 10.5 The scene — one control, not two
+
+The tier → darkness-level table is the one number §7.0 says can only be settled by looking at a
+map, and different maps want different answers — which is why `matched`, `even` and `bands` all
+exist. It needs a world default and, eventually, a per-scene override in a fieldset on
+`SceneConfig`'s `lighting` part.
+
+**The world half is built (2026-08-25), and as four plain settings rather than a preset
+picker** (Patrick's call). `tierLevelBright` / `Normal` / `Dim` / `Dark`, each the darkness
+level that tier paints at, defaulting to `TIER_TO_DARKNESS` so nothing moves on upgrade.
+`levels.applyTierTable()` builds the table from them and installs it.
+
+Three things it has to get right, and each is a dependency that is easy to miss:
+
+- **The light weights must be re-solved.** `deriveWeights` reads the table — it asks where a
+  light's zones land on unlit ground and solves for the weight that puts them on the matching
+  ambient tier — so a table change that did not re-solve would leave every *light* painting
+  against the old ladder while the *ground* painted against the new one. That is precisely the
+  §6.2.3 mismatch the derivation exists to prevent.
+- **Only when we are already driving them.** With the global-illumination takeover off,
+  `CONFIG.Canvas.lightLevels` holds Foundry's own values, and replacing them would be applying
+  a feature the GM switched off. `savedWeights` records which state we are in, and reading it
+  locally is also what keeps this out of a cycle — `render/ambient.mjs`, which owns the takeover
+  setting, already imports `levels.mjs`.
+- **`initializeLighting`, not just `refreshLighting`.** The table is a *model* input: it is the
+  base of every additive sum in §3.2.1, through `ambientTier`. So the field has to recompute,
+  not merely repaint.
+
+**Four settings, not five.** Supernatural Dark tracks Dark, because `TIER_TO_DARKNESS`
+deliberately gives them the same level — Dark means no light and `ambientDarkness` is what no
+light looks like, so there is nothing below it to reserve, and the darkness source's own overlay
+is the better distinction. The `even` preset, which does separate them, stays reachable from the
+console.
+
+`render.levels(preset)` remains the *transient* lever for trying a table against a live map,
+persisting nothing; `render.levels(null)` now reloads the four settings rather than resetting to
+the hardcoded default, so an experiment is always one call from being undone.
+
+Separately, and more visibly: **the scene's own light level** — built 2026-08-25,
+`ui/scene-config.mjs`.
+
+**A dropdown, replacing core's slider outright.** Not a latched range over a label row, which
+was the earlier plan here, and not a second control beside the slider: the model quantises to
+five tiers, so a continuous control offers precision that does not exist. Core's
+`environmentFields.darknessLevel` input is **moved** into a hidden slot and driven, because two
+fields sharing a name make `FormDataExtended` return an array — the same constraint §10.9 is
+built around.
+
+Four options, not five. Supernatural Dark is not somewhere ambient light can *be*, only
+somewhere a suppressor with the right floor can put you.
+
+#### 10.5.1 The scene stores a tier
+
+`flags.pf1-lighting.tier` is the source of truth and `environment.darknessLevel` is derived
+output. That reverses this section's original claim that the control needed no stored field
+because `tierFromDarkness()` could recover the tier from the number.
+
+It cannot, once the table is editable. Patrick's requirement is that moving Dim from 0.67 to
+0.80 carries every scene set to Dim along with it — and re-deriving from the stored 0.67 under
+the *new* table may not answer Dim any more, so a scene would change tier because the GM retuned
+an unrelated one. **The tier a GM chose is a fact about history, and history cannot be recovered
+from the numbers** — the same argument §10.2 makes about presets, load-bearing here rather than
+merely tidy. Storing it makes the update deterministic: the scene is Dim, Dim is now 0.80,
+write 0.80.
+
+Three properties of the sync, each of which is something that would otherwise go wrong:
+
+- **A scene with no flag is left alone.** It has never been set through this control, so the
+  dropdown shows its nearest rung and nothing is written until a GM picks one. Snapping every
+  existing scene on install would be the module deciding something it was not asked to.
+- **Exactly one client writes.** A world setting's `onChange` fires on every connected client
+  and a scene is a world document, so the guard is `game.users.activeGM?.isSelf` — without it
+  players attempt a write they are refused and every GM issues the same one.
+- **Locked scenes are skipped, not attempted.** `Scene#_preUpdate` silently *deletes*
+  `environment.darknessLevel` from an update when `environment.darknessLock` is set
+  (`documents/scene.mjs:416-419`). No error and no effect, so issuing the write anyway would
+  produce a readout claiming scenes it had not changed. They are counted and reported instead.
+
+Two triggers: the table changing (every flagged scene, via the `pf1-lighting.tierTableChanged`
+hook) and `canvasReady` (the one scene being drawn, as a safety net for a scene created or
+imported while a different table was in force, or by a client that was not the active GM).
+
+**A hook rather than a fourth injected callback.** `ui/scene-config.mjs` reads the table from
+`render/levels.mjs`, so levels cannot import it back — which is the shape the `set…Refresh`
+seams exist for. But this is a genuine broadcast: one producer, any number of listeners, none of
+which levels should have to know about, and observable from a macro besides.
+
+**Assigning `.value` on a Foundry custom form element dispatches `change`**
+(`applications/elements/form-element.mjs:89-92`), so driving core's darkness input from the
+dropdown re-enters the same delegated listener. Guarded with a flag rather than by reaching for
+the protected `_setValue`, which would only exist on the custom elements — a plain
+`<input type="range">` would need the guard anyway.
+
+`render.scenes()` reports which scenes carry a tier and whether their stored level still matches
+it; `render.resyncScenes()` forces the pass.
 
 ### 10.6 Settings
 
-Eleven settings, all `config: true`, all flat, all hardcoded English, and four of them master
-switches defaulting to `false` — so a fresh install does nothing until the right four boxes are
-found and ticked, in a list that gives no indication that `renderEnabled` gates
-`modelGlobalIllumination` which together gate the umbra painting (`render/paint.mjs:active`).
+**Superseded by the 2026-08-26 pass below.** The plan was one `registerMenu` application grouping
+twenty-one flat settings into Model / Render / Vision / Client / Debug, on the argument that a
+fresh install did nothing until the right four boxes were found and ticked in a list that gave no
+indication `renderEnabled` gated `modelGlobalIllumination`. That argument was sound and the
+answer turned out to be a better one: **if a list is unnavigable because it is full of switches
+nobody should be touching, take the switches out.**
 
-Replace the flat list with one `registerMenu` application and flip the existing settings to
-`config: false`. The keys and their `registerSettings` functions **stay where they are** — each
-in the module that owns it — because that is what keeps the settings from becoming a second
-dependency graph. The menu reads and writes them by key; it does not own them.
+#### As built — 2026-08-26
 
-Grouping, which is the whole point:
+Patrick went through the list setting by setting. What came out is six rows and two buttons:
 
-- **Model** — disable native suppression, model global illumination
-- **Render** — render the model, tier brightness table, darkness respects grey vision
-- **Vision** — perceive by light level, darkness shadows what lies beyond it,
-  see-in-darkness brightness, low-light guard
-- **Client** — readout, readout detail, GM sees through selected token
-- **Debug** — cell overlay
+| | |
+| --- | --- |
+| **Visuals** | menu → §10.6.1 |
+| **Lighting Presets** | menu → §10.2.1 |
+| Show light level | client |
+| Light level is GM only | world |
+| Explain the light level | world |
+| Animate ordinary darkness | world |
+| Darkness shadows what lies beyond it | world |
+| GM sees through the selected token | client, GM-only by `setSettingVisibility` |
 
-Dependent controls are disabled with the reason shown, rather than hidden — "requires *Render
-the lighting model*" is information; a control that vanishes is a bug report.
+Menus sort ahead of settings in Foundry's panel (`applications/settings/config.mjs:55-62`
+pushes every menu before the settings loop), so the two windows head the list whatever order
+they are registered in.
 
-`lang/en.json` lands with this, and the existing eleven `name`/`hint` strings move into it at
-the same time. Not because the module needs translating, but because the menu template would
-otherwise be the only place in the module where user-facing text is not in the source it
-describes, and splitting the difference is worse than either end.
+**Eight settings lost their row and kept their behaviour.** *Disable native darkness
+suppression*, *Render the lighting model*, *Model global illumination*, *Perceive by light level*,
+*Darkness respects grey vision*, *Draw overlapping light bands brighter*, *Show field cell
+overlay*, *Low-light vision does not enlarge darkness*. Every one was a development bisection aid
+— a switch whose value is *"the module works"* is not a preference — and this project has kept
+them long past the point of paying for them, which is what §10.6 was originally complaining about
+from the other end.
 
-### 10.7 Build order
+**Four of them had their defaults flipped from `false` to `true`, and that is not cosmetic.**
+`disableNativeSuppression`, `renderEnabled`, `ambientTakeover` and `perceptionEnabled` were the
+master switches. A hidden switch that defaults off is a module that does nothing on a fresh
+world, so removing the row *requires* flipping the default — the two changes are one change.
 
-1. `model/presets.mjs` — the table and `presetOf(config)`.
-2. `ui/light-config.mjs` — the AmbientLight tab. Biggest single win; unblocks authoring.
-3. The token Light fieldset — same builder, same template, one more mount point.
-4. Scene tier table: persist it, read it per scene, inject the fieldset.
-5. `ui/settings.mjs` — the menu, and `lang/en.json` with it.
+> **A world that stored `false` keeps `false`.** A stored value beats a default, so an existing
+> world that ever explicitly turned one of these off has it off with no row to turn it back on.
+> That is what `game.pf1Lighting.settings()` is for, and it is why it exists at all rather than
+> being a convenience: *removed the row, not the switch*, and a switch reachable only by
+> remembering its exact key is a switch that is gone in practice. The readout marks
+> `hidden: true` on precisely the settings it is the only route to.
+
+**The readout gained a GM gate, and the scope does most of the work.** Foundry hides a
+world-scoped setting from non-GM clients outright (`applications/settings/config.mjs:67`), so
+*Light level is GM only* and *Explain the light level* are GM-only in the menu for free.
+
+- *Light level is GM only* defaults **on**. The light level is information — a player reading the
+  exact tier under their token knows something their character has to work out — so the GM opting
+  players in is the right direction for the default to point. It also delivers Patrick's *"default
+  off for non-dm users"* without a per-user default, which a client setting registered at `init`
+  could not express anyway: `game.user` does not exist yet.
+- *Light level is GM only* also has to **take the client row with it**, which the first pass
+  missed. `SETTING_ENABLED` is client-scoped — it is a personal preference and has to be — so
+  Foundry's world-scope filter does not reach it, and a player under the switch was left with a
+  control that did nothing. `constants.setSettingVisibility` flips `config` on the stored entry
+  in `game.settings.settings`, which is where `SettingsConfig` reads it at render time, and
+  re-renders an open settings window because this can change while a player is looking at it.
+- *Explain the light level* is gated **in the feature as well as in the menu**. The world scope
+  hides the control; `detailed()` returning `false` for a non-GM makes it impossible for an
+  explanation to reach a player even when the readout has been shared. The *why* — "reduced from
+  normal", "darkness cancelled by daylight" — is a statement about causes the character has no
+  way to know, which is a different thing from the level itself.
+
+##### A toggle must read the thing it writes — 2026-08-26
+
+The first pass folded both questions into one `enabled()`:
+
+```js
+const enabled = () => {
+  if (gmOnly() && !game.user?.isGM) return false;
+  return game.settings.get(MODULE_ID, SETTING_ENABLED) === true;
+};
+```
+
+Correct for every *render* path and wrong for the one *writer*. Reported by Patrick as *"the
+hotkey just keeps toggling it on and never toggles off"*: for a player under the GM-only switch
+`enabled()` is permanently `false`, so `!enabled()` is permanently `true` and Alt+L wrote `true`
+on every press. Split into `available()` (may this user have it) and `showing()` (their own
+stored preference), with `enabled()` the conjunction. The keybinding toggles `showing()` and
+returns `false` when unavailable, so the press falls through to any lower-precedence binding —
+`pf1-light-level-tooltip` binds the same chord, which is a better answer than a notification
+saying no.
+
+*General shape: a control that toggles a value must read **that value**, never an effective
+answer with a second term folded into it. The two coincide until the second term exists, which
+is why this ships looking correct.*
+
+##### Token names go through `pf1-token-randomizer` when it is there — 2026-08-26
+
+The chip is **the module's only player-facing surface that prints a token's name**, which makes
+it the only place a name can leak from: the probes and the cell overlay are console tools, and
+the canvas nameplate is already substituted by the randomizer itself.
+
+`pf1-token-randomizer` lets a DM author a replacement name on a token and shows it to anyone
+below Observer. A feature printing `token.name` hands back the real one, so `tokenLabel()` asks
+that module's own `shouldObscure` / `getObscuredName` rather than re-reading its flags — the
+policy stays in one place, which its own source explicitly asks for.
+
+A second layer applies with or without it: **Foundry's native nameplate visibility**. A token
+whose plate is hidden from a player is not a token whose name belongs in a tooltip six inches
+away, so anything below LIMITED ownership on a token not set to `HOVER`/`ALWAYS` reads `???`.
+
+**A soft tie-in and nothing more**, per Patrick: no manifest relationship, no notification, no
+startup check. The module is looked up per call and its absence is the first layer not applying.
+`tr?.active` is tested as well as `tr?.api`, because an installed-but-disabled module keeps its
+entry in `game.modules` — and since the API is assigned at that module's own `setup`, a disabled
+one has no `api` to call in any case.
+
+##### The chip belongs to the scene — 2026-08-26
+
+It followed the cursor across sheets, dialogs and the sidebar, reporting the light level at
+whatever canvas position happened to lie underneath. The `mousemove` listener is on `window`,
+which is right for tracking, and the gate is the event **target**: it is by definition the
+topmost element under the pointer, so testing it against `canvas.app.view` gives *"over the
+scene, with nothing in the way"* in one comparison and needs no hit-testing of window rectangles.
+A `mouseleave` on the document covers leaving the browser entirely, which fires no further
+`mousemove`. A hovered token is exempt from the test — a token can only be hovered while the
+pointer is on the board, and `hoverToken(false)` fires before it can be anywhere else.
+
+**`ui/settings.mjs` is cancelled.** Six rows do not need grouping, and a menu that grouped six
+rows into five categories would be the same over-architecture the flat list was accused of. §10.8
+step 5 closes unbuilt — and `lang/en.json`, which was going to arrive with it, arrived on its own
+for §10.7's reasons.
+
+### 10.6.1 Configure visuals
+
+`ui/visuals.mjs`. Eight numbers, one window, and one line separating them from everything else:
+**they answer *how does this look*, never *what is true*.** Change any of them and the light level
+under a token is the number it was; the readout, perception, the umbra and every mechanical
+consumer read the model, and the model does not read this window. That is why these eight came
+out of the flat list together rather than one at a time.
+
+Four of them are one setting with four values. *Brightness of Bright / Normal / Dim / Dark* is a
+**ladder**: the rule that matters is that the numbers ascend as the tiers darken and that the
+gaps stay wide enough to read, which is a fact about the four together and cannot be stated in
+any one of their hints. As four rows they carried four near-identical paragraphs saying so;
+Patrick's instruction was *"do away with individual hints — just one hint telling 0 (full
+daylight) to 1 (unlit)"*, and under one heading they need exactly that. The tiers are listed
+brightest-first so a wrong entry shows up as a value out of order rather than as a number to
+reason about.
+
+The other four are the three softening distances and the see-in-darkness offset — the rest of the
+same question, and nowhere better to be.
+
+**The window does not own the settings.** Each key stays registered in the module that reads it,
+with its own `onChange`; this reads and writes them by key. Same reason the original §10.6 gave:
+a menu that owns its settings is a second dependency graph to keep in step with the first. And
+the `onChange` work here is real — the tier table re-solves the light weights and pushes every
+scene stored at a tier to its new darkness (§10.5) — which is why the submit handler writes
+**only keys whose value actually moved**. Writing every key unconditionally would run that four
+times over for one edited number, which is
+`setting_onchange_fires_on_create` seen from the other direction.
+
+### 10.7 Regions — why core's behaviour cannot work here
+
+Patrick's fourth control point is a region that excludes global illumination, and reported
+2026-08-24 that core's `AdjustDarknessLevelRegionBehaviorType` "doesn't seem to work currently
+under our system". It cannot, and the reason is in our own code.
+
+That behaviour builds a `RegionMesh` with `AdjustDarknessLevelRegionShader` and adds it to
+`canvas.effects.illumination.darknessLevelMeshes` (`adjust-darkness-level.mjs:66-88`).
+`render/darkness-texture.mjs` builds meshes of **the same class, with the same shader, in
+`MODE_OVERRIDE`, into the same container** — and `addChild` appends, so ours draw last. Our
+ground fill covers the whole scene rect. Last override wins, so the region's value is
+overwritten everywhere it could matter. It is not that the behaviour is broken; it is that we
+are painting over it.
+
+Cooperating with it is possible in principle — read the region's mode and modifier, fold it
+into the fill — but it is the wrong shape for the same reason §4.1.1 gives about native
+darkness suppression: it makes the picture the arbiter of a value the model is supposed to own,
+and it composes by draw order rather than by the contest.
+
+**The right shape is our own behaviour, and it is model work, not UI work.** Patrick's
+requirement names it exactly: *not overriding other lights, just the global illumination value.*
+That is a per-area **ambient tier** — the base `A` that §3.2.1's bands add to — so the behaviour
+registers an area with a tier, `ambientTier()` becomes position-dependent instead of scalar, and
+everything downstream composes as it already does. Lights inside it still light; the darkness
+contest still runs; the region only moves the floor.
+
+#### As built — 2026-08-26
+
+`model/areas.mjs`, one behaviour type, `pf1-lighting.globalIllumination`, named **Restrict Global
+Illumination**. Two fields plus Foundry's own `disabled`: a **tier** and a **mode**. "Exclude
+global illumination" is *at most Dark*, which is the default the schema opens on.
+
+**The name is the scope, and it was worth renaming for** (Patrick, 2026-08-26). The first pass
+called it *Ambient Light Level*, which is what the mechanism does and not what the feature is
+for. A GM reading *Ambient Light Level* on a behaviour list has no way to know it will not dim
+the torch they put in the room; reading *Restrict Global Illumination*, they do. The narrower
+name is also the true one — see the light-source correction below, which is the same confusion
+having actually happened.
+
+**The mode exists because of time of day, and it is the one design decision here.** *Set* looks
+like the obvious semantics until the scene's darkness slider moves: a cellar configured *set
+Dark* on a Bright outdoor map is correct at noon and, at midnight, exactly as bright as the field
+outside it — and a cellar configured *set Dim* is **brighter** than the night around it. A room
+that is unlit is unlit *relative to whatever the sky is doing*, which is a clamp and not an
+assignment. So `AT_MOST` is the default and the case Patrick asked for; `SET` is kept for the
+magically lit vault, which a clamp genuinely cannot express, and `AT_LEAST` is that case's other
+half for one line.
+
+Four claims the implementation has to keep, and each is one branch:
+
+- **Lights inside still light**, and still add their bands, from the lower base.
+- **A darkness inside still suppresses, from the lower base.** This is the one that does real
+  work: without it a *darkness* in an unlit cellar transforms down from the Bright *street*, and
+  renders **brighter than the room around it** — the failure backwards. `field.compute` splits
+  each `dark` cell by domain for exactly this.
+- **No umbra, ever.** An area is not a suppressor and never reaches `castsUmbra`. It is an unlit
+  room, not magical darkness, and `level` is not a field it has.
+- **Nothing about it is observer-relative.**
+- **Its boundary is never feathered.** The ground blur (§6.4.2a) exists for the edge between a
+  *darkness* and open ground, which has no architecture on it and reads as a stencilled disc
+  without a feather. A region is drawn along a **wall** — the one edge in a scene that should be
+  hard — and blurring it makes the room bleed through its own walls. Cells carry `hardEdge`,
+  which is part of `mergeByLevel`'s group key (a feathered and a hard-edged cell at one level are
+  two treatments, not one region) and is assigned unconditionally in `apply` for the reason every
+  other per-entry flag is: this project's recurring pooling bug, now on its fourth instance after
+  `animation`, `HARD_EDGES` and `HIDDEN`.
+
+**It draws nothing of its own.** The area is emitted as an ordinary `kind: "ambient"` cell at its
+tier, `render/paint.mjs` puts it in the darkness-level texture with every other ground cell, and
+§7.0's shader threshold discards global illumination per fragment wherever that texture reads
+darker than `globalLightCutoff()`. That is the whole "exclude global illumination" feature, and
+it costs no polygon on the global light source and no second mechanism — which is worth stating
+plainly, because the first sketch of this section assumed `customPolygon` and that route is the
+one §7.0 spent a day proving wrong.
+
+Three consequences of riding on that mechanism, all of them reported by `areas.status()` rather
+than left to be discovered:
+
+1. **It needs *Model global illumination* on.** With the takeover off the model answers
+   correctly — readout, perception and detection all move — and the map does not change, because
+   the texture is the only channel through which anything darkens below global light.
+2. **It needs the scene's global illumination *enabled*.** These regions move the ambient, and
+   with global light off there is no ambient entry in the registry at all — so a *set Bright*
+   area is exactly as inert as a *set Dark* one. Place a light instead.
+3. **An area at Dim on a globally-lit scene is under-darkened**, for the reason any Dim-floored
+   darkness is: `globalLightCutoff()` is the single threshold `darknessTable()[TIER.DIM]` and
+   `darknessFor` erases only where `level > cutoff`, so Dim itself sits exactly on the boundary
+   and global light survives it. Not new, not specific to regions, and not fixable without a
+   second threshold.
+
+##### Reported as "it blocks light sources" — it never did, 2026-08-26
+
+Patrick's second note on the first build. The region was darkening the ground *and* the torches
+in it were dark, so it read as the region suppressing them. It was not suppressing anything, and
+the model had never thought it was: `evaluate()` reads `ambientTier(point)` through the global
+emitter's contribution, so a torch in the cellar always resolved to Normal. The picture was
+alone in being wrong, which is the shape this project keeps producing and the reason a model
+readout is checked before a screenshot.
+
+The renderer converts a light's tier into one of Foundry's lighting levels through
+`levelForTier(target, background)`, which returns **`UNLIT` whenever `target <= background`** —
+a torch adds nothing at noon, correctly. And `background` was **one scalar for the whole scene**:
+
+```js
+const sceneTier = tierOf(current.stats.ambientB ?? 0);   // renderer.mjs
+```
+
+So on a Bright map every ordinary light was *already* being drawn unlit, and had been since
+§6.2.3. That was right while the ground really was Bright everywhere, and it stopped being right
+the moment a region made one room Dark — but nothing about the light changed, so the region got
+the blame. **The lights were not blocked; they were unlit for a reason that had expired in that
+room.**
+
+Two things follow, and the second is the general one:
+
+- **`base` is now a per-cell field.** `field.stampDomains` splits `clip` and `reduced` cells
+  where they cross a domain boundary and stamps each piece with the ambient it stands on;
+  `emitStacks` stamps its own, since it is already told its base. `ambient` and `dark` cells need
+  nothing — the first is a mesh and the second is drawn by a darkness source, and neither goes
+  through `levelForTier`. The renderer reads `cell.base ?? sceneTier` at all four sites, so a
+  scene with no regions is unchanged expression by expression.
+- **The split is skipped by a bounding-box test against the extent of the *areas*, not of the
+  domains.** The base domain's extent is the whole scene rect and would reject nothing, so
+  testing the domains would have made every light on the map pay Clipper. Areas are small; most
+  lights are nowhere near one.
+
+*General lesson, and it is §7.0's blindsight lesson again in a third costume: a correct
+special-case — "a light no brighter than the ground is drawn unlit" — is stated relative to a
+quantity, and stays in the code unchanged when that quantity stops being global.*
+
+**The cost, and the case that stays free.** `field.ambientDomains` returns `null` when the scene
+has no areas, and every consumer branches on that rather than treating "one domain covering
+everything" as the general case — the same discipline as the no-suppressor fast path, and for
+the same reason: the ambient cell is on the hot path of every scene and most scenes will never
+carry a region. With areas, the split folds one area at a time over the domains so far, cutting
+each into `D ∩ A` and `D \ A`, which is exponential in *overlapping* areas — so the result is
+**collapsed by tier** before it leaves. `emitStacks` is the expensive consumer and after the
+collapse it runs at most five times however many regions are drawn.
+
+Folding in document order also makes the polygon split agree with `ambientTierAt`'s point query
+by construction rather than by a rule written down in two places, which is why `foldTier` is
+exported rather than duplicated.
+
+Two smaller things worth having recorded:
+
+- **`documentTypes` in `module.json`.** A data model registered into
+  `CONFIG.RegionBehavior.dataModels` without the manifest entry is never offered in the *Add
+  Behavior* list, and the failure is silent. So the type name is authored in two places that
+  must agree, and this feature needs a **full Foundry reload** rather than an F5.
+  `areas.status().declared` is the manifest half, separately from `registered`.
+- **The type label had to become a real translation key** — `lang/en.json` exists from
+  2026-08-26 for this one string, and the first build's attempt to avoid it was wrong.
+
+  Assigning a plain English string into `CONFIG.RegionBehavior.typeLabels` at `init` does
+  survive `Localization#initialize` (`helpers/localization.mjs:72-73` skips a slot we have
+  filled), and it renders correctly in `RegionConfig`'s behaviour list, which calls plain
+  `localize` (`sheets/region-config.mjs:114`). It fails in the *Create Region Behavior*
+  dropdown, which is where a GM meets the behaviour first:
+
+  ```js
+  let label = CONFIG[this.documentName]?.typeLabels?.[type];
+  label = label && game.i18n.has(label) ? game.i18n.localize(label) : type;
+  ```
+
+  `ClientDocument.createDialog` (`abstract/client-document.mjs:822-823`) demands a **key that
+  exists**, not a string that localises, and falls back to the bare type name. Reported by
+  Patrick 2026-08-26 as *"maybe labeling it in the wrong place? Rest seems to be working"* — and
+  the "rest" working **is** the diagnosis, since the two call sites differ by exactly that
+  `has()`.
+
+  So nothing is assigned in `registerBehavior` at all; the label lives under the key core writes
+  by default, and `areas.status().label` reports whether it resolved — a type that is registered,
+  working, and listed under its raw key looks healthy from every other angle. This is the one
+  user-facing string in the module that cannot stay in the source it describes; §10.6 moves the
+  rest to join it.
+
+  *General shape, and not the first time here: a value that is right in two of the three places
+  it is consumed.*
+- **Elevation is ignored**, per §3.6. A region carries `elevation.bottom`/`top` and
+  `RegionDocument#testPoint` tests them, but the model has no elevation anywhere else — every
+  emitter is a disc on the floor — so consulting it here would make ambient the one quantity
+  with a third dimension, and a cellar authored at its real depth would then apply to nothing.
+
+### 10.8 Build order
+
+1. ~~`model/presets.mjs`~~ — **built 2026-08-24.**
+2. ~~`ui/light-config.mjs`~~ — **built 2026-08-24.**
+3. ~~The token Light fieldset~~ — **built 2026-08-24**, and it cost one extra hook and one
+   string. Both sheets have the same shape: a fieldset holding the radius pair and the
+   `negative` checkbox, so the mount is *"the fieldset containing the `dim` input, insert
+   after"* and the only difference is a `config.` / `light.` prefix.
+4. ~~Scene: the tier control, plus the table~~ — **built 2026-08-25.** The table half landed as
+   four flat world settings rather than a preset picker, and the scene control **stores** its
+   tier rather than deriving it (§10.5.1). The per-scene table *override* is not built and may
+   not be wanted: with the levels editable per world and the scene storing a tier, the case for
+   a second layer is much weaker than it was when the table was a hardcoded preset.
+5. ~~`ui/settings.mjs` — the menu, and `lang/en.json` with it.~~ **Closed unbuilt, 2026-08-26.**
+   The list was unnavigable because it was full of switches nobody should be touching; taking
+   eight of them out left six rows, which do not need grouping. What landed instead is
+   `ui/visuals.mjs` (§10.6.1) for the appearance numbers, and `lang/en.json` arrived
+   separately for §10.7's reasons. **§10 is complete.**
+6. ~~`ui/preset-editor.mjs` and the preset table as data~~ — **built 2026-08-26** (§10.2.1).
+   Not in the original order at all; it arrived as a request, and it turned the placeholder
+   numbers in `model/presets.mjs` from an outstanding item into a thing a GM does.
+7. ~~The region behaviour~~ — **built 2026-08-26** (§10.7). Also out of order, and it landed as
+   model work exactly as that section predicted: the schema is two fields, and everything that
+   took effort was `ambientTier()` becoming position-dependent.
+
+### 10.9 As built — steps 1–3, 2026-08-24
+
+Four things came out differently from the plan, and three of them are the same discovery from
+different angles: **a control the GM sees is not always a field the form submits.**
+
+**Same-named inputs return an array, so the natives had to be *moved*.** §10.3 said "moved, not
+mirrored" as a design preference; it is a hard requirement.
+`FormDataExtended#getFieldValue` collects same-named fields into a `RadioNodeList` and maps over
+it (`form-data-extended.mjs:176-183`), so two inputs named `config.bright` would hand the
+document `[20, 20]`. `relocate()` moves the DOM node — value, binding and core's delegated
+listeners intact — and hides the row it came from rather than deleting it, so a re-render finds
+the structure core built.
+
+**Three values are carried by hidden inputs that visible controls drive.** `kind` is a *string*
+in the model and a *checkbox* in the sheet; `level` is one number with two different sets of
+labels depending on the branch, so it has two visible selects; and `cancelsDarkness` is the one
+flag `breaks()` reads **without** first checking `kind` (`model/contest.mjs:235`).
+
+That last one was a real leak rather than a tidiness question. Disabling the checkbox on a
+mundane light does not clear the flag — `FormDataExtended` omits disabled fields by default, so
+a light that used to be a *daylight* would keep annihilating darkness after being made mundane.
+The hidden field always submits, and `sync()` writes `magical && checked` into it. Fixed in the
+writer rather than in `breaks()`, since a *daylight* is magical by definition and the model has
+no reason to carry the guard.
+
+**Built as a string, not a Handlebars template**, reversing §10.7's last line.
+`renderTemplate` is async and hook callbacks are not awaited, so a templated injection would
+leave a window in which the sheet is visible without the fieldset — and would race the
+de-duplication guard against a second render. Synchronous construction removes the whole class
+of problem for markup this simple. `templates/` and the `renderTemplate` note stand for step 5,
+where the settings menu is its own application and the asynchrony is not in a hook.
+
+**`presetOf` does not exist**, per §10.2's one-way rule. `applyPreset(name)` returns a flat
+dotted update for macros (`game.pf1Lighting.presets.apply`); the sheet writes the same values
+straight into the inputs so that they preview.
+
+**A darkness gets a Radius row of its own** (added 2026-08-25, after the first pass shipped
+without one). It is the *same input* moved between the branches, not a second field — two
+fields sharing a name yield an array, which is the constraint the whole section is built around.
+
+And it carries a correction the first pass would have got wrong.
+`PointDarknessSource#_initialize` collapses the pair on every initialise
+(`point-darkness-source.mjs:117`):
+
+```js
+this.data.radius = this.data.bright = this.data.dim = Math.max(this.data.dim ?? 0, this.data.bright ?? 0);
+```
+
+So a suppressor's two radii are meaningless except through their **maximum**, and a control
+bound to `dim` alone lies whenever `bright` exceeds it. `{bright: 60, dim: 0}` is the natural
+way to author *bright out to here* (see `ramp.normaliseEmission`), so a light written that way
+and flipped to a darkness would be 60 feet across with a Radius field reading 0. `syncRadii`
+clamps `bright` down to `dim` **only when it exceeds** — the one case that needs correcting —
+so an ordinary light, which has `bright <= dim`, survives the round trip untouched.
+
+Two smaller decisions worth having written down:
+
+- **A clamp target stops at Dim.** `clamp` only lowers, so offering Normal or Bright would offer
+  a darkness whose most likely setting does nothing.
+- **`sync()` runs after every change**, not only after the ones that matter. Working out which
+  control affects which other one would be a second dependency graph to keep in step with the
+  first, and the function is a handful of DOM reads.
 
 New files: `scripts/model/presets.mjs`, `scripts/ui/light-config.mjs`,
 `scripts/ui/scene-config.mjs`, `scripts/ui/settings.mjs`, `templates/*.hbs`, `lang/en.json`,
 `styles/config.css`. `module.json` gains `languages` and the extra stylesheet — a **full
 Foundry reload**, not an F5, for step 1 and step 5.
 
+> **`lang/en.json` arrived early, 2026-08-26**, carrying exactly one string: the region
+> behaviour's type name, which §10.7 explains cannot be anything but a translation key. Step 5
+> inherits the file rather than creating it.
+
+
+
 Templates go through `foundry.applications.handlebars.renderTemplate`; the global
 `renderTemplate` still resolves in v13 but is deprecated.
+
+### 10.10 Light Spill — the submenu
+
+`ui/spill-config.mjs`, an `ApplicationV2` registered with `game.settings.registerMenu` and
+`restricted: true`, modelled on `ui/visuals.mjs` (§10.6.1). §10 was declared complete at step 5
+on the argument that the remaining rows did not need grouping; this is six new numbers for one
+feature, which is the case that argument was making room for.
+
+| Control | Default | Why it is a control |
+| --- | --- | --- |
+| Enable light spill | on | Patrick asked for the model behaviour to be separable from the rest of the module. Off is a genuine configuration, not a bisection aid. |
+| Spill cone angle | 105° | Emission, not occlusion (§3.4). Purely how wide the bright wedge reads. |
+| Max spill radius — Bright | 40 ft | Cone radius when `spillTier` is Bright. |
+| Max spill radius — Normal | 20 ft | |
+| Max spill radius — Dim | 10 ft | |
+| Band width | 10 ft | How fast the bands step down. Without it the radii say where the cone ends and nothing says how far the falloff runs. |
+
+#### Sub-rings — built, then removed — 2026-08-27
+
+Play-testing said the ladder read as *"4 lines of decreasing brightness"* rather than a gradient.
+Two attempts, both retired. The section is kept because what it found is a **ceiling**, not a bug,
+and anyone reaching for either lever again should know it was already pulled.
+
+**A wider blur cannot help, and that is structural.** `spillSoftness` multiplied `groundSoftness`
+on spill meshes. It spread each step over more distance and added no steps — *"ground edge
+softening has a similar effect, doesn't change the number of steps, but condenses/expands them"*
+(Patrick). §6.4.2a's mechanism is one mesh's rim fading to reveal *the mesh beneath*; between two
+levels that is a ramp, but there is nothing beneath a stripe except the next stripe. **A blur
+softens a boundary between two levels; it cannot invent one between them.**
+
+**Sub-rings worked, and were declined on looks.** `spillSteps` subdivided each band into rings
+carrying the band's whole tier plus a `blend` the painter interpolated the level along, with a
+picture-only tail band at the interior's tier to cover the Dim→Dark step the ladder structurally
+could not reach. It demonstrably worked: the texture readout ramped `0 → 0.044 → 0.088 → … → 0.8`
+across seventeen meshes where it had stepped `0 → 0.35 → 0.8`. Patrick declined it — *"I don't
+really like the looks of it any higher"* — and the likely reason is that a linear ramp across the
+*whole* band leaves no plateau, so the result reads as one smear rather than as bright, then
+normal, then dim.
+
+Both are gone, and with them the `blend` plumbing through `field.ambientDomains` and the painter.
+`spillSoftness` survives at **0.5** — narrower than ordinary ground, keeping each transition
+tight — and the ladder is three tiers again.
+
+**The banding was the blur's tap count — 2026-08-27.** Both retirements above were correct about
+their own mechanisms and wrong about the diagnosis. The gradient was not short of *levels*; the
+blur drawing it was short of *samples*.
+
+`PIXI.BlurFilter(strength, quality, resolution, kernelSize)` defaults to a **5-tap** kernel, and a
+wider blur is achieved by spreading those taps further apart rather than by adding more. At the
+measured ~44 px strength across `BLUR_QUALITY` 2, each pass sampled five points about eleven
+pixels apart — five discrete contributions stretched over the band, which is a staircase however
+smooth the underlying levels are. It also explains why both softening sliders only ever
+*condensed or expanded the same steps*: they change the spread, and the tap count stays five.
+
+Fixed by giving spill meshes their own `quality` and `kernelSize` — 4 and 15 by default, against
+core's own quality default of 4 (`config.mjs:567`), which we had been below. Confined to spill,
+because the cost is per filtered mesh — passes times taps, about six times the sampling — and a
+darkness rim wants a soft edge rather than a ramp, so it keeps the cheap blur. Both are settings
+(`spillBlurQuality`, `spillBlurKernel`) with no control surface, reachable through
+`game.pf1Lighting.settings`, and reported by `render.texture().spillBlur`.
+
+`Canvas#createBlurFilter` does not expose `kernelSize` (`board.mjs:1641`), so the filter is built
+directly and registered with `addBlurFilter` by hand — that registration is what keeps the
+strength in world units and re-derived on zoom.
+
+**Superseded 2026-08-27 — see §7.0 step 5.** Everything above is the same finding reached three
+times from different angles: the ground's brightness is a *field*, and drawing a field as flat
+regions plus a blur cannot produce a gradient however the blur is tuned. The answer is a mesh whose
+level is a per-vertex attribute rather than a uniform, which the rasteriser interpolates for free.
+The two blur settings and the ring subdivision are all approximations of that, and all three come
+out when it lands.
+
+A new submenu and new `.mjs` files need only an F5 — `esmodules` names `scripts/module.mjs`
+alone and `languages` is already declared. A relaunch is required only if this grows a
+stylesheet or a `documentTypes` entry, and it needs neither.
 
 ---
 
@@ -3529,9 +5776,14 @@ cheap, and is the path if Bright ever needs to render as a visible step up.
 **A.5 — Dilation for visual penumbra.** Polygon dilation, screen-space distance fields
 and blur all compute distance *ignoring occlusion*, so light tapers through walls. A
 window tapering back outdoors is invisible; an interior door tapering into the dark room
-next door is visible and wrong. *Note:* §3.4 uses dilation deliberately, made safe by
-max-combine-only semantics plus clipping to the aperture sweep. **Different mechanisms
-for different jobs — do not merge them.**
+next door is visible and wrong.
+
+*The exception, and its exact terms — 2026-08-26.* §3.4 dilates deliberately, and what makes it
+safe is not the max-combine rule but the composition `(white ⊕ k·d) ∩ vis ∩ region`, where
+`vis` is a 360° wall-occluded sweep from the window. The dilation supplies distance; the sweep
+supplies occlusion; neither is asked to do the other's job. A bare dilation, or one clipped only
+to the region, is still the rejected thing — the interior door tapering into the room next door
+is precisely what `∩ vis` removes. **Do not read this as a general licence to dilate.**
 
 **A.6 — Distant directional sun** for global illumination, so the existing sweep produces
 real moving sunbeams. Every building would cast a hard shadow across the outdoor map,
@@ -3548,10 +5800,11 @@ public contract we'd have to honour before knowing what it should be.
 
 1. **`luminosity` is presentation-only** (§3.1) — confirm. If it should be mechanically
    real, that changes what feeds `B`.
-2. **Spill vs umbra ordering** (§3.4 vs §4.3). Spill only raises and is
-   observer-independent; umbra only lowers and is applied post-contest per observer. So
-   umbra wins where they overlap. Asserted, not reasoned through — flag if your reading
-   differs.
+2. ~~**Spill vs umbra ordering** (§3.4 vs §4.3).~~ **Closed 2026-08-26 — resolved by
+   construction.** Spill is an ambient area, so it lands in `field()`'s cells; umbra is applied
+   over those cells as a clamp in `render/paint.mjs` and post-contest in `perceivedTier`. Umbra
+   wins where they overlap because it runs strictly later on strictly the same data. Nothing
+   asserts the ordering any more; nothing can express the other one.
 3. **Further Phase 1 features.** §3 has been reshaped several times and everything hangs
    off it; additions are cheapest before code exists.
 4. **What does a two-band darkness source's *rim* mean mechanically?** §3.3.1 argues for
@@ -3567,6 +5820,43 @@ public contract we'd have to honour before knowing what it should be.
 
 ---
 
+## Appendix B.5 — What a change needs to take effect
+
+Recorded because it was answered inconsistently across four rounds of 2026-08-27, twice by
+overstating it, and it is not a judgement call — it follows from one line of the manifest.
+
+`module.json` declares exactly **one** esmodule, `scripts/module.mjs`. Every other script is reached
+through its import graph.
+
+| Changed | Needs |
+| --- | --- |
+| any `.mjs`, **edited or new** | **F5** |
+| `styles/*.css` or `lang/en.json` **contents** | **F5** |
+| `module.json` **itself** — a new `esmodules`/`styles`/`languages`/`packs` entry, version, compatibility | **restart** — Return to Setup and relaunch, or restart the server |
+| compendium packs | **restart** |
+
+F5 reloads the page, which re-fetches and re-evaluates the whole module graph and re-runs `init`,
+`setup` and `ready`. **A new file is not a special case** — it is one more import, and the question
+is whether anything imports it, not whether it is new. A new `.mjs` nothing imports loads not at all
+and reports no error.
+
+A restart is only ever about the **manifest**, which Foundry reads server-side at world launch and
+caches. Leave `module.json` alone and a restart is never required.
+
+Two things need less than F5, and knowing which saves a reload:
+
+- **Settings read live** — `transitionWidth`, `unseenDimming`, `greyscaleInFog`, the tier table —
+  take effect on change. `regionalGreyscale` is a half-case worth knowing: switching it **off**
+  detaches the pass immediately, but cannot un-zero the five routes `neutralise` disabled at
+  `setup`, so the picture goes to *no* greyscale rather than back to Foundry's. Switching it **on**
+  in a world that loaded with it off needs F5, because `neutralise` was skipped.
+- **Everything else needs F5 rather than `canvas.draw()`.** The CONFIG class swaps and prototype
+  patches (`visibilityFilter`, `visualEffectsMaskingFilter`, `globalLightSourceClass`, the darkness
+  layer's `_draw`) are install-once-per-page-load and guarded by flags, so redrawing the canvas will
+  not reinstall a changed one. That guard is deliberate — see `render/ambient.applyMixin` on why the
+  global light source in particular cannot be re-patched after `init` — and it is also why a stale
+  patch looks exactly like a patch that is working.
+
 ## Appendix C — Built but unverified in play
 
 Things asserted correct from reading and construction, but **not yet confirmed on a live
@@ -3578,6 +5868,267 @@ Clear an entry only after seeing it work, and delete it rather than annotating i
 
 ### Awaiting the next play session
 
+#### Cleared 2026-08-27 — the rendering rewrite
+
+Patrick, at the end of the session: *"I think we're looking good on the lighting rendering side of
+things."* That clears, as a group, everything built between §6.2.9 and §6.4.6 — absolute light
+zones, lights as brightness regions, the one-width transition, the field blur, the softened reveal
+boundary, and the withholding fix. Each was play-tested as it landed and the picture was signed off
+as a whole rather than entry by entry, which is why they come out together.
+
+Two follow-ups worth checking on the next session rather than blocking on:
+
+- **`render.paint().ms`** was 41 ms with the geometric halos. With `blurTransitions` on they do not
+  run at all, so it should have fallen sharply. If it has not, the cost is `applyShadows`' successor
+  or the light ramps, not the halos.
+- **`blurTransitions: false`** is still a working path and is the only way back to per-region
+  gradients. It has not been looked at since §6.4.5 and §6.4.6 changed what sits either side of it.
+
+#### 6.2.12 Band overlaps belong in the field — BUILT 2026-08-27
+
+Reported as: *"overlapping lights can create an area of brighter light... they provide +1 to the
+light level, to the maximum of normal, so 2 dim overlaps should be rendered to normal"* — with the
+tooltip reading the lens correctly and the picture not.
+
+That is `contest.stack`'s `Σn` half of §3.2.1: set levels contend, relative bands **sum**, capped at
+`max(cap)`.
+
+##### Nothing was missing, and two diagnoses were wrong before that was noticed
+
+`model/field.mjs:1091` already emitted a `stack` cell for every band overlap, and
+`render/renderer.mjs` already drew it — one clone per participating emitter, at that emitter's own
+origin, radii and attenuation, band raised to the resolved tier. A complete implementation, gated
+behind `showStackedOverlaps`, which **defaulted to `false`**.
+
+> **Both first answers blamed a mechanism for being incapable of something it was never asked to
+> do.** `light-ramps`' `MIN_COLOR` genuinely cannot sum; `cell-overlay`'s `resolvedPartition`
+> genuinely resolves brightest-wins. Both true, neither the cause. The readout that settled it was
+> in the first console line of the session — `overlay.draw()` reported **`5 stack`**, which is the
+> field saying it had already done the work.
+>
+> **The rule: before concluding a rule is unimplemented, grep for its name.** `kind: "stack"`
+> appeared in three files and one of them was a 55-line implementation with its own design note.
+
+##### The flat fill was wrong, and stopped being wrong
+
+`renderer.mjs`'s note says a flat fill was tried first and rejected: a Foundry light is very nearly
+all gradient — `SWITCH_COLOR` blends the two zones across 72% of the ratio, `FALLOFF` ramps the
+outer half on top — so *"a plateau butted against that reads as a step however accurate its value"*.
+Correct at the time, and **the premise died with §7.0 step 6**. A light is no longer a falloff; with
+the field blur on it is `emitFlat`'s two flat zones. A flat overlap butted against flat zones is the
+same kind of thing as its neighbours, and one blur finds every one of those boundaries.
+
+So `light-ramps.stackRampFor` draws the overlap as a region in the brightness field, `MIN_COLOR`, at
+the resolved level — brighter than either band beneath it, so it wins where it lands. Patrick,
+2026-08-27: *"I want those areas to be incorporated into `render.texture` and rendered that way
+rather than illuminated individually."*
+
+Three things follow for free: `getDarknessLevel` inside an overlap now reports the model's tier
+rather than the brighter of the two lights; `ui/cell-overlay.levels()` shows it, because it reads
+the ramps; and the overlap fades over the same `transitionWidth` as everything else.
+
+With the blur **off** the region gets a collar of its own — interior at the resolved level, a
+`transition.width()` band fading to **1.0** at the rim. One is the darkest value the channel holds
+and `min(x, 1)` is `x`, so the collar's outer end contributes nothing and the light beneath comes
+back through: the `MIN` mirror of the `MAX` trick `clampRamps` plays. Skipped when the blur is on,
+or the boundary would be softened twice at two widths — the state §6.4.3 exists to end.
+
+The illumination clones are **kept for `lightsInTexture: false`**, where the flat-fill objection is
+still true, and switched off otherwise: running both would paint the overlap twice by two mechanisms
+that disagree about shape, and the clones still use the constant-tier-colour path §6.4.6 found
+re-lights a region and cuts off hard at its clip boundary.
+
+`showStackedOverlaps` now defaults to **`true`**.
+
+##### Two tool faults it exposed, both fixed
+
+- **`ui/cell-overlay.draw()` never drew the `stack` kind.** `STYLE.stack` was defined with a comment
+  calling it *"drawn last and hottest… the one kind whose existence is the interesting fact, since
+  the shader cannot show it unaided"*, and the kind was then omitted from the `order` array directly
+  beneath it. Computed, counted in `byKind`, never drawn — which made the overlap look absent from
+  the model as well as from the picture.
+- **`overlay.draw()` returned `undefined` and drew nothing** when the `cellOverlay` setting was off,
+  silently. It now enables the setting through `show()` — so the token-refresh hook path keeps its
+  gate — and returns the stats it logs.
+
+> **Still missing, and it is the third instrument.** `overlay.draw()` shows the field's cells and
+> `overlay.levels()` shows what the renderer painted; both are downstream of the decomposition.
+> Nothing displays `evaluate()`'s answer across a scene — it reaches the screen only through the
+> per-point tooltip. Had the field lost the summation too, all three views would have agreed and all
+> three would have been wrong. A grid sampler painting `evaluate()` per square is the companion to
+> `transect` (is this edge smooth) and `isolate` (which layer owns it).
+
+#### Cleared 2026-08-27 — the greyscale takeover
+
+Patrick, after the clamp-collar fix: *"looking like it's all behaving well so far as I can tell
+now."* That clears §6.2.11 — the five routes neutralised, the single pass on `canvas.environment`,
+tokens greying with the ground, and `clampRamps` no longer collaring its own holes.
+
+Two things it changed that nobody has had a reason to look at yet, and neither is a suspicion:
+
+- **`greyscaleInFog`** sits at 0.5 and has only been seen there. 0 is the literal ask (remembered
+  terrain in full colour) and 1 is what Foundry did. The concern that made it a dial rather than a
+  switch is in §6.2.11 and still stands: the boundary is the vision polygon, and it moves.
+- **`regionalGreyscale: false`** is now a *third* state rather than "off". It detaches the pass but
+  cannot un-zero the vision mode, so the picture goes to no greyscale at all rather than back to
+  Foundry's. Only an F5 restores core's behaviour. Fine, and written down because a world that
+  turns it off mid-session will see something neither of us intended.
+
+#### Open, and named by Patrick as the next work
+
+**§3.4 spill geometry — the only one left.** Not a transition fault, and untouched by either the rendering
+rewrite or the greyscale takeover. With
+the brightness map on, a spill inside a region resolves into **long thin slivers** alternating
+between the band tier and the room's own, rather than into coherent bands. The shape is
+characteristic of the `vis`/`bend` sweep union being cut against the region outline — many narrow
+wedges from the corner sweeps surviving the intersection — rather than of anything in the ramp that
+draws them.
+
+`game.pf1Lighting.overlay.levels()` is the instrument: the bands are drawn from
+`spill.spillAreas()`, which is the **model's** own list, so a sliver visible there is
+`model/spill.mjs` and a sliver visible only on the map is the renderer. That separation did not
+exist before the overlay and is why this is written down rather than guessed at.
+
+#### The two instruments, and the order to use them
+
+Neither existed before 2026-08-27, and the three rounds before them were spent guessing at edges
+from screenshots. The division between them is the useful part:
+
+1. `game.pf1Lighting.render.transect()` — hover an edge. **Is the brightness field smooth here?** A
+   ramp means yes and the hard edge belongs to a layer this texture does not contain; a step means
+   the blur is not reaching.
+2. `game.pf1Lighting.render.isolate("coloration" | "darkness" | "lights" | "visibility")` — **which
+   layer owns it?** Only worth asking once (1) has answered *yes*. Each candidate has a different
+   softening mechanism, which is why they are indistinguishable by eye and immediate by bisection.
+
+`game.pf1Lighting.overlay.levels()` answers the third question — *is the model even claiming what I
+think it is* — as a resolved partition, so any overlap left on screen is a real fault.
+
+**Untested: the two vision-masking corrections, §6.2.7 and §6.2.8, 2026-08-27.**
+`game.pf1Lighting.render.darknessMask()` first. `fogFilter: false` with `fogIgnoresModel: true`
+means the CONFIG swap did not take, which on a live world means another module replaced the class
+after `init`. `sceneDarkness: null` means the illumination layer has no filter, which is a much
+larger problem than this one. `applied: false` is the §6.2.7 half not installed, and
+`enableVisionMasking: false` with `tokenVision: false` is the scene disabling every mask including
+core's own three — correct rather than broken.
+
+Then, in order. A *darkness* in an unseen room should be gone from the fog entirely, and stay gone
+while it moves. Walking a token into line of sight should reveal it. A bubble half in view should
+be clipped at the vision boundary exactly as a light already is. An **umbra** in an unseen area
+should likewise no longer show.
+
+Two things to check because they are the accepted costs rather than bugs: a §10.7 region should
+now read at scene brightness in unexplored area rather than dark, and *daylight*-lit or
+region-brightened ground should be equally invisible in fog — the change is symmetric and cannot
+single out darkness.
+
+And one to check because it is where a mistake would hide: with **Token Vision off**, the whole
+map should look exactly as it did before either patch existed. Core turns `enableVisionMasking`
+off across every registered filter there, and the fog branch is only reached through it.
+
+**Untested: light spill, §3.4 / §10.10, 2026-08-26.** `model/spill.mjs`, `ui/spill-config.mjs`,
+three branches in `model/areas.mjs`, and `field.mjs` untouched. Start with
+`game.pf1Lighting.spill.stats()` before looking at the map, because four of the ways this does
+nothing are invisible and two of them look identical:
+
+`candidates` counts light-passing wall edges and `windows` counts the ones that qualified. **Both
+zero** means no wall on the scene has its *Light* restriction set to none — the feature has
+nothing to work with. **`candidates` above zero with `windows` at zero** is the ambiguous one: it
+is the ordinary night-time state, *and* it is what a region drawn past its own walls looks like,
+since the probe then finds the same ambient on both sides of every window. Move the scene's
+darkness slider and watch `windows` come and go to tell them apart. `visible: false` means *Model
+global illumination* is off and only the model will move. And `bands` above zero with nothing on
+screen points at the texture, not at this file.
+
+Then, in the order things would go wrong: a window in a Dark region on a Bright map throws a
+bright wedge cut off by the walls either side of it, with two bands beside and beyond it. Open a
+door in the same wall and a second wedge appears; close it and the wedge goes. Cast *darkness*
+over the window and the wedge should shorten to a tenth of its length rather than change colour
+— the radius is chosen from the tier, so this is the one place a wrong reading is obvious by eye.
+Put a candle on the windowsill and confirm **nothing** changes about the spill, only that the
+candle lights the room the way it always did.
+
+Two constructions to watch specifically, both named in §3.4 because they were reasoned to rather
+than observed. `droppedHoles` in `field.stats()` should stay at zero — the aperture quad is what
+keeps the bands C-shaped rather than annular, and a non-zero count means it is not doing that.
+And a second window in an interior wall must let the first window's spill pass through it: both
+are `light: NONE`, so the sweep should ignore both, and a wedge that stops dead at an untinted
+interior window means the sweep type is wrong somewhere.
+
+**Untested: the *Restrict Global Illumination* region behaviour, §10.7, 2026-08-26.** Start with
+`game.pf1Lighting.areas.status()` before looking at anything on screen — it answers the three
+ways this does nothing, and they are indistinguishable by eye. `declared: false` means the world
+has not been relaunched since `module.json` gained `documentTypes` and the behaviour is not on
+offer at all; `visible: false` means *Model global illumination* is off and only the model will
+move; `globalLight: false` means the scene has no ambient to override and *set Bright* is as
+inert as *set Dark*; and `label` reading `UNLOCALISED` means `lang/en.json` did not load, which
+changes nothing about behaviour and everything about whether the create dropdown is readable.
+
+Then, in the order things would go wrong: an *at most Dark* region on a Bright map darkens inside
+its outline and nowhere else; a torch inside it still lights, and lights **further** in tier
+terms than the same torch outside, because it is raising from a lower base; a *darkness* placed
+inside it renders **darker than the room**, not brighter — that is the one real branch, and
+getting it backwards is the failure the per-domain `dark` split exists to prevent. Then move the
+scene's darkness slider and confirm an *at most* region stops mattering once the sky is darker
+than it, which is the whole argument for that being the default mode.
+
+`probe.at()` reports `ambient: {scene, here, areas}`; `scene === here` with `areas > 0` is a
+behaviour that is disabled, mis-scoped, or on a region whose shape does not cover the cursor.
+`field.stats().domains` counts the distinct tiers the map was split into — `0` means the
+pre-§10.7 path ran, which on a scene with a region is itself the bug.
+
+Then the two corrections from the first build, which have their own failure modes. **A torch
+inside the region must light it**, and light it *more* than the same torch outside — that is
+`cell.base` reaching `levelForTier`, and the check that it is per-cell rather than per-emitter is
+a light straddling the region's edge: it should light the inside half and do nothing to the
+outside half, in one continuous source. `field.stats().domains` counts the tiers the map split
+into. And **the region's boundary must be hard** with ground softening on: no feather, no bleed
+past the wall, while an ordinary *darkness* elsewhere on the same scene still fades.
+
+Two things expected to look wrong and not be: a region set to **Dim** on a globally-lit scene is
+under-darkened (single-threshold `globalLightCutoff`, §10.7 consequence 3), and region elevation
+is ignored entirely (§3.6).
+
+**Untested: token-name obfuscation in the readout, §10.6, 2026-08-26.** Needs a player client
+and the GM-only switch off. Hover an NPC the randomizer has an obscured name for and confirm the
+chip shows the obscured name to the player and the real one to the GM. Then a token with no
+obscured name whose nameplate is hidden from players: `???` for the player, real name for the
+GM. Then confirm nothing changed with `pf1-token-randomizer` disabled — the second layer alone
+still applies.
+
+**Untested: the settings pass, §10.6, 2026-08-26.** The first check is not in the menu at all:
+`game.pf1Lighting.settings()` and confirm the four master switches read `true` — a world that
+ever explicitly turned one off keeps `false` with no row to fix it, and the symptom is the module
+appearing to do nothing at all. Then the menu itself: six rows and two buttons, and *Light level
+is GM only* / *Explain the light level* **absent** from a player's client rather than present and
+inert. With a player connected and the GM-only switch off, confirm the player gets a chip and
+does **not** get an explanation on it.
+
+*Configure visuals*: move one brightness level and confirm the ground and the lights move
+together (the weight re-solve, §10.5) and that scenes stored at that tier follow; then confirm
+saving without touching anything fires nothing — the handler writes only what moved, and the
+tell is that no scene repaints. *Restore defaults* puts every number in the window back.
+
+> **Counted nowhere on purpose.** This section said "eight" in three places and the file said it in
+> four; the count has moved twice since. `SLIDERS` plus `LADDER` in `ui/visuals.mjs` is the census.
+
+**Untested: the preset editor, §10.2.1, 2026-08-26.** The model cannot be wrong here — a bad
+value is a bad *preset*, and presets only ever write into a sheet. So the checks are about the
+working copy and about identity. Edit a preset, switch to another, switch back: the edit is still
+there. Close without saving: nothing changed. Rename a preset and confirm a light already placed
+from it still shows the new name rather than dropping to Custom — that is the key-is-identity
+rule holding. Delete one and confirm a light placed from it reads Custom and *renders exactly as
+before*, since nothing in the model reads `preset`.
+
+Then the branch switch, which is where the DOM work is: flip Source between Light and Darkness
+and confirm the right half shows, that *Decrease by* and *Set level to* swap their operand, and
+that saving a *Set level to* preset writes a floor equal to its target (§10.4 — the editor
+applies the rule so a preset cannot be authored inconsistent).
+
+`game.pf1Lighting.presets.status()` reports `customised`, which is `false` until the editor is
+first saved and is what says whether this world still tracks the module's built-ins.
+`game.pf1Lighting.presets.reset()` puts it back without going through the dialog.
+
 **§3.2.1's rewrite — cleared 2026-08-23.** All ten items verified in play: the control case
 (one torch unchanged), two and three torches overlapping, a torch on Normal-lit and on Bright
 ground, two torches inside a *darkness*, an overlap seen through one, `stacks` at zero on a
@@ -3586,9 +6137,111 @@ scene with no overlapping bands, the darkness slider stepping between tiers, and
 
 **Soft transitions — settled 2026-08-24**, over six rounds, recorded in §6.4.1 through §6.4.4.
 What stayed: the light edge feather, including clipped cuts (§6.4.3). What was built and then
-**retired** by choice: the ground feather (§6.4.2) — too expensive for what it bought, and a
-magical darkness reading as a hard-edged circle is fine. What never works: a filter on the
-darkness-level container (§6.4.2).
+**retired** by choice: the *geometric* ground feather (§6.4.2) — too expensive for what it
+bought. What never works: a filter on the darkness-level **container** (§6.4.2).
+
+**The blur ground feather — §6.4.2a, landed and accepted 2026-08-24.** It takes the route
+§6.4.2 ruled out, on the distinction that a filter on a **child mesh** is not a filter on the
+cached container — which is what core's own darkness-level region behaviour does. Seen working
+at 0.2 and **defaulted on at 0.1**. So the container's `FORMATS.RED` texture composites a
+filtered child correctly, which was the open risk.
+
+**Untested: blindsight survives the blinded condition, §4.5.1a, 2026-08-26.** Blind a token that
+has blindsight and confirm it renders terrain out to its **blindsight** range and no further —
+the "no further" is the half most likely to be wrong, since the token's `sight.range` already
+includes darkvision. Then confirm it still detects by blindsight only (PF1's blue outline, not a
+basicSight hit), that a blinded token *without* blindsight is unchanged, and that a blindsighted
+token that is **not** blinded is also unchanged. `probe.vision()` reports `blindRaw` beside
+`blinded.blind` and `blindsight` beside `radius`; `blindRaw: true` with `blinded.blind: false`
+and `radius === blindsight` is the healthy state. Requires **Perceive by light level**, which is
+what gates the senses layer.
+
+**Untested: darkness sources now read wall restrictions, 2026-08-26.** `clip.patchDarknessWalls`
+makes a darkness sweep consult each wall's **light** restriction, where core asked for a
+`darkness` restriction that does not exist and so let every wall block. Check that a *darkness*
+spreads through an **open door** and through a window configured to pass light, and that it still
+stops at an ordinary wall. `render.soften().darknessWallsPatched` says whether the patch took.
+Proximity and attenuation walls are in scope too and are the least-tested part.
+
+**Resolved 2026-08-25 — it was blindsight, and it is working as designed.** Reported first as
+see-in-darkness; Patrick corrected it to blindsight, which changes it from a defect into a design
+question. `observerIgnoresDarkness` withholds the darkness mesh for blindsight observers by
+intent (§6.2.5), and the mesh is what carries the animation. What the report exposes is that
+§7.0 made that adjustment half-effective: the texture now keeps the region dark, so withholding
+the source removes the overlay without achieving the "indistinguishable from the ground" it was
+written for. **Three options, undecided, written up under §6.2.5** — and the animation must not
+be fixed in isolation, since it is a symptom of the withholding rather than a thing of its own.
+
+*The diagnostic round trip is worth keeping:* `probe.darknessGates()` reports `selected`,
+`visionSources` and `observerIsSelected` because the first capture came back describing a
+different creature than the one under test — `canvas.visibility.visionModeData.source` is
+Foundry's **primary** vision source, not the selected token, and every observer-dependent value
+in `render/` keys off it. Check those three before reading anything else.
+
+**Untested: `levelForTier` back to an absolute lookup, §6.2.3, 2026-08-25.** Exactly one cell of
+the matrix moved — a Normal zone on **Dim** ambient, `DIM` → `BRIGHT` — so the check is a torch
+on a Dim scene reading clearly as Normal, and every other ambient looking exactly as it did
+before. A Bright light on Bright ground also switched from `BRIGHTEST` to `UNLIT`, which should
+be invisible: both paint `ambientBrightest`, and the ground is already there.
+
+**Untested: the scene light-level dropdown and its sync, §10.5.1, built 2026-08-25.** Set a
+scene to Dim, then change *Brightness of Dim* in the settings and confirm the scene's stored
+darkness follows. Then the cases that are easy to get wrong: a scene never set through the
+control should be left alone entirely; a darkness-locked scene should be skipped with a warning
+rather than silently unchanged; and with a player connected, only the active GM should be
+writing. `render.scenes()` reports all of that, and `render.resyncScenes()` forces the pass.
+
+**Untested: the four tier-brightness settings, §10.5, built 2026-08-25.** Defaults match the
+previous hardcoded table, so the first check is that **nothing looks different** before anything
+is changed. Then move one — Dim is the most informative, since `globalLightCutoff()` is derived
+from it and global illumination discards wherever the model paints darker — and confirm that
+lights and ground move together rather than one against the other, which is what the weight
+re-solve is there for. `render.levels(null)` reloads the settings if an experiment needs undoing.
+
+**Untested, 2026-08-25.** *A light inside a darkness is out everywhere* (§3.3.1) — carry a torch
+into a *darkness* and confirm it lights nothing beyond the bubble, then confirm a *daylight* in
+the same spot is unaffected. `registry.stats().extinguished` counts them and `probe.at()` lists
+them separately from `silent`, which is the distinction to keep an eye on: silent means a light
+reaches and contributes nothing (usually a bug), extinguished means §3.3.1 working. Also *a
+darkness enclosed by a light* — the annulus should have no seam and no bright far side.
+
+**Untested: the config UI, §10.9, built 2026-08-24.** Nothing in the model changed, so a wrong
+value here is a wrong *flag*, not a wrong renderer. What to exercise, in the order things would
+go wrong:
+
+- **The radii still work.** They are core's own inputs relocated into our fieldset, so the check
+  is that editing one still previews live and still saves. If they ever came through as an array
+  instead of a number, two inputs share a name somewhere.
+- **The preset selector is one-way.** Pick *Torch*, change the steps, confirm it reads Custom;
+  set steps back to 1 and confirm it *stays* Custom.
+- **The light↔darkness swap keeps its other half.** Configure a light, flip *Darkness source*,
+  flip back, confirm the emission fields survived — hidden inputs still submit, which is the
+  design rather than an accident.
+- **The `cancelsDarkness` leak is closed.** Make a *Daylight*, save, untick *Magical*, save, and
+  confirm the flag reads false rather than a stale true.
+- **Both token sheets**, since `renderTokenApplication` is meant to cover `TokenConfig` and
+  `PrototypeTokenConfig` through the inheritance chain rather than by two listeners.
+
+**Untested: the halo fix, both halves.** The first play test showed bright rings around darkness
+discs inside an umbra — meshes sharing a boundary, both blurred, the container's clear colour
+showing through the seam. `paint()` now unions cells by level (`merged`), and adds a scene-wide
+backstop at the darkest level under any remaining seam (`backstopped`); both report through
+`render.texture()`. Check that the rings are gone, that `merged` is above zero on a scene with
+an umbra, and that a *darkness* on a lit map still reads dark — the backstop is the piece with
+the potential to go wrong at scale, and its failure mode would be the whole scene darkening.
+
+**Untested: fog of war**, after §6.6's ordering fix. All three reported symptoms should clear
+together, since they share one cause: non-darkvision tokens exploring nothing, darkvision tokens
+exploring only their darkvision radius, and explored-but-unseen ground reading monochrome. The
+third is the one I am least sure of — it may simply have been standard explored-area tinting,
+made conspicuous because the only explored ground was darkvision-explored. `umbra.mask()` now
+reports `drawn`, which **must equal `trimmed`**; a gap between them is this bug returning.
+
+Two residuals, neither looked at: the scene-sized ambient mesh's filter pass has **not been
+cost-measured on a drag** (§9's standing rule is that cost arguments on this module have been
+wrong every time), and a possible soft vignette where the ambient mesh fades into the clear at
+the scene rim, visible only past the scene rect. The reveal boundary stays hard by design, so a
+darkness on a globally lit map keeps a crisp fog outline whatever this is set to.
 
 **Untested, both landed 2026-08-24.** *Band overlaps are modelled but no longer drawn* — the
 setting defaults off, and the check is that `probe.at()` still reports the summed tier in an

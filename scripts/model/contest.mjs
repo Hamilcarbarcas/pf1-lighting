@@ -240,6 +240,28 @@ export function breaks(emitter, suppressor) {
   );
 }
 
+/**
+ * May this suppressor put this emitter out entirely?
+ *
+ * @remarks
+ * `breaks` and `eligibilityFn` composed, and named, because the pair reads backwards otherwise:
+ * an emitter is extinguished when the suppressor is *entitled* to block it **and** the emitter
+ * does not counter or annihilate the suppressor first.
+ *
+ * Its one caller today is §3.3.1's origin rule — a light standing **inside** a darkness that
+ * could block it goes out altogether rather than merely being clipped to what falls outside.
+ * Shared here rather than written at that call site so it cannot drift from the pointwise
+ * contest, which is the mistake `resolveTier` was extracted to prevent.
+ *
+ * @param {object} suppressor
+ * @param {object} emitter
+ * @returns {boolean}
+ */
+export function extinguishes(suppressor, emitter) {
+  if (breaks(emitter, suppressor)) return false;
+  return eligibilityFn(suppressor.eligibility)(emitter, suppressor);
+}
+
 /* -------------------------------------------- */
 /*  Transforms                                  */
 /* -------------------------------------------- */
