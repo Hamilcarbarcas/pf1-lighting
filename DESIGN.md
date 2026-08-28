@@ -484,7 +484,14 @@ Note `CONFIG.Canvas.lightLevels` holds **mix fractions, not brightness values** 
 `halfdark: 0.5` means "half way back from full darkness toward ambient", which is why
 it reads larger than `dim: 0.25` despite being darker (`environment.mjs:231-232`).
 
-### 3.4 Light spill through apertures — rewritten 2026-08-26
+### 3.4 Light spill through apertures — superseded by §3.4.1, 2026-08-28
+
+> **The geometry below is retired.** Read this for the eligibility test, the tier and the
+> `AT_LEAST` framing, which are unchanged and still describe the built feature. Everything from
+> *The geometry* to *Cost* describes a construction that measured brightness by Euclidean
+> distance and masked it by visibility — see §3.4.1 for why that was the wrong quantity, and what
+> replaced it. Kept because the two play-testing failures it records are the ones that pointed at
+> the real defect.
 
 *Poor-man's diffuse lighting.* A window or an open door in an interior region should let the
 outdoor light in, falling off with distance rather than stopping dead at the wall.
@@ -720,6 +727,255 @@ disagree about their edges cannot share a mesh.
 
 All of it is charged at rebuild and none of it per frame. That is the whole difference from the
 retired ground feather (§6.4.2), which died because it rebuilt on every repaint of a drag.
+
+### 3.4.1 Geodesic distance — the rewrite. BUILT 2026-08-28
+
+Patrick, 2026-08-27: *"the current implementation of determining the regions to brighten and by how
+much are pretty broken right now, so I want to explore alternative means."*
+
+**Everything in §3.4 below `#### The geometry` is retired.** The eligibility test, the tier, the
+`AT_LEAST` framing and the invalidation clocks all survive; the *shape* does not.
+
+#### What was actually wrong
+
+```
+band_k = ((white ⊕ k·d) ∩ bend ∩ region) \ band_{k-1}
+```
+
+`⊕ k·d` is a Minkowski dilation, which measures **Euclidean** distance. `bend` is a union of
+visibility sweeps, which measures **reachability**. So a band's brightness was decided by
+straight-line distance and then merely *masked* by what could be seen — light that turned a corner
+arrived having been charged for the distance **through the wall**.
+
+Every symptom recorded in §3.4's notes follows from that one substitution. Bands bending around
+exactly one corner, because a second bend needed a second union. `MAX_CORNERS` and its relevance
+filter, which are a hand-rolled shortest-path search with a cap on it. `probeToward`, because
+containment at a sweep's own vertex is degenerate. The L-shaped-room slivers, from cutting the union
+against the region outline.
+
+The quantity all of it was reaching for is **geodesic distance**: the length of the shortest path
+from the aperture through open floor. Given that as a field, `tier = spillTier − steps(d)` is the
+whole rule, and corner bending, corner *selection*, multiple bends and the region clip stop being
+cases at all.
+
+#### Fast marching, not flood fill
+
+`model/geodesic.mjs` solves the eikonal equation `|∇d| = 1/F` by the fast marching method. Flood
+fill and 8-neighbour Dijkstra were both rejected, and measured rather than argued about:
+
+| scheme | on-axis | on-diagonal |
+| --- | --- | --- |
+| first order | 0.00% | 6.92% |
+| first order + 8-cell analytic collar | 0.00% | 1.69% |
+| **second order** | 0.00% | **2.47%** |
+| second order + collar | 0.00% | 2.23% |
+
+First order is no better than the Dijkstra it was chosen over — the error is the point-source
+singularity, not the neighbourhood — and an analytic collar only pushes that singularity outward,
+buying accuracy logarithmically for cells linearly. The second-order one-sided difference gets there
+in the update, after which the collar is worth 0.24%, so **the seeding stays trivial**: one cell per
+sample across the opening. 2.47% of a 70 ft ladder is 1.7 ft, inside a band and inside the blur.
+
+The update is also **4-neighbour and upwind**, which removes the diagonal leak an 8-neighbour
+Dijkstra has — a step between two diagonally-adjacent blockers is light through a wall, and this
+module cannot ship that.
+
+> **The second-order reach must be link-gated too.** The `t₂` term reads two cells upwind, so it
+> checks the link between the first and second neighbour as well as the one it stepped over. Without
+> that, a cell against a wall takes its derivative through it and brightens from the far side.
+
+#### A wall is a cut link, not a blocked cell
+
+Patrick, 2026-08-27: *"my only concern for this is the cells marked as walls leaving black strips
+where the walls are… is there a way to fill them from their neighbouring cells (and be smart enough
+to not pull from the neighbour on the wrong side of the wall)?"*
+
+Founded, and worse than the raw 1.25 ft: §6.4.7 disables the field blur in a band centred on every
+light-blocking wall, so the strip would land where nothing smooths it.
+
+**Filling from a neighbour cannot fix it, because a blocked cell straddles the wall.** There is no
+correct side — the lit side pushes brightness half a cell into the dark room, the dark side pushes a
+shadow half a cell into the lit one. Either way the wall has moved.
+
+So a wall is not a *place*, it is a **barrier between** places, which is a graph edge. Every cell
+keeps a value; what a wall removes is the ability to step across it. `h[i]` is the link from cell
+`i` to `i+1`, `v[i]` from `i` to `i+cols`.
+
+- **No erosion.** Both sides get their true distance and the discontinuity lands on the wall, which
+  is what §6.4.7 wants sharp.
+- **No leak, provably.** Any 4-connected path from one side to the other is a continuous polyline
+  through cell centres, so it must intersect the wall; the intersection lies on some link; every
+  link the wall crosses is cut. Stronger than supercover cells, which rested on the rasteriser not
+  skipping one.
+- **Narrow openings survive.** Measured at 25 px: a solid wall slid across the lattice at eight
+  offsets leaked at none; a sealed diamond rotated through thirty angles contained its fill at every
+  one; a gap passes from **two cells** (2.5 ft). Only a 1.25 ft slot closes, which is the
+  conservatism in the crossing test biting at the one-cell scale, and is the right way round.
+
+The region outline is cut the same way (`cutRegionBoundary`) rather than blocking the cells outside
+it — same reason, and it is where §3.4's sliver failure goes: a fill that cannot step out of the
+room produces no sliver, because there is no intersection to produce one.
+
+#### Contouring, and the two things that make it robust
+
+Patrick, 2026-08-28: *"draw polygons out of those coloured fields, add them to the underlying
+brightness model, and call it a day."* The lighting decision stays with the levels overlay; spill
+supplies geometry and nothing else.
+
+**Vertices are keyed by lattice edge index, not by position.** Chaining contour segments by matching
+coordinates is where these come apart — two cells compute one crossing a float apart. Every crossing
+lies on a known edge, keyed by that edge's integer index, so two cells sharing an edge produce the
+identical key by construction. No tolerance anywhere in the chain.
+
+**The rings are nested, and nothing is differenced.** `AT_LEAST` folds by `max`, so the whole
+`d < 40` disc is Bright and the whole `d < 60` disc is Normal, and the fold produces the annulus.
+Differencing them would compute the same answer through Clipper, which is where the slivers came
+from.
+
+A crossing with no finite neighbour — the far side of a wall, or ground the ladder never reached —
+goes at the **midpoint** of the two cell centres, which is the cell boundary and therefore the wall.
+Verified: a contour against a wall at `x = 700` lands at `x = 700.0`.
+
+#### One march per room
+
+Patrick, 2026-08-27: *"one march per room sounds like the smart choice."* Correctness before cost:
+two windows filling one room from separate grids can disagree by a fraction of a cell along a shared
+boundary, and thin disagreeing polygons folding together is the sliver failure again.
+
+It is provably the same answer, not an approximation. Tier is monotone decreasing in distance, so
+`max over windows of tier(d_w) = tier(min over windows of d_w)`, and the minimum over seeds is what
+a multi-source march computes. The `AT_LEAST` fold that used to combine windows does the same
+arithmetic one level down.
+
+**Mixed tiers share the march via a head start.** A Normal window in a room whose ladder starts at
+Bright seeds at 40 — the width of the Bright rung — so the ladder reads Normal at its mouth, exactly
+as its own march would have. That is exact only because the ladder is cumulative, which is the
+second thing per-tier widths bought.
+
+#### Per-tier band widths
+
+Patrick, 2026-08-27: *"rather than a straight band width, the value of each brightness can tell you
+how large the band of that brightness is."*
+
+`spillRadius*` keeps its three keys and changes meaning: 40 is now *bright light carries forty feet
+before it reads as normal*. Reach is the sum of the rungs below wherever the ladder starts — 70 ft
+from Bright, 30 from Normal, 10 from Dim.
+
+The old scheme said two things at once, a per-tier cone radius *and* a separate uniform band width,
+which double-counted the falloff and disagreed about which was the distance limit.
+**`spillBandWidth` and `spillAngle` are deleted** (Patrick, 2026-08-28: *"Am I correct assuming band
+width is an outdated knob?"*). The angle described the wedge the old construction clipped against
+and there is no wedge; neither had a consumer left, and a live setting that moves nothing is worse
+than none.
+
+#### The cone, kept and switched off
+
+`coneSpeed` expresses an angular falloff as **anisotropy**, not as a boundary: `F = 1` within the
+half-angle of the window's normal, falling to `graze` at 90°, so grazing ground is slow to cross and
+light along a wall face dims faster than light straight out. It is the `F` term of `|∇d| = 1/F`, so
+it charges *travel* — and the marcher's refraction toward fast ground comes free with it.
+
+> **An earlier sketch called this a seed cost, and that was wrong.** Every seed sits in the opening,
+> so seeds do not differ from one another by direction and there is no angle to charge them for; and
+> a cell beside a window is reachable across open floor whatever the seeds cost, because the march
+> takes the minimum. Direction is a property of travel, so it must be charged to travel.
+
+Shipped at `graze = 1`, i.e. off (Patrick, 2026-08-27: *"let's leave graze out this time around"*).
+Kept in the file because it is the only lever in the module that can express direction at all, and
+because nothing calls it while it is 1 — the speed array is never allocated.
+
+**Known wart if it is ever switched on:** θ is measured geometrically from the aperture with no
+knowledge of walls, so a cell lit by bending round a corner is still charged its straight-line
+angle. The fix is propagating each path's own direction through the march, and directions average
+badly at a merging front.
+
+#### Two eligibility defects, found in play — 2026-08-28
+
+**Sticky brightness.** Patrick: *“some areas are getting sticky brightness readings — when the
+scene brightness is turned down from bright, they remain bright until the scene is set to dark.”*
+
+Scene darkness is **animated**. `Scene##onUpdate` hands a `darknessLevel` change to
+`canvas.effects.animateDarkness`, which slides `canvas.environment.darknessLevel` over ten seconds
+(`CONFIG.Canvas.darknessToDaylightAnimationMS`). `updateScene` fires once, at the *start*, so
+`schedule` rebuilt on the next animation frame — when the level had barely moved — read the old
+`sceneTier`, matched the cached signature, stamped `lastSignature` with it, and **nothing fired
+again when the animation landed**.
+
+Dark cleared it for an unrelated reason: crossing `globalLightCutoff` switches the scene’s global
+light source off, which fires `initializeLightSources` and moves a *different* term of the
+signature. That is why the failure looked arbitrary — the one brightness that worked was the one
+that happened to trip another hook.
+
+The real signal is a **PIXI event on `canvas.environment`, not a Foundry hook**:
+`addEventListener(“darknessChange”, …)`, dispatched every step of the animation with
+`{darknessLevel, priorDarknessLevel}`. Filtered on the **tier**, not the level — the tier moves at
+most three times across a sweep in which the level moves ~600 times. Attached per canvas, since
+`canvas.environment` is rebuilt with the scene.
+
+`schedule` now also requests its perception refresh **only when `generation` moved**. `rebuild`
+already declined no-op work — that guard is what makes `initializeLightSources` affordable — but
+the refresh ran regardless, so each no-op still cost a canvas-wide lighting *and* vision refresh.
+Tolerable with document hooks; not with a per-frame signal in the mix.
+
+**A wall near a region reads as a window.** Patrick: *“exterior walls of an interior space that
+intersect with a wall outside cause light to leak in… just moving those outer walls away from the
+room cleared the brightness bug.”*
+
+§3.4 chose the ambient differential over a border test deliberately, and its reason still holds:
+collinearity between a drawn region outline and a drawn wall is a tolerance exercise with no right
+answer. What it missed is that a differential says nothing about **what separates the two
+samples**. Any light-passing wall within `PROBE_SQUARES` of a region boundary therefore read as a
+window into it — a fence, a cliff edge, a bit of scenery parked against a building — however solid
+the real wall between them.
+
+The fix is neither the border nor the differential: **can light actually get from one sample to the
+other?** One `testCollision(plus, minus, {type: “light”, mode: “any”})`. It is exact rather than
+approximate because **the aperture’s own edge cannot answer “no”** — it passes light by definition,
+so `_testEdgeInclusion` drops it before it can occlude. A real window sees nothing between its
+probes; a wall standing behind a wall sees that wall.
+
+> **Caveat worth knowing.** A wall drawn as two parallel segments — an outer and an inner face —
+> now needs the window cut in **both**, since the second face occludes the probe. That is arguably
+> the correct reading, and it is diagnosable: `spill.stats().rejected.occluded` counts it.
+
+Both defects were invisible while §3.4’s geometry was broken in larger ways. `stats()` now returns
+a `rejected` breakdown — every `return null` in `apertureInfo` is counted by reason — because
+§6.4.2’s lesson applies exactly here: a correct no-op and a broken mechanism look identical on
+screen.
+
+#### Cost — measured 2026-08-28
+
+Warm, per aperture, 70 ft ladder with obstacles:
+
+| cell size | grid | visited | best |
+| --- | --- | --- | --- |
+| 50 px (2.5 ft) | 3,596 | 1,623 | 0.25 ms |
+| **25 px (1.25 ft)** | 13,908 | 8,269 | **1.70 ms** |
+| 12.5 px | 54,692 | 38,818 | 8.90 ms |
+
+Against ~3.5 ms of `ClockwiseSweepPolygon` per window (§9.4) that is a factor of two, **not the
+order of magnitude first estimated** — the estimate assumed a cheaper per-cell constant than a
+second-order solve with a heap has. It is still cheaper, it is charged at rebuild and never per
+frame, and unlike the sweeps it has no term growing with wall count: `MAX_CORNERS` existed because
+the old cost did. Per *room* rather than per window is a further division by however many windows a
+room has.
+
+`spillCellSize` (default 25 px) is the one knob, on the Light Spill form because too coarse a grid
+changes what a creature can see. What it costs is contour precision — half a cell, 0.6 ft — not
+floor, since links eat no ground.
+
+#### Deferred: whether the falloff still needs a gradient mesh
+
+§7.0 step 5 gave each window a triangulated mesh carrying a distance per vertex, because flat bands
+plus §6.4.4's blur read as banding. `spill.ramps()` now returns empty and that path is dormant.
+
+Not deleted, and not yet rebuilt on the new field: the bands are much wider under per-tier widths —
+40 / 20 / 10 rather than 40 + 10 + 10 — so each boundary may read correctly on the blur alone, which
+is the treatment every other brightness boundary gets. **If it bands, the fix is small**: ask
+`contour` for thresholds at quarter-band spacing instead of tier spacing and hand the rings over
+with the distances they already carry. `render/gradient.mjs` stays regardless; three other producers
+use it.
+
 
 ### 3.5 Where sources come from
 
@@ -2656,6 +2912,83 @@ clipping and remains the §9.5 cost this design avoids — but the colour half i
 
 That entry also carried the sentence *"It physically cannot be grey in one place and coloured in
 another."* True of the code as it stood, false as a general claim, and struck there.
+
+#### 6.4.7 The blur must not cross a wall — BUILT 2026-08-27
+
+Patrick, 2026-08-27: *"I want to be able to turn off blurring on lines created by walls. That way a
+lit interior room won't bleed light outside, and a dark room won't have light from around it
+bleeding over the walls."*
+
+##### The bleed is §6.4.4 working correctly in the wrong place
+
+A light's mesh already stops exactly at the wall — `source.shape` is a wall-clipped sweep, and that
+has always been right. §6.4.4 then blurs the **composited field**, and a convolution does not know
+what a wall is: it mixes the lit fragment inside the room with the unlit one outside, in both
+directions, across roughly one `transitionWidth`. The room glows through its own walls.
+
+This is the cost §6.4.4 named and accepted in advance — *"Selectivity. It softens boundaries the
+model might want hard."* — coming due. Every other boundary in the field wants the blur. A wall is
+the one case where the hard edge is also the physically right answer: a wall casts a sharp shadow at
+its own surface.
+
+##### The idea that does not work
+
+Put the blur on a **child** container holding the soft meshes and leave the hard ones as siblings:
+no extra pass, no new data. It destroys the field. PIXI composites a filtered container's output
+with the **filter's** blend mode rather than each mesh's, so everything inside would collapse into
+one group under a single blend — and the field is built on per-mesh `MIN_COLOR`/`MAX_COLOR`. Same
+finding that bit the erase-blur in §6.2.7's fix earlier the same day.
+
+##### A mask of segments, not per-mesh metadata
+
+The first instinct is per-boundary provenance: `light-ramps` could mark wall-derived vertices
+cheaply, since a sweep vertex closer to the origin than `source.radius` is wall-derived by
+construction. That is per-mesh work on every repaint, for every light, and it still misses every
+boundary produced by anything that is not a light.
+
+`canvas.edges` already holds the answer for the whole scene — `Edge` objects with `a`, `b` and a
+per-sense restriction. `render/wall-mask.mjs` draws every light-blocking edge into one screen-sized
+`CachedContainer`, which is a single `Graphics` pass, independent of mesh count, rebuilt only when
+the edges change. **The walls are scene data, not mesh data**, and asking the meshes was the
+expensive way to learn something the scene already knew.
+
+`edge.light`, not `edge.sight`: the field is a *brightness* field, and a window that blocks sight
+while passing light should blur normally — §3.4's whole spill feature exists because that case is
+real.
+
+##### Blur, then put the walls back
+
+`render/texture-blur.mjs` no longer hands the container a `PIXI.BlurFilter`. It hands it a composite
+that runs the blur into a scratch target and then chooses per fragment:
+
+```
+final = mix(blurred, sharp, wallMask)
+```
+
+**One filter, not two, and that is forced.** PIXI chains filters sequentially, so a second filter
+would only ever see the first's output; there is no way for it to reach back for the unblurred
+field. Running the blur inside `apply` via `filterManager.getFilterTexture()` is what puts both in
+front of the same fragment.
+
+The band is `2 × transitionWidth` wide, centred on the wall, because that is the reach of what it
+has to defeat: a Gaussian's visible extent is about twice its strength and the blur runs at
+`width() / 2`, so brightness travels about one `width()` past any hard edge. One `width()` on each
+side is what makes the suppression complete rather than merely reduced. Round caps and joins, so a
+corner between two walls has no gap for brightness to squeeze through.
+
+The inner `PIXI.BlurFilter` is still the object registered with `canvas.addBlurFilter`, not the
+composite: that helper re-derives `.blur` from the stage scale on every zoom and needs the object
+that actually has a `blur` property.
+
+With `sharpWalls` off the composite is bypassed entirely and the blur is attached directly, so that
+path is exactly what it was.
+
+##### What it gives up
+
+Boundaries that merely *run near* a wall are un-blurred too. Mostly they are the same boundary — a
+light's cut edge lies along the wall that cut it — and where they are not, the band is
+`2 × transitionWidth` and the two fields agree at its edge, so the seam is where sharp and blurred
+were converging anyway.
 
 #### 6.4.3 One gradient, everywhere — BUILT AND PLAY-TESTED, 2026-08-27
 
@@ -5958,6 +6291,86 @@ re-lights a region and cuts off hard at its clip boundary.
 > three would have been wrong. A grid sampler painting `evaluate()` per square is the companion to
 > `transect` (is this edge smooth) and `isolate` (which layer owns it).
 
+#### 10.6.2 Settings audit — 2026-08-27
+
+A second pass over every registered key, prompted by *"are there any settings that no longer make
+sense to have for the mod?"* after a session that added three and retired none. Thirty-two keys,
+audited by matching each `register` against its reads. **No key came out dead**, which is itself
+the finding: the 2026-08-26 pass removed the ones that were, and everything since has been load
+bearing. Four things did change.
+
+**A duplicate came out.** *Transition width* appeared in both *Configure Visuals* and the *Light
+Spill* window, editing the same setting. Patrick: *"transition width in light spill can go too —
+it's a duplicate to brightness transition width."* Repeating it there was defended on the grounds
+that a spill falloff is where the width shows most — true, and it still cost more than it bought:
+one setting on two forms means two *Restore defaults* buttons that disagree about what they reset,
+and a number that reads as a spill property when it governs every boundary in the module.
+
+**A switch had outlived its name.** `desaturateDarkness` gated two unrelated things — the darkness
+shader's desaturation and blindsight *withholding* — because they arrived together. §6.2.11 made
+the first inert by default, leaving a switch whose only remaining effect was to silently disable a
+rule it does not name. The withholding is no longer gated: it is a correctness rule, not a
+preference, and there is nothing for a setting to be on either side of. The key stays as the
+documented fallback for worlds that turn the takeover off, relabelled to say so.
+
+**A hint had gone stale.** `edgeSoftness` is still live, but §7.0 step 6 changed what it does. It
+insets the source's mesh geometry, and the *illumination* mesh is now withheld — so what it
+actually governs is the **coloration** mesh: a light's colour edge, not its brightness edge, which
+fades over `transitionWidth` instead. Both its hint and its row in *Configure Visuals* said
+otherwise.
+
+**Two more rows came out, and the count is the smaller half of why.** *Light edge softening* and
+*Darkness edge softening* keep their settings and their console access; they lose their rows
+(Patrick, 2026-08-27: *"too niche to take up settings space"*). The real argument is that both tune
+a **source's mesh edge**, which is a different and much rarer thing than the boundaries between
+brightness levels that the rest of the window is about — and since §7.0 step 6 the light one governs
+only a colour wash. A GM reaching for "make the edges softer" wants *Brightness transition width*
+essentially always, and two neighbouring rows that sound like they mean the same thing are how they
+reach for the wrong one.
+
+`edgeSoftness` drops from `0.3` to `0.05` with them. The larger value existed because §6.4 found a
+clipped light abutting one of our regions read as a hard step — a *brightness* complaint, and
+brightness has not come from that mesh since §7.0 step 6. `darknessSoftness` was already at
+Foundry's own `0.5`.
+
+> **Changing a `default` moves nothing in an existing world.** A default applies only where no
+> `Setting` document exists, and saving Foundry's settings form persists every registered key — so
+> any world that has ever saved it keeps `0.3`. The same trap as `showStackedOverlaps` earlier the
+> same day, and it is now twice in one session:
+> `game.pf1Lighting.settings("edgeSoftness", 0.05)` is the only thing that actually moves it.
+
+**The window needed a scroll.** Ten controls put *Save* off the bottom of a 1080p screen; it is
+eight now, and the scroll stays for small screens and for the next row. It is on a wrapper inside
+the form with the footer outside it, capped at `calc(100vh - 260px)` rather than a pixel height, and
+inline rather than in `styles/` — the module's CSS is unlayered and outranks core's, so a stray
+`overflow` rule is the leak `feedback_css_scope_every_selector` records, and one attribute cannot
+leak.
+
+> **The audit script was wrong twice and both false positives are worth knowing.** It reported
+> `edgeSoftness` and `darknessSoftness` at zero reads — they are read through a local `read()`
+> helper, not `game.settings.get` directly — and reported `spillEnabled` registered twice, having
+> resolved a same-named `SETTING_ENABLED` const in `ui/readout.mjs` against the wrong literal.
+> **A grep for `settings.get` under-counts any module that wraps its own reads**, which is most of
+> them here.
+
+#### Awaiting a look — §6.4.7, walls held sharp
+
+Built 2026-08-27, unverified. `game.pf1Lighting.render.blur()` reports it, and
+`game.pf1Lighting.render.walls()` on its own. In the order things would go wrong:
+
+- **`wall.segments: 0` on a walled scene** is the interesting failure: every edge reported
+  `light === NONE`, either because the scene's walls genuinely pass light or because the property
+  moved. Compare against `wall.edges`, which is `canvas.edges.size`.
+- **`composited: false` with `sharpWalls: true`** means the container is still carrying the plain
+  blur, so the picture is unchanged from before.
+- **Bleed still visible** with both of those healthy means the band is too narrow — it is
+  `2 × transitionWidth` and that constant is `BAND` in `render/wall-mask.mjs`.
+- **Too much held sharp** is the opposite complaint and the same constant. Watch for it around
+  lights that sit close to a wall without being cut by it.
+- **Doors.** Opening one changes `edge.light` without moving anything; the mask hooks
+  `canvasEdgesRefresh` as well as the wall CRUD hooks for exactly that, and a door that opens
+  without the bleed changing is the sign that hook is not firing in this Foundry build.
+
 #### Cleared 2026-08-27 — the greyscale takeover
 
 Patrick, after the clamp-collar fix: *"looking like it's all behaving well so far as I can tell
@@ -5976,18 +6389,42 @@ Two things it changed that nobody has had a reason to look at yet, and neither i
 
 #### Open, and named by Patrick as the next work
 
-**§3.4 spill geometry — the only one left.** Not a transition fault, and untouched by either the rendering
-rewrite or the greyscale takeover. With
-the brightness map on, a spill inside a region resolves into **long thin slivers** alternating
-between the band tier and the room's own, rather than into coherent bands. The shape is
-characteristic of the `vis`/`bend` sweep union being cut against the region outline — many narrow
-wedges from the corner sweeps surviving the intersection — rather than of anything in the ramp that
-draws them.
+**§3.4 spill geometry — the only one left.** Not a transition fault, and untouched by the rendering
+rewrite, the greyscale takeover or §6.4.7. With the brightness map on, a spill inside a region
+resolves into **long thin slivers** alternating between the band tier and the room's own, rather
+than into coherent bands. The shape is characteristic of the `vis`/`bend` sweep union being cut
+against the region outline — many narrow wedges from the corner sweeps surviving the intersection —
+rather than of anything in the ramp that draws them.
 
-`game.pf1Lighting.overlay.levels()` is the instrument: the bands are drawn from
-`spill.spillAreas()`, which is the **model's** own list, so a sliver visible there is
-`model/spill.mjs` and a sliver visible only on the map is the renderer. That separation did not
-exist before the overlay and is why this is written down rather than guessed at.
+##### Where to start, in order
+
+1. **`game.pf1Lighting.settings("<key>")` before anything else.** On 2026-08-27 two rounds were
+   spent proving a rule was unimplementable when the implementation existed and its switch
+   defaulted to `false`. §3.4 owns six numbers and a window (§10.10); read them first, and read
+   `render.gradient().rejected`, which names every reason a ramp was not built including
+   "the setting is off".
+2. **`game.pf1Lighting.overlay.draw()`** — the field's own cells, in kind colours. This is the
+   **model's** answer. `spill` bands appear here as their own cells.
+3. **`game.pf1Lighting.overlay.levels()`** — what the renderer painted, resolved brightest-wins.
+   Both take `(false)` to turn off, or bare to toggle.
+
+**A sliver in (2) is `model/spill.mjs`. A sliver only in (3) is the renderer.** That separation is
+the whole point of having both, and it is what settled the band-overlap question in one call. If
+they disagree, note that both are downstream of the cell decomposition — nothing yet displays
+`evaluate()`'s analytic answer across a scene, so a fault in the decomposition itself would show in
+neither. Building that grid sampler is the standing companion task and is the honest first move if
+(2) and (3) agree and both look wrong.
+
+`spill.spillAreas()` is the model's own list, `spill.stats()` its counters, and `spill.rebuild()`
+forces a recompute.
+
+##### Two lessons from 2026-08-27 that apply directly
+
+- **Before concluding a rule is unimplemented, grep for its name.** `kind: "stack"` appeared in
+  three files and one of them was a 55-line implementation with its own design note.
+- **A wrong picture downstream of the field is usually a right reading of a wrong field.** Reach for
+  `render.transect()` and the overlays before touching the rule that draws it. Three separate
+  diagnoses that day blamed the consumer and the fault was upstream every time.
 
 #### The two instruments, and the order to use them
 

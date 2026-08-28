@@ -12,6 +12,8 @@ import * as registry from "./model/registry.mjs";
 import * as field from "./model/field.mjs";
 import * as areas from "./model/areas.mjs";
 import * as spill from "./model/spill.mjs";
+import * as geodesic from "./model/geodesic.mjs";
+import * as geodesicOverlay from "./ui/geodesic-overlay.mjs";
 import * as spillConfig from "./ui/spill-config.mjs";
 import * as tiers from "./model/tiers.mjs";
 import { stack as stackEmitters } from "./model/contest.mjs";
@@ -43,6 +45,7 @@ import * as darknessTexture from "./render/darkness-texture.mjs";
 import * as gradient from "./render/gradient.mjs";
 import * as transition from "./render/transition.mjs";
 import * as fieldBlur from "./render/texture-blur.mjs";
+import * as wallMask from "./render/wall-mask.mjs";
 import * as lightRamps from "./render/light-ramps.mjs";
 import * as tierPaint from "./render/paint.mjs";
 import * as levels from "./render/levels.mjs";
@@ -105,6 +108,8 @@ Hooks.once("init", () => {
   // the keys are registered here, by the module that reads them, before the menu that edits them
   // by name.
   spill.registerSettings();
+  // §3.4.1's one number, registered before the window that edits it by name.
+  geodesic.registerSettings();
   spillConfig.registerSettings();
   // Last of the menus, and it must follow `levels`, `soften` and `blindness` — it reads their
   // keys by name and `game.settings.settings` has to already hold them for the defaults button.
@@ -164,6 +169,10 @@ Hooks.once("init", () => {
   // §6.2.11's single desaturation pass, on `canvas.environment`. That group is rebuilt on every
   // canvas draw, so the filter is re-attached at `canvasReady` rather than installed once.
   greyscale.registerHooks();
+  // §6.4.7 — the segments the field blur must not cross. Its own hooks rather than the renderer's:
+  // a wall moving changes the mask without changing a single brightness, and a door opening
+  // changes it without moving anything at all.
+  wallMask.registerHooks();
 
   // A prototype patch, so it neither races the canvas group's construction nor cares
   // who else has touched the class.
@@ -348,6 +357,31 @@ Hooks.once("ready", () => {
       config: spillConfig.open,
     },
 
+    // §3.4.1's geometry — geodesic distance, and **live since 2026-08-28**: `spill` above now
+    // contours these fields, so this is the same arithmetic the map is lit by rather than a probe
+    // beside it. What it adds is the ability to *see* the field the contour was cut from.
+    //
+    //   game.pf1Lighting.geodesic.draw()                       // the ladder, flat per tier
+    //   game.pf1Lighting.geodesic.draw({ mode: "distance" })   // the raw field the contour cuts
+    //   game.pf1Lighting.geodesic.draw({ graze: 0.45 })        // with a cone — not what ships
+    //   game.pf1Lighting.geodesic.draw({ widths: { bright: 40, normal: 20, dim: 10 } })
+    //   game.pf1Lighting.geodesic.clear()
+    //
+    // It still marches one aperture at a time, where `spill` marches one room. That is deliberate:
+    // per-window is what you want when the question is "what is *this* window doing", and the two
+    // agree wherever a room has one window.
+    //
+    // Red is the severed cell-to-cell links. Look there first — a continuous hatch along a wall is
+    // that wall sealed, and a break in the hatch is somewhere light gets through.
+    geodesic: {
+      draw: geodesicOverlay.draw,
+      compare: geodesicOverlay.compare,
+      clear: geodesicOverlay.clear,
+      fill: geodesic.fill,
+      ladder: geodesic.ladder,
+      cellSize: geodesic.cellSize,
+    },
+
     // Whole-scene cell decomposition — the renderer's input (DESIGN.md §6.1)
     field: {
       get: field.get,
@@ -395,7 +429,11 @@ Hooks.once("ready", () => {
       // §6.4.3 — the one transition width every brightness boundary fades over.
       transitionWidth: transition.width,
       // §6.4.4 — is that width delivered by one blur of the field, or by a gradient per region?
+      // Since §6.4.7 it also reports the wall mask: `sharpWalls: true` with `wall.segments: 0` on
+      // a walled scene means every edge reported `light === NONE` and there is nothing to protect.
       blur: fieldBlur.status,
+      // §6.4.7 on its own — the segments the blur is held off, and how wide the band is.
+      walls: wallMask.status,
 
       // §6.2.9 — what each light's zones actually resolved to, in luminance, against the ladder
       // they should be landing on. The one readout that answers "is Normal the same brightness in

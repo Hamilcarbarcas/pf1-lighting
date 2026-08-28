@@ -125,16 +125,24 @@ export function registerSettings() {
       `How far a light's cut or clipped edge fades, in grid squares. Foundry's own value is ` +
       `${FOUNDRY_EDGE_OFFSET / 100}. Applies only where a light is not a plain circle — walls, ` +
       `clips, band overlaps — because Foundry fades an unobstructed disc with attenuation ` +
-      `instead. Costs a polygon-offsetting pass per 3 pixels, so about 10 at the default, and ` +
-      `a feather wider than a narrow region can eat it entirely.`,
+      `instead. Since lights became brightness regions this governs the light's **colour** edge ` +
+      `rather than its brightness edge: how far the coloured wash feathers. Brightness fades ` +
+      `over Brightness transition width instead. Costs a polygon-offsetting pass per 3 pixels.`,
     scope: "world",
-    // **Edited in the *Configure visuals* window, not the flat list** (§10.6, 2026-08-26).
-    // Registered here, where the code that reads it lives; `ui/visuals.mjs` reads and writes it
-    // by key and does not own it.
+    // **No control surface at all since 2026-08-27** (§10.6.2). It had a row in *Configure
+    // visuals* and came out with the audit: both of these tune a *source's* mesh edge, which is a
+    // much smaller and rarer thing than the brightness boundaries that window is otherwise about,
+    // and neither has been touched since the defaults were set. Reachable from the console —
+    // `game.pf1Lighting.settings("edgeSoftness", 0.2)`.
     config: false,
     type: Number,
     range: { min: 0.05, max: 1, step: 0.05 },
-    default: 0.3,
+    // **0.05 since 2026-08-27**, down from 0.3 (Patrick: *"too niche to take up settings space"*).
+    // The larger value existed because §6.4 found a clipped light abutting one of our regions read
+    // as a hard step — a *brightness* complaint, and brightness has not come from this mesh since
+    // §7.0 step 6. What is left is the colour wash's edge, which wants the tightest feather the
+    // range allows rather than a third of a square.
+    default: 0.05,
     onChange: () => {
       // The offset is baked into each source's geometry, so nothing short of rebuilding them
       // shows the change.
@@ -151,9 +159,11 @@ export function registerSettings() {
       "value is 0.5, which is a fixed distance and so looks progressively harder the larger " +
       "the darkness is. Widens only the picture, never the area the spell covers.",
     scope: "world",
-    // **Edited in the *Configure visuals* window, not the flat list** (§10.6, 2026-08-26).
-    // Registered here, where the code that reads it lives; `ui/visuals.mjs` reads and writes it
-    // by key and does not own it.
+    // **No control surface at all since 2026-08-27** (§10.6.2). It had a row in *Configure
+    // visuals* and came out with the audit: both of these tune a *source's* mesh edge, which is a
+    // much smaller and rarer thing than the brightness boundaries that window is otherwise about,
+    // and neither has been touched since the defaults were set. Reachable from the console —
+    // `game.pf1Lighting.settings("edgeSoftness", 0.2)`.
     config: false,
     type: Number,
     range: { min: 0.5, max: 6, step: 0.5 },

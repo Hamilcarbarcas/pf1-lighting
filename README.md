@@ -90,20 +90,28 @@ the most visible thing this switch does.
 
 ### Soft transitions
 
-Two sliders in **Configure Visuals**, for the two kinds of *source* edge on the map. The
-boundary between two brightness levels is a separate thing and has its own section below.
+Two console settings, for the two kinds of *source* edge on the map. The boundary between two
+brightness levels is a separate thing and has its own section below.
 
-**Light edge softening** widens the fade on a light whose shape has been clipped, cut by a
-wall, or drawn for a band overlap. Foundry's own value is 0.08; the default here is 0.3. It
-costs a polygon-offsetting pass per 3 pixels, and a feather wider than a narrow region can
-swallow it, which is why the range stops at one square. Two Foundry behaviours can make it look
-inert: soft edges are off entirely below **Medium** performance mode, and they never apply to
-an unobstructed circular light, which fades by its own attenuation instead.
+These tune a **source's** own mesh edge, which is a smaller and rarer thing than the boundaries
+between brightness levels — that is *Transitions between brightnesses* below, and it is what you
+almost certainly want. Neither has a settings row; both are reachable from the console.
 
-**Darkness edge softening** widens the fade at the rim of a *supernatural* darkness disc — the
-only kind that draws a darkness source of its own. Foundry's value is 0.5, which is where this
-defaults; because that is a fixed distance rather than a proportion, a large darkness looks
-harder-edged than a small one, and raising it widens only the picture.
+**Light edge softening** widens the fade on a light whose shape has been clipped, cut by a wall, or
+drawn for a band overlap. Since lights became brightness regions it governs the light's **colour**
+edge — how far the coloured wash feathers — not its brightness edge. Defaults to 0.05. Two Foundry
+behaviours can make it look inert: soft edges are off entirely below **Medium** performance mode,
+and they never apply to an unobstructed circular light, which fades by its own attenuation instead.
+
+**Darkness edge softening** widens the fade at the rim of a *supernatural* darkness disc — the only
+kind that draws a darkness source of its own. Defaults to 0.5, matching Foundry; because that is a
+fixed distance rather than a proportion, a large darkness looks harder-edged than a small one, and
+raising it widens only the picture.
+
+```js
+game.pf1Lighting.settings("edgeSoftness", 0.2)
+game.pf1Lighting.settings("darknessSoftness", 1.5)
+```
 
 *Ground edge softening* and *Band softening* used to sit here and are **gone**. Both blurred an
 individual mesh, which fades that mesh's transparency to reveal whatever is beneath it — that can
@@ -280,10 +288,12 @@ A window is simply a wall whose *Light* restriction is set to none. **An open do
 it is open** — Foundry drops every restriction on a door's wall as it swings, so opening one lets
 the light in and closing it takes it away, with no configuration at all.
 
-What you get is a bright wedge spreading in from the gap, cut off by walls exactly as a light
-source would be, and then bands stepping down one level at a time — bright, normal, dim — until
-it runs out. The bands bend around the room, so standing one square to the side of the doorway is
-not the same as standing in the dark.
+What you get is light spreading in from the gap and stepping down one level at a time — bright,
+normal, dim — until it runs out. **The distance is measured along the floor, not through the air**,
+so light that has to turn a corner spends its reach getting there and arrives dimmer. Standing one
+square to the side of a doorway is not the same as standing in front of it, and a room reached
+through two turns of a corridor is darker than one reached through a single doorway at the same
+range. Walls stop it exactly where they stand.
 
 Three things follow from the light being the *sky*, rather than anything you placed:
 
@@ -300,33 +310,40 @@ creature can see, perception, and any darkness cast over it — because it *is* 
 illumination, reaching ground it otherwise could not.
 
 **Settings → PF1 Lighting → Light Spill → Configure Light Spill** holds the numbers: an on/off
-switch, the cone angle (105° by default), how far the wedge throws for each outdoor light level
-(40 / 20 / 10 feet for bright, normal and dim), and how far each falloff band runs (10 feet). So bright daylight reaches forty feet at full strength and sixty
-before it gives out.
+switch, **how far each brightness carries** before it drops to the next one down (40 / 20 / 10 feet
+for bright, normal and dim), and the grid resolution the falloff is worked out at. So bright
+daylight holds for forty feet, reads as normal for the next twenty and dim for the last ten —
+seventy feet in total — while a window that is only dim outside reaches ten.
 
-**Transition width** sits in the same window and is not a spill setting: it is the one distance
-every brightness boundary in the module fades over. It is edited here because a spill falloff is
-where it shows most. See *Transitions between brightnesses* below.
+The reach is the sum of the rungs below wherever it starts, so lowering one number shortens every
+ladder that passes through it. The window shows you the total as you edit.
+
+How softly one band fades into the next is **Transition width**, in *Configure Visuals* — it is the
+one distance every brightness boundary in the module fades over, not a spill setting. See
+*Transitions between brightnesses* below.
 
 Like the region itself, it needs **Model global illumination** on to be visible.
 
 ```js
-game.pf1Lighting.spill.stats()   // windows found, bands drawn, and why there might be none
+game.pf1Lighting.spill.stats()   // windows found, rooms marched, bands drawn, and why there might be none
 game.pf1Lighting.spill.at({ x: 1000, y: 1200 })   // which bands cover a point
 game.pf1Lighting.spill.config()  // open the settings window
-game.pf1Lighting.render.gradient()   // one entry per window: triangles, plateau, draw order
+game.pf1Lighting.geodesic.draw() // paint the distance field the bands were cut from
+game.pf1Lighting.geodesic.clear()
 ```
 
-Two things worth knowing about how the gradient is drawn. Where two windows light the same floor,
-the overlap is resolved by draw order rather than by taking the brighter of the two — the *model*
-is still exact there, so `spill.at()` will tell you the real answer even when the picture is a
-level off. And `canvas.effects.getDarknessLevel()` inside a spill reports the falloff's midpoint
-rather than the value under the cursor, because a gradient has no single level to report;
-`game.pf1Lighting.render.meshAt()` reads the rendered texture back instead.
+`geodesic.draw()` is the one to reach for when a spill looks wrong, because it shows the working
+rather than the answer. Red marks where light was told it may not pass: a continuous red hatch
+along a wall is that wall sealed, and a break in the hatch is somewhere light gets through —
+a doorway when you meant one, and a mis-drawn wall when you did not.
+
+**Windows in the same room are worked out together**, in one pass rather than one each, so two
+windows lighting the same floor give the brighter of the two with no seam between them. Where they
+differ in brightness — one under a *darkness*, say — the dimmer one simply starts further down the
+same ladder.
 
 Every wall edit recomputes the spill for the whole scene, so heavy wall work on a map with several
-windows may feel a little slower than it used to. The geometry is cached between edits and only the
-windows themselves are re-swept.
+windows may feel slightly slower than it used to.
 
 ### How bright each tier is drawn
 
@@ -363,16 +380,24 @@ flicker, and what they let a creature see by — only the brightness moves.
 
 ### Transitions between brightnesses
 
-**Every brightness boundary fades over the same distance**, set once by *Transition width* (in the
-Light Spill window, since a spill falloff is where it shows most). A room's edge, a darkness rim, a
+**Every brightness boundary fades over the same distance**, set once by *Transition width* in
+**Configure Visuals**. A room's edge, a darkness rim, a
 light's two zones, a window's falloff and the edge of what you can see all use it. A boundary two
 steps apart — bright straight to dark — is not made wider for it, because a wider fade would read
 as *less* of a step.
 
 Set it to 0 and every brightness boundary becomes a hard edge, all at once.
 
-It lives in **Configure Visuals** alongside the other appearance numbers, and is repeated in the
-Light Spill window because a spill falloff is where it shows most. Both edit the same setting.
+**Except at walls.** Light stops at a wall, but softening does not — left alone it spreads
+brightness about one transition width past every hard edge, so a lit room glows through its own
+walls and a dark one picks up the corridor outside. The field is held sharp along any wall that
+blocks light, and softened as normal everywhere else. Walls that block sight but pass light (a
+window) are not affected, which is what keeps light spill working.
+
+It lives in **Configure Visuals** alongside the other appearance numbers. It used to be repeated in
+the Light Spill window, which was one setting on two forms with two *Restore defaults* buttons that
+disagreed about what they reset — and it read as a spill property when it governs every boundary in
+the module.
 
 **Unseen ground dimming**, in Configure Visuals, is the companion: how far explored ground outside
 your current vision is taken toward black, on top of already being drawn at Dark. Foundry hard-codes
@@ -891,9 +916,9 @@ Seven switches and three windows.
 
 | | |
 | --- | --- |
-| **Visuals** | Brightness of each tier, the two source-edge distances, the one brightness transition width, unseen-ground dimming, greyscale in explored fog, see-in-darkness brightness |
+| **Visuals** | Brightness of each tier, the brightness transition width, unseen-ground dimming, greyscale in explored fog, see-in-darkness brightness |
 | **Lighting Presets** | The named light and darkness configurations offered on a light's sheet |
-| **Light Spill** | Whether windows let the daylight in, how wide the wedge is, how far it reaches, and the transition width (the same one Visuals holds) |
+| **Light Spill** | Whether windows let the daylight in, and how far each brightness carries indoors |
 | Show light level | Your own readout chip |
 | Light level is GM only | Whether players get one at all — on by default |
 | Explain the light level | The *why* line. GM only, whoever the readout is shown to |
@@ -918,10 +943,6 @@ game.pf1Lighting.settings("renderEnabled", true)   // write one
 ## Not implemented yet
 
 Low-light vision, dim-light concealment.
-
-Light spill does not bend around a corner into true shadow — the far leg of an L-shaped room,
-out of sight of the window, stays dark with a hard edge. That boundary is a real one, but a soft
-wrap is possible later if it reads badly.
 
 One rendering gap remains, and it is narrow: a region dimmed by an umbra is drawn dimmer only
 where global illumination lit it. Ground lit by a *light source* is not dimmed, because a

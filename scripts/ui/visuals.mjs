@@ -16,23 +16,24 @@
  * (Patrick, 2026-08-26: *"do away with individual hints — just one hint"*). As a group under one
  * heading they need one.
  *
- * The rest are the two source-edge distances, the one **brightness transition width** every
- * boundary in the module now fades over (§6.4.3/§6.4.4), how far unseen ground is dimmed, how far
- * greyscale reaches into fog (§6.2.11), and the see-in-darkness offset — the rest of the same question,
- * with nowhere better to be.
+ * The rest are the one **brightness transition width** every boundary in the module now fades over
+ * (§6.4.3/§6.4.4), how far unseen ground is dimmed, how far greyscale reaches into fog (§6.2.11),
+ * and the see-in-darkness offset — the rest of the same question, with nowhere better to be.
  *
  * Deliberately **counted nowhere**. An earlier version of this file said "the eight numbers" in
  * four places and was wrong in all four within a month; the list below is the only census.
  *
- * Two rows that used to be here are gone rather than moved. *Ground edge softening* and *Band
- * softening* both blurred individual meshes, which cannot produce a gradient at all; one width now
- * covers every boundary and one blur of the composited field delivers it.
+ * Four rows that used to be here are gone. *Ground edge softening* and *Band softening* blurred
+ * individual meshes, which cannot produce a gradient at all — one width now covers every boundary
+ * and one blur of the composited field delivers it. *Light* and *Darkness edge softening* still
+ * work and still have settings; they are source-mesh tuning rather than brightness, and too niche
+ * for a row.
  *
  * ## The settings are not owned here
  *
  * Each key stays registered in the module that reads it, with its own `onChange`. This window
  * reads and writes them by
- * key and nothing else — `render/levels.mjs`, `render/soften.mjs`, `render/transition.mjs`,
+ * key and nothing else — `render/levels.mjs`, `render/transition.mjs`,
  * `render/darkness-mask.mjs`, `render/greyscale.mjs`, `vision/blindness.mjs`. §10.6's reason: a
  * menu that owns its settings is a second
  * dependency graph to keep in step with the first, and the `onChange` work here is real (the
@@ -45,10 +46,6 @@
 import { MODULE_ID } from "../constants.mjs";
 import { TIER } from "../model/tiers.mjs";
 import { TIER_SETTINGS } from "../render/levels.mjs";
-import {
-  SETTING_DARKNESS_SOFTNESS,
-  SETTING_EDGE_SOFTNESS,
-} from "../render/soften.mjs";
 import { SETTING_DARK_SIGHT_BRIGHTNESS } from "../vision/blindness.mjs";
 import { SETTING_WIDTH } from "../render/transition.mjs";
 import { SETTING_UNSEEN_DIMMING } from "../render/darkness-mask.mjs";
@@ -73,31 +70,16 @@ const LADDER = [
 ];
 
 /**
- * The sliders, in the order the edges occur on screen: light, then darkness, then ground — then
- * the two that are not edges at all and have nowhere better to live.
+ * The sliders.
+ *
+ * @remarks
+ * *Light edge softening* and *Darkness edge softening* were here and came out in §10.6.2's audit
+ * (Patrick, 2026-08-27: *"too niche to take up settings space"*). Both tune a **source's** mesh
+ * edge — a much smaller and rarer thing than the brightness boundaries this window is otherwise
+ * about, and since §7.0 step 6 the light one governs only a colour wash. They keep their settings
+ * and their console access; they lost their rows.
  */
 const SLIDERS = [
-  {
-    key: SETTING_EDGE_SOFTNESS,
-    label: "Light edge softening",
-    hint:
-      "How far a light's cut or clipped edge fades, in grid squares. Applies only where a light " +
-      "is not a plain circle — walls, clips, band overlaps — because Foundry fades an " +
-      "unobstructed disc with attenuation instead.",
-    min: 0.05,
-    max: 1,
-    step: 0.05,
-  },
-  {
-    key: SETTING_DARKNESS_SOFTNESS,
-    label: "Darkness edge softening",
-    hint:
-      "How far a darkness source's own disc fades at its rim, in grid squares. A fixed distance " +
-      "rather than a proportion, so a large darkness looks harder-edged than a small one.",
-    min: 0.5,
-    max: 6,
-    step: 0.5,
-  },
   {
     key: SETTING_WIDTH,
     label: "Brightness transition width",
@@ -227,7 +209,18 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
       </div>`
     ).join("");
 
+    // **The scroll is on a wrapper, not on the window, and the footer is outside it.** With ten
+    // controls this window is taller than a 1080p screen once Foundry's own chrome is counted, and
+    // the two buttons were the part that went off the bottom — a settings window whose *Save* you
+    // have to scroll to is worse than one that is merely long.
+    //
+    // `calc(100vh - …)` rather than a pixel height: the window is `height: "auto"`, so it sizes to
+    // this box, and a viewport-relative cap means it fits a laptop and still uses a tall monitor.
+    // Inline rather than in `styles/`, because the module's CSS is unlayered and outranks core's
+    // — a stray `overflow` rule leaking out of this file is the bug class
+    // `feedback_css_scope_every_selector` records, and one attribute cannot leak.
     return `
+<div style="overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); padding-right: 4px;">
 <fieldset>
   <legend>Brightness levels</legend>
   <p class="hint">How dark the ground at each tier is drawn, from <strong>0</strong> (full
@@ -239,9 +232,10 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
 </fieldset>
 
 <fieldset>
-  <legend>Edges and shading</legend>
+  <legend>Transitions and shading</legend>
   ${sliders}
 </fieldset>
+</div>
 
 <footer class="form-footer">
   <button type="button" data-action="reset">

@@ -57,8 +57,10 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { width } from "./transition.mjs";
+import * as wallMask from "./wall-mask.mjs";
 
 export const SETTING_BLUR = "blurTransitions";
+export const SETTING_SHARP_WALLS = "sharpWalls";
 
 const MARK = "pf1LightingFieldBlur";
 
@@ -81,7 +83,122 @@ export function isEnabled() {
   }
 }
 
+/**
+ * Keep the field hard where a light-blocking wall runs? DESIGN.md §6.4.7.
+ */
+export function sharpWalls() {
+  try {
+    return isEnabled() && game.settings.get(MODULE_ID, SETTING_SHARP_WALLS) === true;
+  } catch {
+    return false;
+  }
+}
+
+/* -------------------------------------------- */
+/*  The composite — §6.4.7                      */
+/* -------------------------------------------- */
+
+let composite = null;
+
+/**
+ * Blur the field, then put the wall lines back sharp.
+ *
+ * @param {object} params
+ * @returns {PIXI.Filter}
+ */
+function buildComposite() {
+  const Base = foundry.canvas.rendering.filters.AbstractBaseMaskFilter;
+
+  return class SharpWallFilter extends Base {
+    static defaultUniforms = {
+      sharpTexture: null,
+      wallTexture: null,
+      screenDimensions: [1, 1],
+    };
+
+    static fragmentShader = `
+    precision ${PIXI.settings.PRECISION_FRAGMENT} float;
+    varying vec2 vTextureCoord;
+    varying vec2 vMaskTextureCoord;
+    uniform sampler2D uSampler;       // the blurred field
+    uniform sampler2D sharpTexture;   // the same field, untouched
+    uniform sampler2D wallTexture;
+
+    void main() {
+      float wall = texture2D(wallTexture, vMaskTextureCoord).r;
+      // Nothing to choose between where no wall runs, which is nearly every fragment — one
+      // texture read and a branch the whole warp takes together.
+      if ( wall <= 0.0 ) {
+        gl_FragColor = texture2D(uSampler, vTextureCoord);
+        return;
+      }
+      gl_FragColor = mix(
+        texture2D(uSampler, vTextureCoord),
+        texture2D(sharpTexture, vTextureCoord),
+        clamp(wall, 0.0, 1.0)
+      );
+    }`;
+
+    /**
+     * @override
+     * @remarks
+     * **Two passes inside one filter, and it has to be one filter.** PIXI chains filters
+     * sequentially, so a second filter in `container.filters` would only ever see the first's
+     * output — there is no way for it to reach back for the *unblurred* field. Running the blur
+     * into a scratch target here is what makes both available to the same fragment.
+     *
+     * `getFilterTexture()` hands back a target matching the current filter frame, so `input` and
+     * `temp` share dimensions and both are correctly sampled at `vTextureCoord`.
+     */
+    apply(filterManager, input, output, clear, currentState) {
+      const u = this.uniforms;
+      u.screenDimensions = canvas.screenDimensions;
+      u.wallTexture = wallMask.texture();
+
+      // No mask yet — nothing to protect, so this is an ordinary blur.
+      if (!u.wallTexture) {
+        filter.apply(filterManager, input, output, clear, currentState);
+        return;
+      }
+
+      const temp = filterManager.getFilterTexture();
+      filter.apply(filterManager, input, temp, PIXI.CLEAR_MODES.CLEAR, currentState);
+      u.sharpTexture = input;
+      filterManager.applyFilter(this, temp, output, clear);
+      filterManager.returnFilterTexture(temp);
+    }
+  };
+}
+
+let CompositeClass = null;
+
+function sharpWallFilter() {
+  CompositeClass ??= buildComposite();
+  composite ??= CompositeClass.create();
+  composite[MARK] = true;
+  composite.padding = 0;
+  return composite;
+}
+
 export function registerSettings() {
+  game.settings.register(MODULE_ID, SETTING_SHARP_WALLS, {
+    name: "Keep brightness hard at walls",
+    hint:
+      "Light stops at a wall, but the softening does not: it spreads brightness about one " +
+      "transition width past every hard edge, so a lit room glows through its own walls and a " +
+      "dark one picks up the corridor outside. This holds the field sharp along any wall that " +
+      "blocks light, and softens everything else as before.",
+    scope: "world",
+    // No control surface, matching the module's other corrections of core behaviour.
+    config: false,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      wallMask.invalidate();
+      sync({ force: true });
+    },
+  });
+
   game.settings.register(MODULE_ID, SETTING_BLUR, {
     name: "Soften brightness boundaries with a blur",
     hint:
@@ -122,6 +239,7 @@ export function sync({ force = false } = {}) {
       canvas.blurFilters?.delete(filter);
       container.filters = null;
       filter = null;
+      composite = null;
       lastStrength = null;
       container.renderDirty = true;
     }
@@ -138,6 +256,7 @@ export function sync({ force = false } = {}) {
       canvas.blurFilters?.delete(filter);
       container.filters = null;
       filter = null;
+      composite = null;
     }
     return null;
   }
@@ -148,24 +267,38 @@ export function sync({ force = false } = {}) {
     filter = new PIXI.BlurFilter(strength, 4, undefined, 15);
     filter[MARK] = true;
     filter.padding = 0;
-    container.filters = [filter];
   }
+
+  // **The blur is not what the container carries.** `composite` runs it into a scratch target and
+  // then chooses, per fragment, between the blurred field and the untouched one — see
+  // {@link sharpWallFilter}. With the wall mask off it is bypassed entirely and the blur is
+  // attached directly, so that path stays exactly what it was.
+  const outer = sharpWalls() ? sharpWallFilter() : filter;
+  if (container.filters?.[0] !== outer) container.filters = [outer];
 
   if (force || lastStrength !== strength) {
     filter._configuredStrength = strength;
+    // **The inner blur is what gets registered**, not the composite. `canvas.addBlurFilter` stores
+    // `_configuredStrength` and re-derives `.blur` from the stage scale on every zoom
+    // (`board.mjs:1657-1670`); it needs the object that actually has a `blur` property, which is
+    // the `PIXI.BlurFilter` regardless of who invokes it.
     canvas.addBlurFilter(filter);
     lastStrength = strength;
     container.renderDirty = true;
   }
 
-  return { strength, applied: container.filters?.[0] === filter };
+  if (sharpWalls()) wallMask.sync();
+
+  return { strength, applied: container.filters?.[0] === outer, sharpWalls: sharpWalls() };
 }
 
 /** Scene teardown — the container goes with the canvas, so this only drops our references. */
 export function dispose() {
   if (filter) canvas?.blurFilters?.delete(filter);
   filter = null;
+  composite = null;
   lastStrength = null;
+  wallMask.dispose();
 }
 
 /**
@@ -187,6 +320,11 @@ export function status() {
     applied: container?.filters?.[0] === filter && !!filter,
     // Above zero means the halos are also running, which would soften everything twice.
     haloesExpected: !isEnabled(),
+    // §6.4.7. `sharpWalls: true` with `wall.segments: 0` is the interesting failure — the
+    // composite is running and has nothing to protect, so the picture is an ordinary blur.
+    sharpWalls: sharpWalls(),
+    composited: container?.filters?.[0] === composite && !!composite,
+    wall: wallMask.status(),
     children: container?.children?.length ?? null,
   };
   console.error(`${MODULE_ID} | field blur`, report);

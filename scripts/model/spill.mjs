@@ -22,14 +22,27 @@
  *   scene's *own* global light source stop discarding and light it. The spill is not rendered
  *   like global illumination; it is rendered *by* it.
  *
- * ## Walls that pass light never trim anything
+ * ## How the shape is computed — §3.4.1, rewritten 2026-08-28
  *
- * Every wall-derived shape here is a `type: "light"` sweep, and `_testEdgeInclusion` drops any
- * edge whose `light` is `NONE` before it can occlude (`geometry/clockwise-sweep.mjs:244`). So a
- * second window, or another open door, lets the spill straight through — and it must, because
- * that is the *same* predicate {@link isAperture} uses to find a window in the first place. The
- * two cannot disagree. Nothing else in this file consults a wall: the dilation is a Minkowski
- * sum and the region clip is a polygon.
+ * **Geodesic distance on a grid, not Euclidean dilation.** `model/geodesic.mjs` marches a distance
+ * field out from every window of a room at once; this file contours it at the ladder's thresholds
+ * and hands the polygons over. That replaced a construction which measured brightness by
+ * straight-line distance and then merely *masked* it by visibility — so light that turned a corner
+ * arrived having been charged for the distance **through the wall**. Bands bending around exactly
+ * one corner, `MAX_CORNERS` and its relevance heuristic, the nudged-corner containment test and the
+ * region-clip slivers were all symptoms of that one substitution, and all of them are gone rather
+ * than fixed.
+ *
+ * What this file still owns is *which* edges are windows and *how bright* they are
+ * ({@link apertureInfo}); the geometry lives next door.
+ *
+ * ## Walls that pass light never block anything
+ *
+ * `geodesic.blockingLinks` cuts a cell-to-cell link only where `edge.light !== NONE`, which is the
+ * *same* predicate {@link isAperture} reads to find a window in the first place. So a second window,
+ * or another open door, lets the spill straight through, and the two cannot disagree. A wall is a
+ * severed link rather than blocked ground, so it eats no floor and cannot leak: any 4-connected path
+ * across a wall must cross a link the wall cut.
  *
  * ## The one ordering constraint
  *
@@ -44,13 +57,11 @@ import { MODULE_ID } from "../constants.mjs";
 import {
   CLIPPER_SCALE,
   containsPoint,
-  difference,
   fromClipperPaths,
-  intersection,
   toClipperPath,
   union,
 } from "../geometry.mjs";
-import { TIER, TIER_NAME, resolveTier, stepTier } from "./tiers.mjs";
+import { TIER, TIER_NAME, resolveTier, tierFromDarkness } from "./tiers.mjs";
 import { contest } from "./contest.mjs";
 import {
   ambientTier as sceneAmbientTier,
@@ -59,12 +70,11 @@ import {
   version as registryVersion,
 } from "./registry.mjs";
 import * as areas from "./areas.mjs";
+import * as geodesic from "./geodesic.mjs";
 
 const SCALE = CLIPPER_SCALE;
 
 export const SETTING_ENABLED = "spillEnabled";
-export const SETTING_ANGLE = "spillAngle";
-export const SETTING_BAND = "spillBandWidth";
 export const SETTING_RADIUS = Object.freeze({
   [TIER.BRIGHT]: "spillRadiusBright",
   [TIER.NORMAL]: "spillRadiusNormal",
@@ -83,64 +93,6 @@ export const SETTING_RADIUS = Object.freeze({
  */
 const PROBE_SQUARES = 0.5;
 
-/**
- * How far inside the wall the sweep origin sits, in pixels.
- *
- * @remarks
- * A sweep origin lying exactly *on* an edge is the classic degenerate case for
- * `ClockwiseSweepPolygon` — the vertex is collinear with itself and the sweep can return a
- * degenerate or inverted polygon. Small enough not to matter geometrically, large enough to be
- * unambiguous at Clipper's integer scale.
- */
-const ORIGIN_OFFSET = 4;
-
-/**
- * Most sample origins along one aperture.
- *
- * @remarks
- * **A window is an area light, not a point** (§7.2), and the first build got this wrong in a way
- * that showed immediately: one origin makes the lit wedge a *point* at the wall, widening from
- * nothing, when it should start at the window's full width. The shape is fixed analytically by
- * {@link wedgePath}; these origins exist for the other half of the same fact — occlusion sampled
- * from one point mis-judges a wide window next to a corner.
- */
-const MAX_ORIGINS = 6;
-
-/** Segments per flank arc when tracing the wedge. */
-const ARC_STEPS = 8;
-
-/**
- * Most wall corners a single aperture's spill will bend around.
- *
- * @remarks
- * A cap for cost, not for correctness — each corner is a sweep. It can be this loose because the
- * candidates are filtered by *relevance* first (see {@link cornersFor}) and the sweeps are small:
- * a corner sweep needs only {@link bendRadius}, not the aperture's full reach.
- *
- * **Raised from 8 after play-testing, 2026-08-26**, together with the filter that made the number
- * almost stop mattering. At 8, ranked by distance from the window, a T-shaped room spent every
- * slot on corners of the near wall and culled the one at the mouth of the far leg — the only one
- * that could get light into the marked area. The cap was doing the filtering, badly.
- */
-const MAX_CORNERS = 24;
-
-/**
- * Iso-lines generated per band for the render ramp — DESIGN.md §7.0 step 5.
- *
- * @remarks
- * **Rings are kept as *tessellation* and dropped as *levels*.** The model's bands are still the
- * bands: `evaluate()`, perception and every mechanical consumer see the discrete ladder §3.4
- * specifies. These are finer offsets of the same wedge, and they exist only so the triangulator
- * has small polygons whose vertices sit on known iso-lines — the level is then a per-vertex
- * attribute and the rasteriser interpolates it (`render/gradient.mjs`).
- *
- * Four is where the linear interpolation stops being the limiting factor: a plateau-and-ramp
- * profile across one band is sampled at quarter-band spacing, which is finer than the profile's
- * own curvature. Raising it costs one polygon offset and two boolean ops per ring per window, at
- * **rebuild** time only — the ramp geometry does not move when an observer does.
- */
-const RAMP_STEPS = 4;
-
 /* -------------------------------------------- */
 /*  Settings                                    */
 /* -------------------------------------------- */
@@ -156,16 +108,16 @@ function setting(key, fallback) {
 
 export const isEnabled = () => setting(SETTING_ENABLED, true) === true;
 
-/** Cone radius in feet for a spill of this tier. Keyed on the *initial* tier only — §3.4. */
+/**
+ * How far this brightness carries before it steps down, in feet — §3.4.1.
+ *
+ * @remarks
+ * **The key is still `spillRadius*` and the meaning has changed.** It used to be the cone radius of
+ * a spill *starting* at this tier; it is now the width of this tier's own band, wherever in a ladder
+ * that band falls. A GM's stored 40 / 20 / 10 keeps working and reads better: bright carries forty
+ * feet, normal twenty, dim ten, so a bright window reaches seventy.
+ */
 const radiusFeet = (tier) => Number(setting(SETTING_RADIUS[tier], 0)) || 0;
-
-const bandFeet = () => Number(setting(SETTING_BAND, 10)) || 10;
-
-const coneAngle = () => Number(setting(SETTING_ANGLE, 105)) || 105;
-
-
-/** Feet to scene pixels. */
-const toPixels = (feet) => feet * (canvas?.dimensions?.distancePixels ?? 1);
 
 /* -------------------------------------------- */
 /*  State                                       */
@@ -173,19 +125,6 @@ const toPixels = (feet) => feet * (canvas?.dimensions?.distancePixels ?? 1);
 
 /** @type {{id: string, derived: true, mode: string, tier: number, paths: object[][], polygons: PIXI.Polygon[]}[]} */
 let cache = [];
-
-/**
- * One triangulated falloff per window, for the renderer — DESIGN.md §7.0 step 5.
- *
- * @remarks
- * Kept beside {@link cache} rather than inside it because the two are consumed by different halves
- * of the module and on different clocks. `cache` is the **model**: discrete bands, folded as
- * ambient areas, read by `evaluate()` and everything downstream of it. This is the **picture**:
- * one mesh per window carrying a distance per vertex, rebuilt only when the geometry is.
- *
- * @type {object[]}
- */
-let rampCache = [];
 
 let generation = 0;
 let lastStats = null;
@@ -196,19 +135,16 @@ let dirty = true;
 let lastSignature = null;
 
 /**
- * Bumped whenever cached **geometry** goes stale — walls, regions, settings.
+ * Bumped whenever **geometry** goes stale — walls, regions, settings.
  *
  * @remarks
- * The two clocks of §3.4. A window's two sweeps are the expensive part and depend only on walls
- * and the region outline; its *tier* additionally depends on the ambient and on suppressors,
- * because the contest is in the loop, and a darkness carried past a window moves it. Keying the
- * sweep cache on this rather than on a full rebuild is what keeps a tier change from re-sweeping
- * a scene that has not moved.
+ * Now purely part of {@link rebuild}'s signature. §3.4's two clocks existed because a window's
+ * sweeps were expensive and its tier was not, so the sweeps were cached against this and the tier
+ * re-run against the registry. §3.4.1's march is cheap enough that there is nothing left worth
+ * caching separately — a rebuild is one field per room — so this survives only to say *something
+ * moved*, alongside the registry version and the scene tier.
  */
 let geometryEpoch = 0;
-
-/** @type {Map<string, object>} edge id → cached sweeps for the current {@link geometryEpoch} */
-const sweepCache = new Map();
 
 export const version = () => generation;
 
@@ -218,12 +154,30 @@ export function spillAreas() {
 }
 
 /**
- * Every window's falloff as a triangulated gradient — `render/gradient.mjs`'s only input.
+ * Spill's contribution to `render/gradient.mjs` — **empty since §3.4.1, deliberately.**
  *
- * Pure cache read. See {@link rampCache}.
+ * @remarks
+ * §7.0 step 5 gave each window a triangulated mesh carrying a *distance per vertex*, so the
+ * rasteriser interpolated the falloff instead of the field blur approximating it. That machinery was
+ * the whole back half of this file — `rampFor`, `ringDistances`, `groupWithDistances` — and it
+ * existed to reconstruct distances that §3.4.1's field simply has.
+ *
+ * It is not being rebuilt on the new field yet, because it may not be needed (Patrick, 2026-08-27:
+ * *"draw polygons out of those coloured fields, add them to the underlying brightness model, and
+ * call it a day"*). The bands are much wider under per-tier widths — 40 / 20 / 10 ft rather than
+ * 40 + 10 + 10 — so each boundary may read correctly on §6.4.4's blur alone, which is the treatment
+ * every other brightness boundary in the module gets. **If it bands, the fix is small**: ask
+ * `geodesic.contour` for thresholds at quarter-band spacing instead of tier spacing and hand the
+ * rings over with the distances they already carry.
+ *
+ * The stub stays rather than the export being deleted: `render/gradient.mjs` is the shared mesh pool
+ * for four producers, three of which have nothing to do with spill, and it already treats an empty
+ * list as "nothing to draw".
+ *
+ * @returns {object[]} Always empty
  */
 export function ramps() {
-  return rampCache;
+  return [];
 }
 
 /* -------------------------------------------- */
@@ -243,7 +197,7 @@ export function ramps() {
  * `isOpen` (`placeables/wall.mjs:225`), so a door's edge stays in the collection with its
  * geometry intact and qualifies exactly while it is open.
  */
-function isAperture(edge) {
+export function isAperture(edge) {
   if (edge?.type !== "wall") return false;
   return edge.light === CONST.WALL_SENSE_TYPES.NONE;
 }
@@ -266,6 +220,34 @@ function frame(edge) {
 }
 
 const offsetPoint = (p, n, d) => ({ x: p.x + n.x * d, y: p.y + n.y * d });
+
+/** Why candidates were turned away, for {@link stats}. Reset by {@link rebuild}. */
+let rejects = {};
+const reject = (why) => {
+  rejects[why] = (rejects[why] ?? 0) + 1;
+  return null;
+};
+
+/**
+ * Is a light-blocking wall between these two points?
+ *
+ * @remarks
+ * **The aperture's own edge cannot register here, which is the property this rests on.** It passes
+ * light by definition ({@link isAperture}), and `_testEdgeInclusion` drops any edge whose `light` is
+ * `NONE` before it can occlude (`geometry/clockwise-sweep.mjs:244`). So a genuine window sees
+ * nothing between its two probes, and a wall standing *behind* another wall sees that other wall.
+ */
+function blockedBetween(a, b) {
+  const Poly = CONFIG.Canvas?.polygonBackends?.light;
+  if (typeof Poly?.testCollision !== "function") return false;
+  try {
+    return Poly.testCollision(a, b, { type: "light", mode: "any" }) === true;
+  } catch {
+    // A malformed edge set should not take the whole feature down; erring toward "not blocked"
+    // keeps a real window working and at worst lets the old behaviour through.
+    return false;
+  }
+}
 
 /**
  * The ambient tier ignoring spill's own contribution.
@@ -308,568 +290,29 @@ function spillTierAt(point) {
   return resolveTier(B, { suppressed: applied, floor: winner?.floor });
 }
 
-/* -------------------------------------------- */
-/*  Geometry                                    */
-/* -------------------------------------------- */
-
-const rotate = (v, a) => ({
-  x: v.x * Math.cos(a) - v.y * Math.sin(a),
-  y: v.x * Math.sin(a) + v.y * Math.cos(a),
-});
-
-/** One wall-occluded sweep, as a single-element Clipper path list. */
-function sweepPath(origin, radius) {
-  const Poly = CONFIG.Canvas.polygonBackends.light;
-  // `type: "light"` is what makes a window transparent to another window's spill — see the file
-  // header. Any change here has to keep that property.
-  return toClipperPath(Poly.create(origin, { type: "light", radius, angle: 360 }), SCALE);
-}
-
-/**
- * Sample origins along the aperture, pushed inward off the wall.
- *
- * @remarks
- * Placed at `(i + 0.5) / count` rather than at `i / (count - 1)`, so none of them lands on the
- * window's own endpoints — which are wall vertices, and a sweep origin sitting on one is the
- * degenerate case `ORIGIN_OFFSET` exists to avoid in the other axis.
- */
-function originsAlong(edge, n, length) {
-  const step = canvas?.dimensions?.size ?? 100;
-  const count = Math.min(MAX_ORIGINS, Math.max(2, Math.round(length / step) + 1));
-  const out = [];
-  for (let i = 0; i < count; i++) {
-    const f = (i + 0.5) / count;
-    const p = {
-      x: edge.a.x + (edge.b.x - edge.a.x) * f,
-      y: edge.a.y + (edge.b.y - edge.a.y) * f,
-    };
-    out.push(offsetPoint(p, n, ORIGIN_OFFSET));
-  }
-  return out;
-}
-
-/**
- * The lit wedge, at the window's **full width** — the cone swept along the aperture.
- *
- * @remarks
- * Analytic rather than swept, and that is the fix for the first thing play-testing found
- * (Patrick, 2026-08-26: *"the cone comes almost to a point, when it should have a starting width
- * of the entire length of the window"*). A `ClockwiseSweepPolygon` emanates from a point, so a
- * single cone is a *point* at the wall however many samples are unioned behind it — adjacent
- * cones only close their scallops some way in, and the window's own width is never expressed.
- *
- * What is wanted is the Minkowski sum of the aperture segment with the cone, and because a
- * circular sector is convex and a segment is convex, that sum is just their convex hull:
- *
- *   `a` → a's outer flank → arc about `a` round to the normal → the straight tangent across to
- *   `b` → arc about `b` out to b's flank → `b` → back along the window.
- *
- * Occlusion is not this function's job; it comes from intersecting with the sampled sweeps.
- *
- * The near edge is pushed `ORIGIN_OFFSET` **outside** the wall so the region clip lands exactly
- * on the wall rather than a rounding error short of it — which is also what retired the separate
- * aperture quad the first build needed.
- */
-function wedgePath(edge, n, radius, angleDeg) {
-  const half = ((angleDeg / 2) * Math.PI) / 180;
-
-  const t = { x: edge.b.x - edge.a.x, y: edge.b.y - edge.a.y };
-  const length = Math.hypot(t.x, t.y) || 1;
-  t.x /= length;
-  t.y /= length;
-
-  // Which rotation sense leans *away* from `b`. `n` is perpendicular to `t`, but whether a
-  // positive rotation turns toward `b` or away from it depends on the edge's own winding, so it
-  // is measured rather than assumed.
-  const probe = rotate(n, half);
-  const sigma = probe.x * t.x + probe.y * t.y < 0 ? 1 : -1;
-
-  const a = offsetPoint(edge.a, n, -ORIGIN_OFFSET);
-  const b = offsetPoint(edge.b, n, -ORIGIN_OFFSET);
-  const points = [a.x, a.y];
-
-  for (let i = 0; i <= ARC_STEPS; i++) {
-    const d = rotate(n, sigma * half * (1 - i / ARC_STEPS));
-    points.push(a.x + d.x * radius, a.y + d.y * radius);
-  }
-  for (let i = 0; i <= ARC_STEPS; i++) {
-    const d = rotate(n, -sigma * half * (i / ARC_STEPS));
-    points.push(b.x + d.x * radius, b.y + d.y * radius);
-  }
-  points.push(b.x, b.y);
-
-  return toClipperPath(new PIXI.Polygon(points), SCALE);
-}
-
-/**
- * How far a band can travel around a corner, and therefore how far a corner sweep must see.
- *
- * @remarks
- * Every band is `white ⊕ k·d` with `k` at most `N`, so the dilation is the distance bound and a
- * corner sweep only has to supply *visibility* out to that same distance. One band's width of
- * slack covers the corner sitting slightly off `white` rather than exactly on its boundary.
- *
- * This is what makes {@link MAX_CORNERS} affordable: these sweeps are a fraction of the
- * aperture's own reach, and a `ClockwiseSweepPolygon` costs by the edges in its bounds.
- */
-const bendRadius = () => toPixels(bandFeet() * 3);
-
-/**
- * Wall corners the spill can bend around.
- *
- * @remarks
- * **The second thing play-testing found** (Patrick, 2026-08-26: *"the dimmer bands aren't
- * offsetting from all sides of the initial cone, it's not counting the sides that exist because
- * they were trimmed by walls"*), and it was a design error rather than a slip. The first build
- * clipped the bands to a visibility sweep taken from **the same origin as the cone** — so every
- * shadow edge of the cone was also an edge of the clip, the dilation could never cross one, and
- * a band could only ever appear past the cone's angular or radial limit. In the direction of a
- * wall-cut edge there was nothing at all, which is exactly what the screenshot showed.
- *
- * Light gets into that shadow by bending round the corner that cast it, so the clip has to admit
- * what those corners can see.
- *
- * ## Two tests, and the second one is the whole trick
- *
- * A corner qualifies if it is **visible from the aperture** — one that no light reaches has
- * nothing to bend — *and* if it is **near the lit wedge**, within one band ladder of it.
- *
- * The second test is what the first pass was missing, and its absence was reported as bands
- * still not reaching (2026-08-26, second screenshot). Ranking candidates by distance from the
- * *window* sounds like relevance and is not: the corners nearest a window are the jambs and the
- * near wall, which cast nothing into the room, while the corner that actually gates a far leg is
- * by definition far away. With `MAX_CORNERS` at 8 the useful corner was culled by a queue full
- * of useless ones.
- *
- * Proximity to the **lit region** is the honest test, because a band cannot reach a corner it is
- * not near — the dilation says so. Taken against the wedge at `maxRadius`, so the answer is the
- * same for every tier and can be cached with the sweeps.
- */
-function cornersFor(visPolygons, origins, relevant) {
-  const found = [];
-
-  for (const edge of canvas.edges.values()) {
-    // Only edges that actually stop light cast a shadow worth bending around — and an aperture
-    // never does, which is the same predicate `isAperture` reads.
-    if (edge.light === CONST.WALL_SENSE_TYPES.NONE) continue;
-
-    for (const p of [edge.a, edge.b]) {
-      let nearest = origins[0];
-      let best = Infinity;
-      for (const o of origins) {
-        const d = (p.x - o.x) ** 2 + (p.y - o.y) ** 2;
-        if (d < best) {
-          best = d;
-          nearest = o;
-        }
-      }
-
-      // **Every test below runs on the nudged point, never on the corner itself** — see the
-      // note on this function. The nudge is also the sweep origin, so there is exactly one
-      // point per corner and no way for the tested point and the swept point to disagree.
-      const probe = probeToward(p, nearest, Math.sqrt(best));
-
-      // Cheapest first: a corner the bands could never reach is most of them.
-      if (!containsPoint(relevant, probe)) continue;
-      if (!containsPoint(visPolygons, probe)) continue;
-
-      found.push({ probe, d: best });
-    }
-  }
-
-  // Nearest-first only decides which survive the cap, and after the relevance filter the cap
-  // rarely bites at all.
-  found.sort((x, y) => x.d - y.d);
-  return found.slice(0, MAX_CORNERS).map(({ probe }) => probe);
-}
-
-/**
- * A corner pulled `ORIGIN_OFFSET` toward the light.
- *
- * @remarks
- * **This is what makes the corner test deterministic, and testing the raw corner instead was the
- * "erratic" bug** (Patrick, 2026-08-27: spill working, then not, after nudging a free-standing
- * wall one square).
- *
- * A corner that casts a shadow is, by construction, a **vertex of `vis`** — the sweep turns at
- * exactly that point. Ray-crossing containment at a polygon's own vertex is the classic
- * degenerate case: it answers by floating-point accident, so whether the corner that gates a
- * room was admitted depended on where the wall happened to sit. Moving it one square re-rolled
- * the dice. It looked like "some edges aren't being looked at", and they were — they were being
- * looked at and getting an arbitrary answer.
- *
- * Nudging first makes the answer exact rather than merely likelier, and the reason is a property
- * of the shape: each sample's sweep is **star-shaped about its own origin**, so the whole segment
- * from an origin to any point of that sweep lies inside it. A corner on the boundary therefore
- * moves strictly *into* `vis`, every time, for any offset up to the full distance. A corner that
- * is genuinely occluded stays outside, because a few pixels do not cross a wall.
- */
-function probeToward(p, origin, distance) {
-  const len = distance || Math.hypot(origin.x - p.x, origin.y - p.y) || 1;
-  const step = Math.min(ORIGIN_OFFSET, len * 0.5);
-  return {
-    x: p.x + ((origin.x - p.x) / len) * step,
-    y: p.y + ((origin.y - p.y) / len) * step,
-  };
-}
-
-/**
- * Minkowski offset by `delta` scene pixels — positive dilates, negative erodes.
- *
- * @remarks
- * `arcTolerance` is in *scaled* units, so Clipper's own default of 0.25 means a quarter of a
- * hundredth of a pixel here and buries the result in vertices. Half a pixel is well under what
- * the blur smooths over.
- *
- * **The vertices of the result are all at exactly `delta` from the input**, which is the single
- * property {@link rampFor} is built on: an offset boundary *is* an iso-line of the distance
- * field, so a vertex on one needs no distance query at all.
- */
-function offsetPaths(paths, delta) {
-  if (!paths.length || !delta) return paths;
-  const co = new ClipperLib.ClipperOffset(2, 0.5 * SCALE);
-  co.AddPaths(paths, ClipperLib.JoinType.jtRound, ClipperLib.EndType.etClosedPolygon);
-  const out = new ClipperLib.Paths();
-  co.Execute(out, delta * SCALE);
-  return out;
-}
-
-/** Dilation only — the sense every existing call site uses. */
-function dilate(paths, delta) {
-  return delta > 0 ? offsetPaths(paths, delta) : paths;
-}
-
-/* -------------------------------------------- */
-/*  The render ramp — §7.0 step 5               */
-/* -------------------------------------------- */
-
-/**
- * Per-vertex distances for one Clipper ring, from the iso-line lookup.
- *
- * @remarks
- * A ring is `(white ⊕ t) ∩ domain` minus the previous one, so its vertices come from three
- * places. Two are exact: a vertex of the outer offset is at `t`, a vertex of the inner offset is
- * at `t − δ`, and both are in `lookup` by their **integer** Clipper coordinate — Clipper works in
- * integers, so the match is exact rather than approximate.
- *
- * The third is a vertex of the *domain* — a wall corner, or a crossing where the domain boundary
- * cuts across the band. Its distance is unknown, but it is known to lie between the two iso-lines
- * the band is bounded by, so the error is at most one ring width whatever we do. Interpolating by
- * arc length between the nearest known vertices either way around the loop makes it exact at both
- * ends of a wall-cut edge and monotone along it, which is what stops a wall reading as a level
- * change of its own.
- *
- * @param {{X: number, Y: number}[]} path
- * @param {Map<string, number>} lookup - Integer `"X,Y"` → distance
- * @param {number} fallback - Used when a ring has no known vertex at all
- * @returns {Float64Array}
- */
-function ringDistances(path, lookup, fallback) {
-  const n = path.length;
-  const out = new Float64Array(n);
-  const known = new Uint8Array(n);
-  let hits = 0;
-
-  for (let i = 0; i < n; i++) {
-    const value = lookup.get(`${path[i].X},${path[i].Y}`);
-    if (value !== undefined) {
-      out[i] = value;
-      known[i] = 1;
-      hits++;
-    }
-  }
-  if (hits === n) return out;
-  if (!hits) {
-    out.fill(fallback);
-    return out;
-  }
-
-  // Cumulative chord length, so the interpolation is by distance along the ring rather than by
-  // vertex count — an offset arc is finely sampled and a straight wall is two points, and
-  // counting vertices would weight them the same.
-  const len = new Float64Array(n + 1);
-  for (let i = 0; i < n; i++) {
-    const a = path[i];
-    const b = path[(i + 1) % n];
-    len[i + 1] = len[i] + Math.hypot(b.X - a.X, b.Y - a.Y);
-  }
-  const total = len[n] || 1;
-
-  // Nearest known vertex each way, cyclically. Two passes each, so the wrap-around is covered
-  // without the quadratic scan the obvious version does.
-  const prev = new Int32Array(n);
-  const next = new Int32Array(n);
-  let last = -1;
-  for (let pass = 0; pass < 2; pass++) {
-    for (let i = 0; i < n; i++) {
-      if (known[i]) last = i;
-      prev[i] = last;
-    }
-  }
-  let ahead = -1;
-  for (let pass = 0; pass < 2; pass++) {
-    for (let i = n - 1; i >= 0; i--) {
-      if (known[i]) ahead = i;
-      next[i] = ahead;
-    }
-  }
-
-  const arc = (from, to) => (len[to] - len[from] + total) % total;
-
-  for (let i = 0; i < n; i++) {
-    if (known[i]) continue;
-    const p = prev[i];
-    const q = next[i];
-    if (p < 0 || q < 0) {
-      out[i] = fallback;
-      continue;
-    }
-    const before = arc(p, i);
-    const after = arc(i, q);
-    const t = before + after > 0 ? before / (before + after) : 0.5;
-    out[i] = out[p] + (out[q] - out[p]) * t;
-  }
-  return out;
-}
-
-/**
- * Triangulate one `{outer, holes}` group, appending to the payload buffers.
- *
- * @remarks
- * `PIXI.utils.earcut(points, holeIndices, 2)` natively, exactly as `darkness-texture.setGeometry`
- * does — the distances are concatenated in lockstep with the points so a vertex index means the
- * same thing in both arrays.
- */
-function appendGroup(group, out) {
-  const points = [];
-  const dists = [];
-  const holeIndices = [];
-
-  const push = (ring, isHole) => {
-    if (!(ring?.path?.length >= 3)) return;
-    if (isHole) holeIndices.push(points.length / 2);
-    for (let i = 0; i < ring.path.length; i++) {
-      points.push(ring.path[i].X / SCALE, ring.path[i].Y / SCALE);
-      dists.push(ring.dist[i]);
-    }
-  };
-
-  push(group.outer, false);
-  for (const hole of group.holes) push(hole, true);
-  if (points.length < 6) return;
-
-  const indices = PIXI.utils.earcut(points, holeIndices.length ? holeIndices : null, 2);
-  if (!indices.length) return;
-
-  const base = out.vertices.length / 2;
-  for (const value of points) out.vertices.push(value);
-  for (const value of dists) out.dists.push(value);
-  for (const index of indices) out.indices.push(base + index);
-}
-
-/**
- * Split a Clipper solution into `{outer, holes}` groups, keeping each ring's distances with it.
- *
- * @remarks
- * A near-twin of `geometry.groupRings`, and separate for one reason: that one takes and returns
- * `PIXI.Polygon`s, and everything here has to stay on the **integer** Clipper path so the iso-line
- * lookup can match a coordinate exactly. Converting to floats and back would round.
- */
-function groupWithDistances(paths, lookup, fallback) {
-  const rings = [];
-  for (const path of paths) {
-    if (!path || path.length < 3) continue;
-    // Shoelace on the integer path; the sign is the winding and that is all it is read for.
-    let sum = 0;
-    for (let i = 0; i < path.length; i++) {
-      const a = path[i];
-      const b = path[(i + 1) % path.length];
-      sum += a.X * b.Y - b.X * a.Y;
-    }
-    rings.push({ path, dist: ringDistances(path, lookup, fallback), area: sum });
-  }
-  if (!rings.length) return [];
-
-  // Which winding means "outer" is read off the largest ring rather than assumed, for the reason
-  // `geometry.splitRings` gives: the sign depends on the coordinate convention.
-  let outerSign = 0;
-  let largest = 0;
-  for (const ring of rings) {
-    if (Math.abs(ring.area) > largest) {
-      largest = Math.abs(ring.area);
-      outerSign = Math.sign(ring.area);
-    }
-  }
-
-  const outers = rings.filter((ring) => Math.sign(ring.area) === outerSign);
-  const holes = rings.filter((ring) => Math.sign(ring.area) !== outerSign);
-  if (outers.length === 1) return [{ outer: outers[0], holes }];
-
-  const inside = (ring, point) => {
-    let hit = false;
-    const p = ring.path;
-    for (let i = 0, j = p.length - 1; i < p.length; j = i++) {
-      if (p[i].Y > point.Y !== p[j].Y > point.Y) {
-        const x = ((p[j].X - p[i].X) * (point.Y - p[i].Y)) / (p[j].Y - p[i].Y) + p[i].X;
-        if (point.X < x) hit = !hit;
-      }
-    }
-    return hit;
-  };
-
-  return outers.map((outer) => ({
-    outer,
-    holes: holes.filter((hole) => inside(outer, hole.path[0])),
-  }));
-}
-
-/**
- * One window's falloff as a single triangulated mesh carrying a distance per vertex.
- *
- * @remarks
- * **Geometry and distance only — no levels.** The mapping from distance to a darkness level is a
- * *rendering* decision (which tier table is in force, how much of a band is plateau and how much
- * is ramp), and putting it here would mean rebuilding the whole scene's spill geometry every time
- * a slider moved. `render/gradient.mjs` owns it and re-maps the buffer in a loop instead.
- *
- * The ring set runs from half a band **inside** `white` out to the model's own outer limit, so the
- * mesh covers every band exactly and the transition centred on `white`'s own boundary has geometry
- * on both sides of it. Rings inside `white` are erosions — the same `ClipperOffset` call with a
- * negative delta — and the innermost piece is a flat core, which is correct: the wedge is one
- * brightness until the first transition begins.
- *
- * @returns {object|null} The ramp payload, or `null` if nothing triangulated
- */
-function rampFor({ id, white, domain, band, spillTier, steps }) {
-  const delta = band / RAMP_STEPS;
-  if (!(delta > 0)) return null;
-
-  const inner = Math.ceil(RAMP_STEPS / 2);
-  const lookup = new Map();
-  const shells = [];
-
-  for (let m = -inner; m <= steps * RAMP_STEPS; m++) {
-    const t = m * delta;
-    const shell = m === 0 ? white : offsetPaths(white, t);
-    if (!shell.length) continue;
-
-    // Every vertex of an offset boundary is at exactly `t` — the property the whole scheme rests
-    // on. Recorded **before** the domain clip, because that clip is what introduces the vertices
-    // this cannot answer for.
-    for (const path of shell) {
-      for (const point of path) lookup.set(`${point.X},${point.Y}`, t);
-    }
-
-    // Only a dilation can leave the domain: `white` is already inside it, and an erosion of
-    // `white` is inside `white`.
-    shells.push({ t, paths: t > 0 ? intersection(shell, domain) : shell });
-  }
-  if (!shells.length) return null;
-
-  const out = { vertices: [], dists: [], indices: [] };
-  let previous = null;
-  let outermost = null;
-
-  for (const { t, paths } of shells) {
-    if (!paths.length) continue;
-    const ring = previous ? difference(paths, previous) : paths;
-    previous = paths;
-    outermost = paths;
-    if (!ring.length) continue;
-    // A ring with no known vertex at all can only be a sliver the domain clipped out of the middle
-    // of the band; its own midpoint is the best available answer and is at most δ/2 out.
-    for (const group of groupWithDistances(ring, lookup, t - delta / 2)) appendGroup(group, out);
-  }
-
-  if (out.indices.length < 3) return null;
-
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (let i = 0; i < out.vertices.length; i += 2) {
-    const x = out.vertices[i];
-    const y = out.vertices[i + 1];
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-
-  return {
-    id,
-    spillTier,
-    steps,
-    band,
-    // **The mesh's silhouette, kept for point queries and nothing else.** A triangle soup cannot
-    // answer `canvas.effects.getDarknessLevel`'s containment test cheaply, and the outermost shell
-    // is exactly the union of every triangle by construction.
-    outline: fromClipperPaths(outermost ?? [], SCALE),
-    vertices: new Float32Array(out.vertices),
-    dists: new Float32Array(out.dists),
-    // Uint32 unconditionally: v13 requires WebGL2, where 32-bit indices are core.
-    indices: new Uint32Array(out.indices),
-    bounds: new PIXI.Rectangle(minX, minY, maxX - minX, maxY - minY),
-    triangles: out.indices.length / 3,
-  };
-}
-
-/**
- * Everything about a window that depends only on walls: the sample origins, what they can see,
- * and what the spill may bend around.
- *
- * @remarks
- * Cached against {@link geometryEpoch}. This is the expensive half — up to
- * `MAX_ORIGINS + MAX_CORNERS` sweeps — and none of it moves when only the *tier* changes, which
- * is what lets a darkness drifting past a window cost a handful of boolean ops rather than a
- * re-sweep of the scene.
- *
- * Swept at the widest radius any tier could ask for, taken as a **max over all three caps**
- * rather than from Bright. They are free-form numbers in a settings window: nothing stops a GM
- * giving Normal a longer reach than Bright, and reading Bright alone would silently clip
- * Normal's spill to a radius it never asked for. A narrower tier needs no re-sweep, because the
- * wedge and the dilation are what bound reach — the sweep only ever supplies occlusion.
- */
-function sweepsFor(edge, n, length, epoch) {
-  const cached = sweepCache.get(edge.id);
-  if (cached && cached.epoch === epoch) return cached;
-
-  const maxRadius = toPixels(
-    Math.max(...Object.keys(SETTING_RADIUS).map((tier) => radiusFeet(tier))) + 2 * bandFeet()
-  );
-
-  const origins = originsAlong(edge, n, length);
-
-  // Union of the samples: a wide window sees round a corner that any one point on it does not.
-  const vis = union(origins.map((o) => sweepPath(o, maxRadius)));
-  const visPolygons = fromClipperPaths(vis, SCALE);
-
-  // The widest this aperture's lit region could ever be, plus the furthest a band can travel out
-  // of it. Everything a corner could matter to is inside this, and it does not depend on the
-  // tier — which is what keeps the corner set cacheable alongside the sweeps.
-  const litMax = intersection([wedgePath(edge, n, maxRadius, coneAngle())], vis);
-  const relevant = fromClipperPaths(dilate(litMax, bendRadius()), SCALE);
-
-  const corners = cornersFor(visPolygons, origins, relevant);
-  const bend = corners.length
-    ? union([...vis, ...corners.map((c) => sweepPath(c, bendRadius()))])
-    : vis;
-
-  const entry = { epoch, maxRadius, origins, vis, bend, corners: corners.length };
-  sweepCache.set(edge.id, entry);
-  return entry;
-}
 
 /* -------------------------------------------- */
 /*  One window                                  */
 /* -------------------------------------------- */
 
 /**
- * Resolve one candidate edge into its bands, or `null` if it is not a window.
+ * Everything about a candidate edge that does **not** depend on how the falloff is drawn: is it a
+ * window, which way is inward, what tier spills through it, and what room it spills into.
  *
- * @returns {{bands: {tier: number, paths: object[][]}[], ramp: object|null}|null}
+ * @remarks
+ * **Split out of `bandsFor` on 2026-08-27, and the split line is the point.** §3.4.1 replaces the
+ * *geometry* — the wedge, the sweeps, the corner bending, the Minkowski ladder — with a geodesic
+ * distance field. None of that touches eligibility or the tier, which are the parts play-testing has
+ * not faulted. Keeping them in one exported function means the new construction and the old one
+ * cannot disagree about which walls are windows or how bright a window is, and the probe that judges
+ * the new geometry judges it against the real answer rather than a copy of it.
+ *
+ * @param {Edge} edge
+ * @param {number} sceneTier
+ * @returns {object|null} `null` where the edge is not a window, or has nothing to spill
  */
-function bandsFor(edge, sceneTier, epoch) {
+export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
+  if (!isAperture(edge)) return null;
   const f = frame(edge);
   if (!f) return null;
 
@@ -883,7 +326,26 @@ function bandsFor(edge, sceneTier, epoch) {
   // Same ambient on both sides: an interior wall, or a window in open air. Either way there is
   // nothing to spill, and this is also what turns the whole feature off at nightfall — once the
   // sky is darker than the room, no window on the scene qualifies.
-  if (tierPlus === tierMinus) return null;
+  if (tierPlus === tierMinus) return reject("sameAmbient");
+
+  // **The ambients must be separated by *this* edge, not merely differ across it** (Patrick,
+  // 2026-08-28: *"exterior walls of an interior space that intersect with a wall outside cause light
+  // to leak in… just moving those outer walls away from the room cleared the brightness bug"*).
+  //
+  // §3.4 chose the ambient differential over a border test on purpose, and gave the reason:
+  // collinearity between a drawn region outline and a drawn wall is a tolerance exercise with no
+  // right answer. That reasoning still holds. What it missed is that the differential says nothing
+  // about *what* separates the two samples — so any light-passing wall standing within half a grid
+  // square of a region's boundary reads as a window into it, however far outside the room it is and
+  // however solid the real wall between them. A fence, a cliff edge or a bit of scenery parked
+  // against a building therefore poured daylight through it, and dragging the same wall a few feet
+  // away turned it off again.
+  //
+  // The honest test is neither the border nor the differential alone: **can light actually get from
+  // one sample to the other?** The aperture's own edge cannot answer *no* — it passes light by
+  // definition, so the sweep drops it before it can occlude — which makes this exact rather than
+  // approximate. A real window sees nothing between its probes; a wall behind a wall sees the wall.
+  if (blockedBetween(plus, minus)) return reject("occluded");
 
   // Inward points at the darker side; the brighter side is where the light comes from.
   const inwardSign = tierPlus < tierMinus ? 1 : -1;
@@ -893,77 +355,187 @@ function bandsFor(edge, sceneTier, epoch) {
   const interiorTier = Math.min(tierPlus, tierMinus);
 
   const spillTier = spillTierAt(outside);
-  if (spillTier === null) return null;
+  if (spillTier === null) return reject("noAmbientEmitter");
 
   // §3.4's guard, and the same comparison as eligibility. A Bright scene clamped to Dim indoors
   // with a *deeper darkness* over the window gives Dim against Dim: nothing to do, correctly.
-  if (spillTier <= interiorTier) return null;
+  if (spillTier <= interiorTier) return reject("notBrighterOutside");
 
   // Bands run from the spill tier down to whichever is higher: one rung above the room, or Dim.
   // Dim is not a preference — `globalLightCutoff` is the Dim threshold and `darknessFor` erases
   // below it, so there is no rung underneath for global illumination to reach.
   const floor = Math.max(interiorTier + 1, TIER.DIM);
-  if (spillTier < floor) return null;
-  const count = spillTier - floor + 1;
-
-  const radius = toPixels(radiusFeet(spillTier));
-  if (!(radius > 0)) return null;
-  const band = toPixels(bandFeet());
-  const steps = count - 1;
+  if (spillTier < floor) return reject("belowDim");
 
   // The regions that make this room an interior. Clipping to them is what stops the spill
   // leaking back out of its own window, and it is the only non-wall trim in the construction.
-  const enclosing = areas
-    .areas()
-    .filter((area) => !area.derived && areas.covers(area, inside));
-  if (!enclosing.length) return null;
+  const enclosing = areas.areas().filter((area) => !area.derived && areas.covers(area, inside));
+  if (!enclosing.length) return reject("noEnclosingRegion");
   const regionPaths = union(enclosing.flatMap((area) => areas.pathsFor(area, SCALE)));
-  if (!regionPaths.length) return null;
+  if (!regionPaths.length) return reject("emptyRegion");
 
-  const sweeps = sweepsFor(edge, n, f.length, epoch);
+  // Sorted, so two windows in one room hash to the same key however `areas()` happened to order
+  // them — the grouping in `roomsOf` is only as reliable as this is stable.
+  const regionIds = enclosing.map((area) => area.id ?? area.region?.id ?? "?").sort();
 
-  // The lit wedge: full window width at the wall, occluded by what the aperture can see. No
-  // radius clip — `wedgePath` is already bounded by `radius`.
-  const white = intersection(
-    intersection([wedgePath(edge, n, radius, coneAngle())], sweeps.vis),
-    regionPaths
-  );
-  if (!white.length) return null;
+  return {
+    edge,
+    frame: f,
+    normal: n,
+    inside,
+    outside,
+    interiorTier,
+    spillTier,
+    floor,
+    regionIds,
+    regionPaths,
+    regionPolygons: fromClipperPaths(regionPaths, SCALE),
+  };
+}
 
-  // **Bands get the wider domain, the wedge does not.** `vis` is what the window itself can see,
-  // so clipping the bands to it would confine them to the wedge's own shadow edges — the bug the
-  // first build had. `bend` adds what the corners casting those shadows can see, which is how
-  // light gets into the shadow at all.
-  const domain = intersection(sweeps.bend, regionPaths);
+/* -------------------------------------------- */
+/*  One room                                    */
+/* -------------------------------------------- */
 
-  const out = [{ tier: spillTier, paths: white }];
-  let previous = white;
+/**
+ * Band width per tier, in feet.
+ *
+ * @remarks
+ * **The three stored numbers, read as widths rather than as radii** (Patrick, 2026-08-27: *"rather
+ * than a straight band width, the value of each brightness can tell you how large the band of that
+ * brightness is"*). 40 now means *bright light carries forty feet before it reads as normal*, and
+ * the total reach is whatever the ladder sums to — 70 ft from Bright, 30 from Normal, 10 from Dim.
+ *
+ * The old scheme said two things at once, a per-tier cone radius *and* a separate uniform band
+ * width, which double-counted the falloff and disagreed about which was the distance limit. This is
+ * one statement, and it is why `spillBandWidth` no longer exists.
+ */
+function widthsFeet() {
+  const table = {};
+  for (const tier of geodesic.SPILL_TIERS) table[tier] = radiusFeet(tier);
+  return table;
+}
 
-  for (let k = 1; k <= steps; k++) {
-    // Dilating `white` by `k · d` rather than the previous band by `d`, so rounding does not
-    // compound across the ladder and each band is exactly the offset §3.4 specifies. The
-    // dilation is also the only distance bound the bands have — every clip above is visibility.
-    const grown = intersection(dilate(white, k * band), domain);
-    if (!grown.length) break;
-    const ring = difference(grown, previous);
-    if (ring.length) out.push({ tier: stepTier(spillTier, -k), paths: ring });
-    previous = grown;
+/**
+ * Group this scene's windows by the room they spill into.
+ *
+ * @remarks
+ * **One march per room, not per window** (Patrick, 2026-08-27: *"one march per room sounds like the
+ * smart choice"*), and the reason is correctness before cost. Two windows lighting one room from
+ * separate fills land on separately-snapped grids, so their contours can disagree by a fraction of a
+ * cell along a shared boundary — and thin disagreeing polygons folding together is precisely the
+ * sliver failure §3.4.1 exists to end. One field per room has one set of contours and nothing to
+ * disagree with.
+ *
+ * It is also provably the same answer rather than an approximation. Tier is monotone decreasing in
+ * distance, so `max over windows of tier(dᵥᵥ)` is `tier(min over windows of dᵥᵥ)` — and the minimum
+ * over seeds is exactly what a multi-source march computes. The `AT_LEAST` fold that used to combine
+ * separate windows is doing the same arithmetic one level down.
+ *
+ * Keyed on the **region set**, because that is what `apertureInfo` resolved as the room and what
+ * bounds the fill. Two rooms sharing no region never share a march.
+ */
+function roomsOf(sceneTier) {
+  const rooms = new Map();
+  let candidates = 0;
+
+  for (const edge of canvas.edges.values()) {
+    if (!isAperture(edge)) continue;
+    candidates++;
+
+    const info = apertureInfo(edge, sceneTier);
+    if (!info) continue;
+
+    // The enclosing region set, order-independent, so two windows in one room always hash alike.
+    const key = info.regionIds.join("|");
+    let room = rooms.get(key);
+    if (!room) {
+      room = { key, apertures: [], regionPolygons: info.regionPolygons, floor: info.floor };
+      rooms.set(key, room);
+    }
+    room.apertures.push(info);
+    // A room is only as bright as its darkest reading allows the ladder to run — see §3.4's floor.
+    if (info.floor > room.floor) room.floor = info.floor;
   }
 
-  // The same wedge again at quarter-band resolution, for the renderer alone (§7.0 step 5). The
-  // bands above are the **model**; this is the picture, and it is built here because this is where
-  // `white` and `domain` exist. A window whose ramp fails to triangulate still gets its bands —
-  // `render/gradient.mjs` falls back to painting them flat.
-  const ramp = rampFor({
-    id: `${MODULE_ID}.spill.${edge.id}`,
-    white,
-    domain,
-    band,
-    spillTier,
-    steps,
-  });
+  return { rooms: [...rooms.values()], candidates };
+}
 
-  return { bands: out, ramp };
+/**
+ * One room's spill, as nested ambient areas.
+ *
+ * @remarks
+ * ## Windows at different tiers share the march, via a head start
+ *
+ * A room can have a bright window and one under a *darkness*. Rather than a march each, the dimmer
+ * window seeds at a **cost offset**: the cumulative width of every rung between the room's brightest
+ * spill tier and its own. A Normal window in a room whose ladder starts at Bright seeds at 40 — the
+ * width of the Bright rung — so the ladder reads Normal at its mouth, exactly as a march of its own
+ * would have. That works only because the ladder is cumulative, which is the second thing per-tier
+ * widths bought.
+ *
+ * ## The contours are nested, and nothing is differenced
+ *
+ * Each tier's area is the **whole** disc inside its threshold, not the annulus. `AT_LEAST` folds by
+ * `max`, so nesting produces the bands for free (`geodesic.contour`). Differencing them would
+ * compute the same answer through Clipper, which is where the slivers came from.
+ *
+ * @returns {{areas: object[], fill: object|null}}
+ */
+function spillFor(room) {
+  const table = widthsFeet();
+  const brightest = room.apertures.reduce((max, a) => Math.max(max, a.spillTier), TIER.DARK);
+  const steps = geodesic.ladder(brightest, room.floor, table);
+  if (!steps.length) return { areas: [], fill: null };
+
+  const feetToPixels = canvas?.dimensions?.distancePixels ?? 1;
+
+  // Cumulative width above a tier, in feet — the head start a dimmer window seeds at.
+  const offsetFor = (tier) => {
+    let sum = 0;
+    for (const step of steps) {
+      if (step.tier === tier) return sum;
+      sum = step.until;
+    }
+    return sum;
+  };
+
+  const seedGroups = room.apertures.map((info) => ({
+    a: info.edge.a,
+    b: info.edge.b,
+    normal: info.normal,
+    offset: offsetFor(info.spillTier) * feetToPixels,
+  }));
+
+  const fill = geodesic.fillRoom({
+    seedGroups,
+    steps,
+    region: room.regionPolygons,
+  });
+  if (!fill?.dist) return { areas: [], fill };
+
+  const out = [];
+  for (const step of steps) {
+    const rings = geodesic.contour(fill.grid, fill.dist, step.until * feetToPixels);
+    if (!rings.length) continue;
+
+    // Through `union` rather than used raw: marching squares emits outers and holes wound against
+    // each other, and Clipper's NonZero union is what normalises that into the winding
+    // `areas.pathsFor` hands to `field.mjs` — which reads derived paths without normalising them.
+    const paths = union(rings.map((ring) => toClipperPath(new PIXI.Polygon(ring.flatMap((p) => [p.x, p.y])), SCALE)));
+    if (!paths.length) continue;
+
+    out.push({
+      id: `${MODULE_ID}.spill.${room.key}.${step.tier}`,
+      derived: true,
+      mode: areas.MODE.AT_LEAST,
+      tier: step.tier,
+      paths,
+      polygons: fromClipperPaths(paths, SCALE),
+    });
+  }
+
+  return { areas: out, fill };
 }
 
 /* -------------------------------------------- */
@@ -971,7 +543,7 @@ function bandsFor(edge, sceneTier, epoch) {
 /* -------------------------------------------- */
 
 /**
- * Mark the bands stale. `geometry` also drops the cached sweeps.
+ * Mark the bands stale. `geometry` also bumps {@link geometryEpoch}.
  *
  * @remarks
  * **Deliberately does not clear {@link cache}.** The last good bands stay on screen until new
@@ -983,7 +555,6 @@ function bandsFor(edge, sceneTier, epoch) {
 export function invalidate({ geometry = false } = {}) {
   if (geometry) {
     geometryEpoch++;
-    sweepCache.clear();
   }
   dirty = true;
 }
@@ -999,17 +570,13 @@ export function invalidate({ geometry = false } = {}) {
 export function rebuild() {
   const t0 = performance.now();
   const next = [];
-  const nextRamps = [];
   let candidates = 0;
   let windows = 0;
-  // Origins plus bending corners, summed over the windows that produced bands. The number to
-  // watch if a wall edit feels slow: each one is a `ClockwiseSweepPolygon`, and the geometry
-  // epoch drops the whole cache on every wall change.
-  let sweeps = 0;
+  let marched = 0;
+  let cells = 0;
 
   const publish = (stats) => {
     cache = next;
-    rampCache = nextRamps;
     dirty = false;
     generation++;
     areas.invalidate();
@@ -1017,60 +584,101 @@ export function rebuild() {
   };
 
   if (!isEnabled() || !canvas?.ready || !canvas.edges) {
-    return publish({ enabled: isEnabled(), candidates: 0, windows: 0, bands: 0, rings: 0, ms: 0 });
+    return publish({ enabled: isEnabled(), candidates: 0, windows: 0, rooms: 0, bands: 0, ms: 0 });
   }
 
   // No point: `ambientTier` returns the scene's own tier untouched, which is the base every
   // room-versus-outside comparison below is folded from.
   const sceneTier = sceneAmbientTier();
-  const epoch = geometryEpoch;
 
   // Nothing this depends on has moved. `initializeLightSources` fires for reasons that have
   // nothing to do with spill — a light re-initialising in place, a canvas refresh — and the
   // whole ladder is cheap only relative to how often that is. Same idea as `field.get()`
   // returning the same object when its signature is unchanged.
-  const signature = `${epoch}:${registryVersion()}:${sceneTier}`;
+  const signature = `${geometryEpoch}:${registryVersion()}:${sceneTier}`;
   if (signature === lastSignature && cache.length) {
     dirty = false;
     return lastStats;
   }
   lastSignature = signature;
 
-  for (const edge of canvas.edges.values()) {
-    if (!isAperture(edge)) continue;
-    candidates++;
+  rejects = {};
+  const found = roomsOf(sceneTier);
+  candidates = found.candidates;
 
-    const result = bandsFor(edge, sceneTier, epoch);
-    if (!result?.bands?.length) continue;
-    windows++;
-    sweeps += (sweepCache.get(edge.id)?.origins?.length ?? 0) + (sweepCache.get(edge.id)?.corners ?? 0);
-    if (result.ramp) nextRamps.push(result.ramp);
-
-    for (const { tier, paths } of result.bands) {
-      next.push({
-        id: `${MODULE_ID}.spill.${edge.id}.${tier}`,
-        derived: true,
-        mode: areas.MODE.AT_LEAST,
-        tier,
-        paths,
-        polygons: fromClipperPaths(paths, SCALE),
-      });
-    }
+  for (const room of found.rooms) {
+    const { areas: produced, fill } = spillFor(room);
+    if (!produced.length) continue;
+    windows += room.apertures.length;
+    marched++;
+    cells += fill?.visited ?? 0;
+    next.push(...produced);
   }
 
   return publish({
     enabled: true,
     candidates,
     windows,
-    sweeps,
+    // One march covers every window of a room, so `rooms` below `windows` is the ordinary state
+    // and is the whole point of §3.4.1's grouping — not a sign anything was skipped.
+    rooms: marched,
+    cells,
+    // Why candidates were turned away. §6.4.2s lesson: a correct no-op and a broken mechanism
+    // look identical on screen, so every `return null` in `apertureInfo` is counted instead.
+    rejected: { ...rejects },
     bands: next.length,
     rings: next.reduce((n, area) => n + area.paths.length, 0),
-    // §7.0 step 5. One gradient mesh per window, against `bands` flat meshes without it — and
-    // `ramps` below `windows` means some window failed to triangulate and is being painted flat.
-    ramps: nextRamps.length,
-    rampTriangles: nextRamps.reduce((n, ramp) => n + ramp.triangles, 0),
+    vertices: next.reduce((n, area) => n + area.paths.reduce((m, p) => m + p.length, 0), 0),
     ms: Math.round((performance.now() - t0) * 100) / 100,
   });
+}
+
+/* -------------------------------------------- */
+/*  The darkness animation                      */
+/* -------------------------------------------- */
+
+/** @type {(() => void)|null} Detach for the current canvas's darkness listener. */
+let detachDarkness = null;
+
+/**
+ * Rebuild when an animated darkness change actually crosses a tier.
+ *
+ * @remarks
+ * See the note in {@link registerHooks} for why `updateScene` alone leaves the bands stale.
+ *
+ * **Compared on the tier, not the level.** The event fires on every frame of a ten-second
+ * animation; the tier changes at most three times across the whole sweep. Comparing levels would
+ * schedule ~600 rebuilds, and `schedule` requests a vision refresh, so the cure would be worse than
+ * the disease.
+ *
+ * Attached per canvas, because `canvas.environment` is rebuilt with the scene — hence the explicit
+ * detach rather than relying on the listener dying with the object.
+ */
+function watchDarkness() {
+  unwatchDarkness();
+  const environment = canvas?.environment;
+  if (typeof environment?.addEventListener !== "function") return;
+
+  const onDarknessChange = (event) => {
+    const data = event?.environmentData;
+    if (!data) return;
+    if (tierFromDarkness(data.darknessLevel) === tierFromDarkness(data.priorDarknessLevel)) return;
+    schedule();
+  };
+
+  environment.addEventListener("darknessChange", onDarknessChange);
+  detachDarkness = () => {
+    try {
+      environment.removeEventListener("darknessChange", onDarknessChange);
+    } catch {
+      // The canvas went away underneath us; the listener went with it.
+    }
+    detachDarkness = null;
+  };
+}
+
+function unwatchDarkness() {
+  detachDarkness?.();
 }
 
 /**
@@ -1080,9 +688,19 @@ export function rebuild() {
  * **The walls-layer suppression is deliberately not here** (Patrick, 2026-08-26: *"let's disable
  * the rebuild suppress when editing walls — I want to see what kind of latency this actually
  * creates"*). Wall editing is the worst case by construction: every change bumps the geometry
- * epoch, which drops the sweep cache, so each edit re-sweeps every window on the scene. If it
- * turns out to need a brake, the brake is one `if` and the hook to lift it is already written
- * (`deactivateWallsLayer`) — measuring first is the cheaper order.
+ * epoch and re-marches every room on the scene. If it turns out to need a brake, the brake is one
+ * `if` and the hook to lift it is already written (`deactivateWallsLayer`).
+ *
+ * **The perception update is conditional on the rebuild having changed something**, as of
+ * 2026-08-28. `rebuild` already declines to do work when its signature is unmoved — that guard is
+ * what makes `initializeLightSources` affordable, since it fires for reasons with nothing to do
+ * with spill — but the refresh below used to run regardless, so every one of those no-ops still
+ * cost a lighting *and* vision refresh of the whole canvas.
+ *
+ * That was tolerable while the callers were document hooks. It stops being tolerable with a
+ * per-frame signal in the mix ({@link watchDarkness}), and a guard that depends on every caller
+ * filtering perfectly is the wrong shape. `generation` moving is the honest test of *did anything
+ * change*, because `rebuild` bumps it exactly when it publishes.
  */
 export function schedule({ geometry = false } = {}) {
   invalidate({ geometry });
@@ -1091,8 +709,11 @@ export function schedule({ geometry = false } = {}) {
   requestAnimationFrame(() => {
     scheduled = false;
     if (!dirty) return;
+    const before = generation;
     rebuild();
-    if (canvas?.ready) canvas.perception.update({ refreshLighting: true, refreshVision: true });
+    if (generation !== before && canvas?.ready) {
+      canvas.perception.update({ refreshLighting: true, refreshVision: true });
+    }
   });
 }
 
@@ -1125,19 +746,21 @@ export function registerSettings() {
     onChange: () => schedule({ geometry: true }),
   });
 
-  numeric(SETTING_ANGLE, "Spill cone angle", "How wide the brightest wedge reads, in degrees.", 105, {
-    min: 30,
-    max: 180,
-    step: 5,
-  });
-  numeric(SETTING_RADIUS[TIER.BRIGHT], "Max spill radius — Bright", "Feet.", 40, { min: 0, max: 200, step: 5 });
-  numeric(SETTING_RADIUS[TIER.NORMAL], "Max spill radius — Normal", "Feet.", 20, { min: 0, max: 200, step: 5 });
-  numeric(SETTING_RADIUS[TIER.DIM], "Max spill radius — Dim", "Feet.", 10, { min: 0, max: 200, step: 5 });
-  numeric(SETTING_BAND, "Band width", "Feet per tier step as the spill falls off.", 10, {
-    min: 5,
-    max: 60,
-    step: 5,
-  });
+  // **Three numbers, and they are the whole falloff since §3.4.1.** *Spill cone angle* and *Band
+  // width* were registered here and are gone (Patrick, 2026-08-28: *"Am I correct assuming band
+  // width is an outdated knob?"* — correct, and the angle with it). The angle described the wedge
+  // the old construction clipped against, and there is no wedge; band width described a uniform
+  // step, and each tier now carries its own. Neither had a consumer left, and a live setting that
+  // moves nothing is worse than no setting.
+  const band = (tier, label, dflt) =>
+    numeric(SETTING_RADIUS[tier], `Spill band width — ${label}`, "Feet.", dflt, {
+      min: 0,
+      max: 200,
+      step: 5,
+    });
+  band(TIER.BRIGHT, "Bright", 40);
+  band(TIER.NORMAL, "Normal", 20);
+  band(TIER.DIM, "Dim", 10);
 }
 
 /**
@@ -1167,8 +790,30 @@ export function registerHooks() {
     if ("environment" in changed || "darkness" in changed || "grid" in changed) tiers();
   });
 
+  // **`updateScene` is not enough on its own, and this was the sticky-brightness bug** (Patrick,
+  // 2026-08-28: *"some areas are getting sticky brightness readings — when the scene brightness is
+  // turned down from bright, they remain bright until the scene is set to dark"*).
+  //
+  // Scene darkness is **animated**: `Scene##onUpdate` hands a `darknessLevel` change to
+  // `canvas.effects.animateDarkness`, which slides `canvas.environment.darknessLevel` over ten
+  // seconds by default (`CONFIG.Canvas.darknessToDaylightAnimationMS`). `updateScene` fires once,
+  // at the *start*. {@link schedule} then rebuilds on the next animation frame — when the level has
+  // barely moved — so `sceneTier` still reads the old tier, the signature matches, `lastSignature`
+  // is stamped with it, and **nothing fires again when the animation lands**. The bands stay at the
+  // tier they were built for, indefinitely.
+  //
+  // It cleared at Dark because that crosses `globalLightCutoff` and switches the scene's global
+  // light source off, which fires `initializeLightSources` and moves a *different* term of the
+  // signature. Nothing to do with darkness as such, which is why the failure looked arbitrary.
+  //
+  // The real signal is a **PIXI event on `canvas.environment`, not a Foundry hook** — dispatched on
+  // every step of the animation with `{darknessLevel, priorDarknessLevel}`. Filtered on the *tier*
+  // rather than the level, because it fires per frame for ten seconds and a rebuild per frame would
+  // be far worse than the bug.
+  Hooks.on("canvasReady", watchDarkness);
+
   Hooks.on("canvasTearDown", () => {
-    sweepCache.clear();
+    unwatchDarkness();
     cache = [];
     lastSignature = null;
     dirty = true;
@@ -1204,9 +849,8 @@ export function stats() {
     registryVersion: registryVersion(),
     geometryEpoch,
     settings: {
-      angle: coneAngle(),
-      band: bandFeet(),
-      radius: {
+      cell: geodesic.cellSize(),
+      bandFeet: {
         Bright: radiusFeet(TIER.BRIGHT),
         Normal: radiusFeet(TIER.NORMAL),
         Dim: radiusFeet(TIER.DIM),

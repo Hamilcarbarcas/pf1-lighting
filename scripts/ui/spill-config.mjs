@@ -3,35 +3,38 @@
  *
  * Modelled on `ui/visuals.mjs` (§10.6.1), including the rule that made that window worth having:
  * **the settings are not owned here.** Every key stays registered in the module that reads it —
- * `model/spill.mjs` for the geometry, `render/gradient.mjs` for the falloff profile — each with
- * its own `onChange`, and this window reads and writes them by key. Writing one key at a time, and
- * only where the value moved, is what keeps each `onChange` firing once — and here that matters
- * more than it did there, because most of these invalidate the sweep cache and rebuild the
- * spill geometry for the whole scene. The plateau is the exception: it re-maps a vertex buffer
- * without moving a vertex.
+ * `model/spill.mjs` for the ladder, `model/geodesic.mjs` for the resolution — each with its own
+ * `onChange`, and this window reads and writes them by key. Writing one key at a time, and only
+ * where the value moved, is what keeps each `onChange` firing once, which matters here because
+ * every one of them rebuilds the spill geometry for the whole scene.
  *
  * Unlike Visuals, this window is **not** appearance-only. These numbers move the model: a light
- * level a creature can see by, everywhere spill reaches. That is why the radii are plain feet in
+ * level a creature can see by, everywhere spill reaches. That is why the widths are plain feet in
  * a number field rather than sliders — a GM tuning them is comparing them against a torch's
  * radius, not dragging until it looks right.
+ *
+ * Two rows came out with §3.4.1's rewrite. *Spill cone angle* described the wedge the old
+ * construction clipped its bands against, and there is no wedge; *Band width* described a single
+ * uniform step, and each tier now carries its own.
  */
 
 import { MODULE_ID } from "../constants.mjs";
 import { TIER } from "../model/tiers.mjs";
-import {
-  SETTING_ANGLE,
-  SETTING_BAND,
-  SETTING_ENABLED,
-  SETTING_RADIUS,
-} from "../model/spill.mjs";
-import { SETTING_WIDTH } from "../render/transition.mjs";
+import { SETTING_ENABLED, SETTING_RADIUS } from "../model/spill.mjs";
+import { SETTING_CELL } from "../model/geodesic.mjs";
 
 export const MENU_KEY = "spillConfig";
 
 /**
- * The three caps, brightest first.
+ * The three band widths, brightest first.
  *
  * @remarks
+ * **They are widths, not radii, since §3.4.1** (Patrick, 2026-08-28: *"Am I correct assuming band
+ * width is an outdated knob?"*). The same three stored keys; what changed is that 40 means *bright
+ * carries forty feet before it reads as normal* rather than *a bright spill's cone is forty feet
+ * long*. The old scheme needed both a per-tier radius and a separate uniform band width, which
+ * double-counted the falloff; this needs one number per rung and the reach is their sum.
+ *
  * Descending for `ui/visuals.mjs`'s reason: the one rule to hold in your head is that a brighter
  * sky throws further, so a wrong entry shows up as a number out of order rather than as one you
  * have to reason about. There is no Dark row because there is nothing below Dim to spill —
@@ -113,48 +116,40 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
       an open door counts while it is open. Needs <em>Model global illumination</em> on, or the
       model will move and the map will not.</p>
   </div>
-
-  <div class="form-group">
-    <label>Spill cone angle</label>
-    <div class="form-fields">
-      <range-picker name="${esc(SETTING_ANGLE)}" value="${esc(read(SETTING_ANGLE, 105))}"
-        min="30" max="180" step="5"></range-picker>
-    </div>
-    <p class="hint">How wide the brightest wedge reads, in degrees. This is how the light
-      <em>looks</em> coming through the gap, not what the walls block — the bands beside the
-      wedge are worked out separately and are cut off by walls either way.</p>
-  </div>
 </fieldset>
 
 <fieldset>
-  <legend>Reach</legend>
-  <p class="hint">How far the bright wedge throws, chosen by how bright it is <strong>outside</strong>
-    the window. A <em>darkness</em> over the window lowers that, so the same window throws less far
-    while the spell is on it.</p>
+  <legend>Falloff</legend>
+  <p class="hint">How far each brightness carries indoors before it drops to the next one down,
+    measured <strong>along the floor</strong> — so light that has to turn a corner spends its
+    distance getting there. A window starts at whatever it is like <strong>outside</strong>, and a
+    <em>darkness</em> over the window starts it lower, so the same window reaches less far while
+    the spell is on it. The steps run down to dim and stop; there is nothing below dim to spill.</p>
   ${caps}
+  <p class="hint">Bright light through a window therefore reaches
+    ${read(SETTING_RADIUS[TIER.BRIGHT], 40)} + ${read(SETTING_RADIUS[TIER.NORMAL], 20)} +
+    ${read(SETTING_RADIUS[TIER.DIM], 10)} =
+    <strong>${
+      Number(read(SETTING_RADIUS[TIER.BRIGHT], 40)) +
+      Number(read(SETTING_RADIUS[TIER.NORMAL], 20)) +
+      Number(read(SETTING_RADIUS[TIER.DIM], 10))
+    } ft</strong> in total.</p>
+</fieldset>
 
+<fieldset>
+  <legend>Accuracy</legend>
   <div class="form-group">
-    <label>Band width</label>
+    <label>Grid resolution</label>
     <div class="form-fields">
-      ${number(SETTING_BAND, read(SETTING_BAND, 10), { min: 5, max: 60, step: 5 })}
-      <span class="units">ft</span>
+      <range-picker name="${esc(SETTING_CELL)}" value="${esc(read(SETTING_CELL, 25))}"
+        min="5" max="100" step="5"></range-picker>
+      <span class="units">px</span>
     </div>
-    <p class="hint">How far each step of the falloff runs past the last, down to dim. Bright light
-      through a window therefore reaches its own distance above <em>plus</em> two of these before
-      it runs out.</p>
-  </div>
-
-  <div class="form-group">
-    <label>Transition width</label>
-    <div class="form-fields">
-      <range-picker name="${esc(SETTING_WIDTH)}"
-        value="${esc(read(SETTING_WIDTH, 0.75))}" min="0" max="4" step="0.05"></range-picker>
-      <span class="units">squares</span>
-    </div>
-    <p class="hint">How far one brightness fades into the next. This is <strong>not</strong> a
-      spill-only setting: it is the same distance everywhere brightness changes — a room's edge, a
-      darkness rim, a light's zones — and it is edited here as well because a spill falloff is
-      where it shows most. <strong>0</strong> makes every brightness boundary a hard edge.</p>
+    <p class="hint">How finely the spill is worked out, in pixels — a quarter of a grid square by
+      default. Smaller places the edges between brightnesses more precisely, and costs about five
+      times as much for each halving. The symptom of too coarse is a brightness edge that does not
+      quite follow the wall it should be running along; walls themselves stay exact at any
+      setting.</p>
   </div>
 </fieldset>
 
@@ -174,10 +169,18 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
 
   static get #numericKeys() {
     return [
-      SETTING_ANGLE,
-      SETTING_BAND,
-      SETTING_WIDTH,
+      // **`transitionWidth` is deliberately not here** (Patrick, 2026-08-27: *"transition width in
+      // light spill can go too — it's a duplicate to brightness transition width"*). It was
+      // repeated in this window on the grounds that a spill falloff is where the width shows most,
+      // which was true and still cost more than it bought: one setting on two forms means two
+      // *Restore defaults* buttons that disagree about what they reset, and a number that appears
+      // to be a spill property when it governs every boundary in the module. It lives in
+      // *Configure Visuals* alone now.
       ...CAPS.map(({ tier }) => SETTING_RADIUS[tier]),
+      // §3.4.1. An accuracy knob rather than a model number, but it belongs on this form and not in
+      // *Configure Visuals*: too coarse a grid closes a doorway, which changes what a creature can
+      // see. That is the line this window is on the far side of.
+      SETTING_CELL,
     ];
   }
 

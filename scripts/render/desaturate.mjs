@@ -19,8 +19,11 @@
  * > repaints from the raw primary texture is written down, and §6.2.11 exists because a *vision*
  * > source does the same thing.
  * >
- * > **{@link observerIgnoresDarkness} is untouched** — it reads actor senses, not saturation, and
- * > is the only thing withholding a darkness bubble from a blindsight observer.
+ * > **{@link observerIgnoresDarkness} is untouched, and is no longer gated on this file's switch.**
+ * > It reads actor senses rather than saturation, and it is the only thing withholding a darkness
+ * > bubble from a blindsight observer. The two halves were switched together because they arrived
+ * > together; with the first inert by default, that coupling would have left the setting silently
+ * > disabling a rule it does not name.
  *
  * ## The problem
  *
@@ -93,11 +96,13 @@ export function isEnabled() {
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_DESATURATE, {
-    name: "Darkness respects grey vision",
+    name: "Darkness respects grey vision (fallback)",
     hint:
       "Desaturates what a darkness source draws, so a creature seeing in black and white does not " +
-      "get full-colour terrain inside a darkness bubble. Foundry's darkness shader samples the map " +
-      "directly and skips the vision mode's colour adjustment; this puts it back.",
+      "get full-colour terrain inside a darkness bubble. **Does nothing while 'Greyscale follows " +
+      "the brightness map' is on**, which is the default: that takes over greyscale entirely and " +
+      "greys the darkness disc along with everything else. This is the fallback for worlds that " +
+      "turn the takeover off.",
     scope: "world",
     // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
@@ -205,7 +210,15 @@ export function currentSaturation() {
  * It is beyond `data.radius` and so not drawn as perceived anyway.
  */
 export function observerIgnoresDarkness() {
-  if (!isEnabled()) return false;
+  // **No longer gated on `desaturateDarkness`, as of 2026-08-27.** The two halves of this file
+  // were switched together because they arrived together, and that coupling has now outlived its
+  // sense: §6.2.11 made the desaturation half inert by default, so the switch's only remaining
+  // effect would have been to silently disable blindsight withholding — a behaviour it does not
+  // name and nobody would look for it under.
+  //
+  // Withholding is a correctness rule rather than a preference: a creature that maps a room by
+  // echo does not experience a darkness over it as anything, so there is nothing for a setting to
+  // be on either side of.
   const source = canvas?.visibility?.visionModeData?.source;
   return (source?.object?.actor?.system?.traits?.senses?.bs?.total ?? 0) > 0;
 }
