@@ -74,6 +74,18 @@ export function tierOf(scene) {
   return Number.isFinite(stored) && SCENE_TIERS.includes(stored) ? stored : null;
 }
 
+/**
+ * The tier a scene *reads as*, whether or not it was ever set through this control.
+ *
+ * @remarks
+ * The fallback half of {@link tierOf}, split out for the API (§11.5). A consumer asking "what
+ * light level is this scene" wants an answer for every scene; the `null` that distinguishes
+ * *never set* from *set to Dark* matters to the sync pass and to nobody outside it.
+ */
+export function nearestTier(scene = canvas?.scene) {
+  return tierFromDarkness(scene?.environment?.darknessLevel ?? 0);
+}
+
 /* -------------------------------------------- */
 /*  Keeping scenes in step with the table       */
 /* -------------------------------------------- */
@@ -162,12 +174,45 @@ export async function setSceneTier(tier, scene = canvas?.scene) {
     );
     return null;
   }
+  // The change hook fires from `updateScene`, not here — see {@link announceTierChange}.
   await scene.update({
     [FLAG_PATH]: tier,
     "environment.darknessLevel": levelFor(tier),
   });
   return tier;
 }
+
+/**
+ * Announce that a scene's light level moved. DESIGN.md §11.5.
+ *
+ * @remarks
+ * **From `updateScene`, not from the writers.** The tier can be set from the dropdown, from a
+ * lighting-palette button, from the API or from another client entirely, and a hook fired at each
+ * write would miss the last of those and fire twice for nothing on a preview. `updateScene` is
+ * the one place every route converges, and it is where a consumer would otherwise have to do this
+ * work itself — re-deriving the tier from the raw number and filtering out its own writes.
+ *
+ * Fires only when the *tier* changes. The darkness level moving within a rung — a GM nudging the
+ * slider on a scene that has never been through the dropdown — is not a light-level change as far
+ * as this module is concerned, and a consumer acting on one would be acting on noise.
+ */
+function announceTierChange(scene, changed) {
+  const touched =
+    foundry.utils.hasProperty(changed, `flags.${MODULE_ID}.${TIER_FLAG}`) ||
+    foundry.utils.hasProperty(changed, "environment.darknessLevel");
+  if (!touched) return;
+
+  const tier = tierOf(scene) ?? nearestTier(scene);
+  const previous = lastAnnounced.get(scene.id);
+  if (previous === tier) return;
+  lastAnnounced.set(scene.id, tier);
+  // `previous` is undefined the first time a scene is seen, which is honest: nothing knows what
+  // it was before this client loaded.
+  Hooks.callAll(`${MODULE_ID}.sceneTierChanged`, scene, tier, previous ?? null);
+}
+
+/** Last tier announced per scene, so an update that does not move the rung stays quiet. */
+const lastAnnounced = new Map();
 
 /** Tool id for a tier's button. Also the prefix everything below matches on. */
 const toolId = (tier) => `pf1LightingTier${tier}`;
@@ -349,6 +394,20 @@ export function registerHooks() {
   // being drawn costs a comparison.
   Hooks.on("canvasReady", () => {
     if (canvas?.scene) syncScenes([canvas.scene]);
+    // Seed the announcer, so the first real change reports a `previous` rather than firing on
+    // arrival at a scene that has not changed at all.
+    if (canvas?.scene) {
+      lastAnnounced.set(canvas.scene.id, tierOf(canvas.scene) ?? nearestTier(canvas.scene));
+    }
+  });
+
+  // The API's change signal (§11.5). Every route to a new tier passes through here.
+  Hooks.on("updateScene", (scene, changed) => {
+    try {
+      announceTierChange(scene, changed);
+    } catch (error) {
+      console.error(`${MODULE_ID} | scene tier hook failed`, error);
+    }
   });
 }
 

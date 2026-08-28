@@ -6381,6 +6381,290 @@ stylesheet or a `documentTypes` entry, and it needs neither.
 
 ---
 
+## 11. The public API — BUILT 2026-08-28
+
+Patrick, 2026-08-28: *"API time. I want functions to give other mods access to the data we're
+creating here."* Two named consumers — an automated **stealth** pass and a **time-of-day** driver —
+and a standing rule from the same message: *"if the data is readily available without this mod, we
+shouldn't need an API for it unless it really adds to the convenience of getting all the data at
+once."*
+
+That rule decides most of the surface, so it is worth stating as the test this section applies:
+
+> **Expose a question only this module can answer, or an answer only this module can assemble
+> cheaply.** Everything else stays core's.
+
+By that test `canvas.grid.measurePath`, token distance, wall collisions, ownership and the raw
+`scene.environment.darknessLevel` are all out. What is in is the **tier ladder**, the
+**observer-relative** answer, and the **assembly** — the one call that returns what a stealth check
+needs instead of nine.
+
+### 11.1 The three questions the module actually owns
+
+| Question | Owned because |
+| --- | --- |
+| *How bright is it here?* | §3.1's tiers exist nowhere else. Foundry has a `[0,1]` darkness scalar and four lighting levels that mean something different. |
+| *How bright is it here **to you**?* | §4.3's umbra and §4.8's perception model. Core has no notion that brightness differs per observer. |
+| *What light level is this scene, as a rung?* | §10.5 — the scene stores a tier and the number is derived output. Reading `darknessLevel` back gets you the number, not the decision. |
+
+Everything proposed below is one of those three, or an assembly of them.
+
+### 11.2 Shape
+
+Versioned, and deliberately **separate from the existing `game.pf1Lighting.*` console surface**.
+Those are debug readouts — they log to `console.error`, change signature whenever a diagnosis needs
+a new field, and several return live internal objects. A consumer that binds to them will break,
+and should. `api` is the half that promises not to.
+
+#### 11.2.1 Two addresses, one object
+
+```js
+game.modules.get("pf1-lighting").api   // what another module uses
+game.pf1Lighting.api                   // console alias — same frozen object
+```
+
+**`game.modules.get(id).api` is the address**, and it is not a style preference. It is Foundry's
+own convention, it is what this project's other modules already publish (`astora-mod`) and consume
+(`ckl-roll-bonuses`), and a module author looking for our API will try it first and find nothing
+else. `Module` declares no `api` property in the v13 schema — it is an assignment onto an ordinary
+object — but it is universal, and being reachable only through a convention we invented is the
+same as not being reachable.
+
+**`game.pf1Lighting` is ours and exists for one reason**: `pf1-lighting.api` is not typeable. The
+hyphen is a minus sign, so it parses as `pf1 - lighting.api`, and the only bare-global form would
+be `globalThis["pf1-lighting"].api`. A camelCase alias under `game.` is typeable, tab-completes,
+and keeps a module-shaped name out of the true global namespace.
+
+**Published at `init`, not at `ready`, and that is substance rather than tidiness.**
+`game.pf1Lighting` is assigned in `ready`; an API assigned there races every consumer's own `ready`
+on module load order, so whether it exists at the moment someone reaches for it would depend on
+alphabetical luck. Nothing in the built object touches the canvas or reads a setting — it is
+function references and frozen constants — so there is nothing for `init` to be too early for.
+
+```js
+const api = game.modules.get("pf1-lighting")?.api;
+api.version            // integer, incremented on breaking change
+api.TIER               // { SUPERNATURAL_DARK: 0, DARK: 1, DIM: 2, NORMAL: 3, BRIGHT: 4 }
+api.tierName(tier)     // "Dim"
+```
+
+Tiers cross the boundary as **numbers**, and the numbers are ordered, so `>=` is meaningful and a
+consumer can compare without importing anything.
+
+### 11.3 Brightness
+
+```js
+api.brightnessAt(point, {observer} = {})         // -> tier
+api.brightnessOf(token, {observer, sample} = {}) // -> tier
+api.brightnessInSquare(point, {observer, sample} = {})
+api.brightnessAtMany(points, {observer} = {})    // -> tier[]
+```
+
+Three things this has to settle that the one-line request does not.
+
+**`observer` is the whole feature.** Omitted, the answer is god's eye — the model's own tier, which
+is what a GM sees and what the readout reports. Passed a token, the answer is
+`perception.perceivedTier`: the same point, clamped by any umbra between that token and it. The two
+genuinely differ, and a consumer that does not know which one it asked for will produce a rules
+bug — so this is not an optional parameter with a harmless default, it is two different questions
+sharing a function.
+
+**The batch form is not sugar.** `evaluate` reads the field, and the field rebuilds when the
+registry version moves. Ten separate calls in a stealth pass can pay that ten times; one call with
+ten points pays it once. Use case 1 is exactly N observers by M points, so this is the shape that
+makes it affordable.
+
+**Sampling is undefined today and has to be chosen.** `probe.tokens()` samples the token's
+**centre and nothing else** — there is no averaging anywhere in this module, which contradicts the
+premise of the request (*"average it the same way we average token lighting"*). A Large creature
+straddling a light boundary has no single tier, and the defensible answers are different rules for
+different purposes:
+
+| `sample` | Rule | Fits |
+| --- | --- | --- |
+| `"center"` | the centre point | matches today's readout; cheapest |
+| `"min"` | darkest tier over the footprint | **hiding** — you take cover in the dark part |
+| `"max"` | brightest tier over the footprint | **being seen** — an observer needs only one lit part |
+| `"average"` | area-weighted mean, re-thresholded | one "how lit is this" number; matches no rule |
+
+Recommendation: **`"center"` as the default** — it is what exists and what the tooltip agrees with —
+with `min` and `max` available, because the stealth case genuinely wants `min` for the hider and
+`max` for a target being shot at. `average` is offered last and named as the one with no rules
+meaning.
+
+Footprint sampling walks the token's occupied grid spaces, so cost is `O(spaces)`: a Gargantuan
+creature is 16 samples. That is the other reason the default is not `average`.
+
+### 11.4 The observer/observed pair
+
+```js
+api.perceive(observer, observed) -> {
+  visible,            // boolean — would core show it
+  reason,             // "basicSight" | "lightPerception" | "seeInvisibility" | "feelTremor"
+                      //   | "visionLight" | null
+  reasons,            // every mode that answers true, not just the first
+  tier,               // the tier the observer perceives the target's space at
+  lightIndependent,   // does `reason` consult light at all
+  blinded,            // the observer's own vision is blocked
+  distance,           // scene units — bundled because every consumer recomputes it
+  losBlocked,         // sight collision between them
+}
+```
+
+**Core will not tell you which mode won, and that is the interesting part of this section.**
+`CanvasVisibility#testVisibility` short-circuits on the first `true`
+(`groups/visibility.mjs:735-792`) and returns a boolean. It does, however, run every mode through a
+**public per-mode entry point** — `CONFIG.Canvas.detectionModes[id].testVisibility(visionSource,
+modeConfig, config)` — and builds its argument with
+`canvas.visibility._createVisibilityTestConfig(point, {tolerance, object})`.
+
+So the answer is to run core's own loop, in core's own order, **without the short circuit**, and
+record every mode that says yes. That is not a reimplementation: the rules stay inside core's mode
+instances, which is also what makes it compose with PF1's replaced `seeInvisibility` and with
+`limits`' wrap of `_testPoint`. Three details that are easy to get wrong:
+
+- **A vision-granting light is a fourth route**, tested before any mode
+  (`visibility.mjs:745-749`): `lightSource.data.vision` with `lightSource.testVisibility(config)`.
+  It has no mode id, hence `"visionLight"`.
+- **`visionSource.isBlinded` gates `basicSight` and `lightPerception` but not the special modes** —
+  a blinded creature still feels tremors. Reproducing that gate is required for a correct answer.
+- **`testVisibility` mutates the target.** Winning a special mode assigns `object.detectionFilter`
+  (`visibility.mjs:788`), so a probe has to save and restore the field around the call or it leaves
+  a rendering artefact behind.
+
+`lightIndependent` is derived, not detected: `basicSight` (where PF1 puts darkvision), `feelTremor`
+and blindsight do not consult light; `lightPerception` and `seeInvisibility` do. It is the field
+use case 1 actually branches on, so the module should own the mapping rather than have every
+consumer re-derive it from mode ids.
+
+#### 11.4.1 The problem this surface has to solve first
+
+**A token that is not a vision source has no `vision` object at all.**
+`Token#initializeVisionSource` calls `#destroyVisionSource()` whenever `_isVisionSource()` is false
+(`placeables/token.mjs:868-880`), and that is false for every token the current user does not own or
+control. For a stealth check the interesting observers are exactly those — the NPCs.
+
+Three ways out, and only one is honest:
+
+1. **Build an ephemeral source.** `new CONFIG.Canvas.visionSourceClass({object: token})`, initialise
+   it from `token._getVisionSourceData()`, query it, destroy it. One polygon sweep per observer.
+2. Require the GM to control everything first. Not viable.
+3. Answer without a source — distance, a wall collision and `evaluate`. Cheap, and it silently
+   drops umbra and every detection mode, which is most of the value.
+
+**(1), with the cost stated.** A sweep is the expensive operation in this module (§9.6), so a
+20-NPC pass is 20 sweeps — entirely affordable **once**, and unaffordable per frame. The API should
+therefore make the batch form the obvious one, and say plainly that this is a question to ask on a
+die roll, not on a hook that fires during movement.
+
+```js
+api.perceivedBy(observed, {observers, sample} = {}) -> PerceiveResult[]
+```
+
+One call, one field build, one sweep per candidate observer, sorted by whether they see it.
+`observers` defaults to every token on the scene that has sight; the caller narrows it.
+
+### 11.5 The scene's light level
+
+Mostly built already — §10.5.2 landed `setSceneTier` this session. What the API adds is the read
+side and a change signal.
+
+```js
+api.sceneTier(scene?)              // -> tier, from the flag, falling back to the nearest rung
+api.setSceneTier(tier, scene?)     // -> Promise<tier|null>; GM only, refuses a locked scene
+Hooks.on("pf1-lighting.sceneTierChanged", (scene, tier, previous) => {})
+```
+
+**A per-scene opt-out is the part use case 2 needs and did not ask for.** *"Automatically change
+scene brightness based on time of day"* is correct for a street and wrong for a dungeon, a cave and
+every interior, and a driver that cannot tell them apart will darken a sealed crypt at dusk.
+
+**Core's darkness lock is that control and no new flag was built** (Patrick, 2026-08-28 — see
+§11.8). `setSceneTier` already refuses on it, so a driver that skips locked scenes is safe by
+construction and needs to read nothing of ours. The proposal this paragraph originally made — a
+`flags.pf1-lighting.tracksTimeOfDay` checkbox beside the light-level dropdown — is **not
+implemented**, and the difference it would have made is the one thing to know before relying on
+the lock: the lock means *frozen*, so a locked dungeon is also beyond the GM's own dropdown, where
+a `tracksTimeOfDay` flag would have left it hand-settable and merely ignored by the clock. Worth
+building only if that distinction turns out to matter in play.
+
+The hook exists because the alternative is polling. `updateScene` fires for the underlying number,
+but a consumer would then have to re-derive the tier and filter out its own writes.
+
+### 11.6 What is deliberately absent
+
+- **Anything that sets a light's configuration.** `light.document.update()` is core, and
+  `presets.apply(name)` already returns the flat update object. Nothing to add.
+- **Wall, distance, ownership and token-shape queries.** Core, per the rule at the top.
+- **A "can this token hide" verdict.** The API reports light and detection; whether *hidden* is
+  legal is a PF1 rules question involving cover, concealment, size and feats, and it belongs to the
+  consumer. `tier <= TIER.DIM && !lightIndependent` is the light half of it, and that is what the
+  API should say before stopping.
+- **Anything on the render side.** Meshes, filters and the texture are implementation.
+
+### 11.7 The two use cases, walked
+
+**Stealth.** One call to `api.perceivedBy(hider, {sample: "min"})`, then partition:
+
+| Bucket | Test |
+| --- | --- |
+| cannot see at all | `!visible` |
+| automatic — no check | `visible && tier >= TIER.NORMAL && !lightIndependent`, plus the caller's own rules |
+| rolls Perception | everything else, with `distance` for the DC and `reason` for the flavour |
+
+The middle row is the one the API cannot finish and should not: whether bright light makes
+detection automatic is a table ruling, and a `lightIndependent` observer bypasses the light
+question entirely.
+
+**Time of day.** A driver reads the calendar, maps an hour to a tier, and calls `api.setSceneTier`
+on each outdoor scene. It does not have to filter: a locked scene returns `null` and is left alone,
+so **locking the dungeons is the whole configuration step**. Simple Calendar Reborn is already in
+the workspace and already has one consumer in `tension-pool-tab`, so the integration target is
+known. The hour-to-tier mapping is the driver's, not ours.
+
+### 11.8 Decisions, and what is left open
+
+Settled by Patrick, 2026-08-28:
+
+- **Sampling.** *"Average was the wrong term — we should determine a grid cell's light the same way
+  we determine a token's light."* So one rule, and it is the centre point — what `probe.tokens()`
+  has always used and what the readout agrees with. A token and the square it stands in cannot now
+  disagree, because they are the same query. `min` and `max` ship as opt-in for the stealth
+  asymmetry; `average` is not offered at all.
+- **Ephemeral vision sources.** *"These calls would be intended as a one-off when someone makes a
+  roll."* Confirmed, and the sweep cost is documented at the function rather than hidden behind a
+  cache that would go stale on the first wall.
+- **Batching by argument.** *"Can we have the api call take arrays to allow for this?"* Every query
+  takes a subject or an array of them and returns the matching shape. `perceive` is the one
+  exception and says so — a matrix has no scalar shape, so it returns one record per pair with both
+  ends named.
+- **The darkness lock is the write guard, and nothing new was built.** *"There's already a darkness
+  level lock in scene config. Can we use this for preventing the api from changing scene
+  brightness?"* It already does: `setSceneTier` has refused on it since §10.5.2, because
+  `Scene#_preUpdate` silently deletes `environment.darknessLevel` from a locked update, so writing
+  anyway would report a success that did not happen. The consequence to know is that the lock means
+  *frozen*, not *not clock-driven* — a locked dungeon cannot be changed from the dropdown either. A
+  scene that should stay hand-settable while a clock ignores it would need a second flag, and does
+  not have one. The `tracksTimeOfDay` proposal above is therefore **not built**.
+- **The change hook.** `pf1-lighting.sceneTierChanged`, fired from `updateScene` rather than from
+  the writers: every route converges there, including a write from another client, and firing per
+  writer would miss that one and double-fire on a preview. It fires only when the *rung* moves, so
+  a slider nudge inside a rung stays quiet.
+
+Still open:
+
+1. **`lightIndependent` for modes we do not ship.** The mapping is by mode id and answers `null` for
+   an unknown one, so a consumer can tell *"this sense ignores light"* from *"we have never heard of
+   this sense"*. `api.registerLightIndependentMode(id)` adds one.
+2. **Ephemeral sources and `limits`.** Building a vision source outside `initializeVisionSource`
+   skips whatever another module does on that hook. `limits` wraps `_testPoint` on the *mode*, which
+   still applies; anything decorating the *source* would not. Untested.
+3. **Elevation.** Carried through every signature and then ignored by the model (§3.6), so the
+   signatures do not have to change on the day §3.6 does.
+4. **Footprint sampling off square grids.** v13 has no `getOccupiedGridSpaceOffsets`, so `min`/`max`
+   walk the token bounds at grid pitch — correct on square grids, approximate elsewhere. Only
+   reached when a caller opts out of `center`.
+
 ## Appendix A — Rejected alternatives
 
 Kept so they don't get relitigated. Each was seriously considered.

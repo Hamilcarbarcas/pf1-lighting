@@ -30,6 +30,7 @@ import * as readout from "./ui/readout.mjs";
 import * as cellOverlay from "./ui/cell-overlay.mjs";
 import * as lightConfig from "./ui/light-config.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
+import * as publicApi from "./api.mjs";
 import * as presets from "./model/presets.mjs";
 import * as presetEditor from "./ui/preset-editor.mjs";
 import * as visuals from "./ui/visuals.mjs";
@@ -57,6 +58,15 @@ import * as probe from "./spike/probe.mjs";
 import * as darknessLevel from "./spike/darkness-level.mjs";
 
 Hooks.once("init", () => {
+  // **The API goes up first, and at `init` rather than at `ready`** (§11.2).
+  // `game.modules.get("pf1-lighting").api` is the address another module will look at — Foundry's
+  // convention, and the one this project's own modules already publish and consume. The
+  // `game.pf1Lighting.api` alias assigned in `ready` is the same frozen object, for console use.
+  //
+  // Timing is the substance, not tidiness: an API published in `ready` races every consumer's own
+  // `ready` on module load order, so whether it exists would depend on alphabetical luck.
+  publicApi.publish();
+
   // **Before anything reads a tier.** Registers the region behaviour's data model and icon; its
   // *label* is deliberately not set here and comes from `lang/en.json` — see
   // `areas.registerBehavior` for why a literal cannot work.
@@ -251,6 +261,20 @@ Hooks.on("canvasInit", () => {
 
 Hooks.once("ready", () => {
   game.pf1Lighting = {
+    // **The supported surface — DESIGN.md §11.** Everything else on this object is a debug
+    // readout: it logs, it gains and loses fields as diagnoses need them, and several entries
+    // hand back live internals. `api` is the half that promises not to change under a consumer,
+    // and `api.version` is how one feature-detects.
+    //
+    // **A console alias, not the address.** Another module should use
+    // `game.modules.get("pf1-lighting").api`, which is published at `init` and is the same frozen
+    // object. This exists because `pf1-lighting.api` cannot be typed — the hyphen is a minus sign.
+    //
+    //   game.pf1Lighting.api.perceivedBy(token, { sample: "min" })
+    //   game.pf1Lighting.api.brightnessOf([a, b, c], { observer })
+    //   game.pf1Lighting.api.setSceneTier(game.pf1Lighting.api.TIER.DIM)
+    api: publicApi.build(),
+
     // Model
     evaluate,
     gatherEmitters,

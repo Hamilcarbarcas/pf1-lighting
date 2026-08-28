@@ -627,6 +627,79 @@ get subdivided", where the brightness map above answers "what is being painted".
 game.pf1Lighting.overlay.toggle()
 ```
 
+## For module authors
+
+```js
+const api = game.modules.get("pf1-lighting")?.api;
+```
+
+That is the address, published at `init` so it is there for your `setup` and `ready` alike.
+`game.pf1Lighting.api` is the same object under a shorter name for console use — it exists only
+because `pf1-lighting.api` can't be typed in JavaScript, the hyphen being a minus sign.
+
+It is the supported surface. Everything else on `game.pf1Lighting` is a debug readout — it logs,
+its fields change whenever a diagnosis needs them, and some of it hands back live internals. Bind
+to `api` and check `api.version`, which only moves on a breaking change.
+
+Tiers cross the boundary as ordered numbers, so `>=` means what it looks like:
+
+```js
+api.TIER            // { SUPERNATURAL_DARK: 0, DARK: 1, DIM: 2, NORMAL: 3, BRIGHT: 4 }
+api.tierName(2)     // "Dim"
+```
+
+**Every query takes one subject or an array of them**, and the return shape follows the argument.
+That is not just convenience — the model rebuilds its field when the scene changes, so ten separate
+calls can pay for that ten times where one call with ten subjects pays once.
+
+```js
+api.brightnessAt(point)                        // the tier there, as the GM sees it
+api.brightnessAt(point, { observer: token })   // as that token sees it — darkness between them counts
+api.brightnessOf([a, b, c])                    // a tier each
+api.brightnessInSquare(point)                  // the grid square, by the same rule a token uses
+```
+
+Passing `observer` is a different question, not a refinement: without it you get the map's own
+light level, and with it you get what that creature can actually see by, which a *darkness* in the
+way will lower.
+
+`brightnessOf` takes `sample` — `"center"` (the default, and the same rule a grid square gets),
+`"min"` for the darkest square a token occupies, or `"max"` for the brightest. A Large creature
+straddling a boundary genuinely has no single answer; `min` is the hider's and `max` is the
+target's.
+
+### Who can see whom
+
+```js
+api.perceivedBy(token, { sample: "min" })   // every token on the scene that might see it
+api.perceive(observer, target)              // one pair
+```
+
+Each result says whether the target is visible, **which sense did it** (`reason` — `basicSight`,
+`lightPerception`, `feelTremor`, and so on), whether that sense cares about light at all
+(`lightIndependent`), the tier the observer perceives them at, the distance in scene units, and
+whether a wall is in the way. Foundry itself will only tell you yes or no, so the *why* is the part
+this adds.
+
+**This costs a wall sweep per observer that isn't currently a vision source** — which is most NPCs,
+since Foundry only builds vision for tokens you control. Fine on a die roll, far too slow on a
+movement hook.
+
+### The scene's light level
+
+```js
+api.sceneTier()                       // Bright / Normal / Dim / Dark, as a tier
+api.setSceneTier(api.TIER.DIM)        // instant; GM only
+Hooks.on("pf1-lighting.sceneTierChanged", (scene, tier, previous) => {})
+```
+
+`setSceneTier` refuses on a scene with **darkness locked** and returns `null`, so that checkbox is
+how you keep a dungeon out of an automated day/night cycle. Note that it locks the scene against
+*everything*, including the dropdown — it means frozen, not merely "ignore the clock".
+
+The hook fires only when the level actually changes rung, from any source, so you don't have to
+watch `updateScene` and work the tier out yourself.
+
 ### Console
 
 Everything else is driven from the console via `game.pf1Lighting`.
