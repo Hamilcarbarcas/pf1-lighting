@@ -157,6 +157,8 @@ Hooks.once("init", () => {
   cellOverlay.registerHooks();
   lightConfig.registerHooks();
   sceneConfig.registerHooks();
+  // Swaps core's two ten-second transition buttons for one per tier (§10.5.2).
+  sceneConfig.registerSceneControls();
   renderer.registerHooks();
   // Solves the light weights against the scene's ambient colours, per canvas.
   ambient.registerHooks();
@@ -512,6 +514,14 @@ Hooks.once("ready", () => {
       // usual reason is that this client was not the active GM when the setting changed.
       scenes: sceneConfig.status,
       resyncScenes: sceneConfig.syncAllScenes,
+      // What the four lighting-control buttons do, callable from a macro:
+      // `game.pf1Lighting.render.setSceneTier(2)` for Dim. Tier values are in `TIER`.
+      setSceneTier: sceneConfig.setSceneTier,
+
+      // The same pair for lights' activation ranges (§10.4.1), which are derived from the tier
+      // table in exactly the same way and go stale in exactly the same circumstances.
+      lights: lightConfig.status,
+      resyncLights: lightConfig.syncAllLights,
 
       // The appearance settings, in their own window (§10.6).
       visuals: visuals.open,

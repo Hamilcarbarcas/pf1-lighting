@@ -218,11 +218,37 @@ export function fill({
     dim: useDim,
     bright: useBright,
     attenuation: attenuation ?? (emission ? 0.5 : 0),
-    ...(color !== undefined ? { color } : {}),
-    // Pooled, so these are assigned unconditionally rather than only when present — a source
-    // reused from an animated clone into a still one would otherwise keep flickering.
+    // **Every key here is assigned unconditionally, and that is load-bearing.**
+    //
+    // `BaseEffectSource#initialize` writes only the keys the payload *mentions*, and `reset`
+    // defaults to `false` (`base-effect-source.mjs:126160-126174`):
+    //
+    // ```js
+    // for ( const key in data ) {
+    //   if ( !(key in this.data) ) continue;
+    //   this.data[key] = data[key] ?? this.constructor.defaultData[key];
+    // }
+    // ```
+    //
+    // So on a **pooled** source an omitted key silently keeps the previous occupant's value. The
+    // `??` in that loop is the escape hatch: passing an explicit `null` resolves to the class
+    // default, which is the reset a fresh source would have got.
+    //
+    // `animation` was written this way from the start, because a clone reused from an animated
+    // light into a still one kept flickering. `color` and `seed` were spread in conditionally and
+    // had the identical bug — reported 2026-08-28 as an **orange tint on ground no orange light
+    // reached**, matching a lamp elsewhere on the map, surviving that lamp being switched off,
+    // clearing on F5 and returning after churning global illumination and doors.
+    //
+    // Every symptom follows from the omission. The tint belongs to the pool slot rather than to any
+    // live source, which is why disabling the light did nothing and why reloading fixed it; and it
+    // needs pool *reuse* to appear, which is why it was intermittent and why churning the cell
+    // partition provoked it. The three call sites in `render/renderer.mjs` pass
+    // `source.data?.color ?? undefined`, and an uncoloured light's `data.color` is `null` — so the
+    // key vanished exactly when the payload most needed to say *no colour*.
+    color: color ?? null,
     animation: animation ?? { type: null, speed: 5, intensity: 5, reverse: false },
-    ...(seed !== undefined ? { seed } : {}),
+    seed: seed ?? null,
   };
 
   // Pin the rendered tier. §6.2.3 — our five tiers are exactly Foundry's levels, so this

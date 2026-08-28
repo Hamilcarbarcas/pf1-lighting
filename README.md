@@ -203,6 +203,23 @@ Configuration** on the light's own sheet: the set level, how many steps the band
 ceiling on that increase. Most lights need none of them; a rare effect that brightens by two
 steps sets steps to 2.
 
+**When a light is lit** is set the same way. Foundry's *Darkness Activation Range* — two numbers
+between 0 and 1 — is replaced by **Active when scene is**, a pair of tier dropdowns: *Dim down to
+Dark* for a street lamp that comes on at dusk, *Bright down to Dark* (the default) for one that
+is always burning. It reads the **scene's own** light level, not the level where the light
+stands, so a lamp set to come on in the dark will not notice that it is indoors.
+
+Like the scene control below, a light remembers the tiers you picked rather than the numbers
+behind them, so retuning how bright a tier is drawn carries every light along with it. Lights you
+have never set through these dropdowns are left alone — they show their nearest tiers, and
+nothing is written until you choose one. Token lights do not have this control, because Foundry
+does not offer the field on a token sheet.
+
+```js
+game.pf1Lighting.render.lights()        // which lights carry a range, and whether they match
+game.pf1Lighting.render.resyncLights()  // force the pass
+```
+
 A light **standing inside** a darkness that could block it is out entirely — it does not shine
 out of the far side just because its radius reaches past the edge. Magical light that out-levels
 the darkness, and anything marked as *daylight*, is unaffected.
@@ -237,9 +254,17 @@ Scenes you have never set through this dropdown are left alone — the dropdown 
 nearest tier so it reads sensibly, but nothing is written until you choose one. A scene with
 **darkness locked** is skipped and reported, because Foundry refuses darkness changes on it.
 
+The **lighting controls** carry the same four levels as buttons — *Set ambient light to Bright /
+Normal / Dim / Dark*, in place of Foundry's *Transition to Daylight* and *Transition to Darkness*.
+They change the scene at once rather than fading over ten seconds, which against four discrete
+levels was a slow step through the two in between. They set the tier, not just the number, so a
+scene set by a button behaves exactly like one set from the dropdown. A scene with **darkness
+locked** shows no buttons, the same as in vanilla.
+
 ```js
 game.pf1Lighting.render.scenes()        // which scenes carry a tier, and whether they match
 game.pf1Lighting.render.resyncScenes()  // force the pass
+game.pf1Lighting.render.setSceneTier(2) // what the buttons do; 4 Bright … 1 Dark
 ```
 
 ### An area with its own light level

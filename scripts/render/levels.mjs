@@ -27,6 +27,7 @@ export {
   darknessTable,
   setDarknessTable,
   tierFromDarkness,
+  darknessBand,
 } from "../model/tiers.mjs";
 
 /**

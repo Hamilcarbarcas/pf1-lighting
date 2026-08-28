@@ -257,6 +257,17 @@ export function status() {
 
   const report = {
     enabled: isEnabled(),
+    // **Which branch `_updateCommonUniforms` takes, and the field this report was missing.**
+    // `true` inverts the band so global illumination contributes no brightness at all (§6.2.10).
+    // `false` only *narrows* it, which leaves the source washing over every fragment the model
+    // says is Dim or brighter — so anything that raises a dark room above Dim, a §3.4 spill most
+    // obviously, gets that wash on top of whatever else is lighting it. Two lighting passes over
+    // one patch of floor, with the seam following the thing that raised it.
+    //
+    // Added 2026-08-28, after that seam was reported along a spill contour and the report gave no
+    // way to tell the two branches apart. The default is `true`; a world that predates it can have
+    // `false` stored, which is the trap `setting_onchange_fires_on_create` describes.
+    lightsInTexture: lightsInTexture(),
     cutoff: globalLightCutoff(),
     table: { ...darknessTable() },
     // The solved light weights. `bright: 1` here means they are **not** installed, and a light's

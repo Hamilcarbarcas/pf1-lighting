@@ -387,7 +387,7 @@ export function rebuild({ force = false } = {}) {
         // the seam this list of properties exists to prevent.
         tiers: zones.tiers,
         attenuation: source.data?.attenuation,
-        color: source.data?.color ?? undefined,
+        color: source.data?.color ?? null,
         // **The comment above claimed this for months and the code never did it.** A split
         // cell's clones were built with no `animation`, so an animated light stopped animating
         // at the cut — the one place §6.2.1's "the seam is invisible" stops being true, because
@@ -451,7 +451,7 @@ export function rebuild({ force = false } = {}) {
       // for. Harmless while `reduced` stays unreachable under the `darkness` preset, and one
       // fewer thing to rediscover when it stops being.
       attenuation: cell.emitter.source.data?.attenuation,
-      color: cell.emitter.source.data?.color ?? undefined,
+      color: cell.emitter.source.data?.color ?? null,
     });
   }
 
@@ -509,7 +509,7 @@ export function rebuild({ force = false } = {}) {
         // The overlap's resolved tier is the *band*'s; the inner zone stays the emitter's own, so
         // a clone still has the two-zone shape it is cloning. §6.2.9.
         tiers: { inner: emitter.emission?.tier ?? TIER.NORMAL, band: cell.tier, base },
-        color: source.data?.color ?? undefined,
+        color: source.data?.color ?? null,
         // The three that make the clone's curve identical to the original's. Attenuation drives
         // both `SWITCH_COLOR` and `FALLOFF`, so a default here would reintroduce the step it is
         // here to remove.

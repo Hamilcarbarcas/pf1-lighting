@@ -375,6 +375,50 @@ readout, so the diagnostic has to name what it *excluded*. `probe.at()` reports 
 emitters whose polygon covers the point and whose contribution came out 0 — with their resolved
 emission.
 
+#### 3.2.2 The band cap is not floored at the emitter's tier — FIXED 2026-08-28
+
+Patrick, 2026-08-28: *"it does not appear to be enforced — max seems to be automatically set to the
+brightness level of the inner radius (it should default to that, but max should be able to override
+it)."*
+
+`normaliseEmission` read `cap: Math.max(tier, emission?.cap ?? tier)`, so a *Max* set below the
+light's own level was silently raised back to it and the control looked ignored — because it was.
+
+The reasoning behind the floor was *a cap below the set tier is meaningless, since a band can only
+raise*. The premise is right and the conclusion does not follow: **the cap bounds the band, and the
+band raises whatever is already there — the ambient, not this emitter's inner tier.** A bright lamp
+with a normal-capped halo is an ordinary thing to author, and the floor made it unauthorable.
+
+Nothing downstream needed it. `contest.stack`, `field.overlapCells` and `light-ramps.zonesFor` all
+resolve a band as `max(base, min(step(base, n), cap))` — §3.2.1's rule, which by construction already
+refuses to let a low cap *lower* anything. The floor was defending against a case the rule had
+covered.
+
+##### The fallback divergence it exposed
+
+Removing it surfaced a second fault. Where `cap` was absent the four consumers disagreed:
+
+| site | fallback |
+| --- | --- |
+| `contest.mjs` — the **model** | `TIER.NORMAL` |
+| `light-ramps.mjs` ×2, `renderer.mjs` — the **picture** | `emission.tier` |
+
+For a Bright lamp that is the overlay reading Normal while the screen reads Bright: two answers to
+one question, each individually defensible, and the hardest kind to chase. `normaliseEmission` sets
+`cap` for anything built from a real light, so it is a guard on synthetic entries rather than a live
+path — aligned anyway to `cap ?? tier ?? NORMAL`, with `ramp.contributionAt` now carrying `tier` on a
+band contribution for the purpose. A divergence that only fires on an unusual input is one that
+surfaces on an unusual day.
+
+##### The control surface
+
+*Maximum* became *Max* and selects were given a real flex basis (§10.10). A `<select>` in a flex row
+shrinks below its own content unless told not to, so the three-control *Increase brightness* row
+collapsed the dropdown to an unreadable sliver while the two-control *Brightness* row above it was
+fine. *Steps* is sized to its content too — one digit, 0–4, and it had been claiming the same width
+as a radius in feet.
+
+
 ### 3.3 Suppressors
 
 ```
@@ -2990,6 +3034,80 @@ light's cut edge lies along the wall that cut it — and where they are not, the
 `2 × transitionWidth` and the two fields agree at its edge, so the seam is where sharp and blurred
 were converging anyway.
 
+#### 6.4.8 The blur's taps were the banding — FIXED 2026-08-28
+
+Patrick, 2026-08-28: *"rounded blurring/gradients look really good, but straight line ones are much
+less so … a shadow along a straight wall does not blur well at all, and looks very discrete"*, and
+then, after §6.4.7 was ruled out: *"the sharp wall cutoffs aren't actually showing sharp. They're
+removing the smear, but not the gradient the smear acts on. The issue isn't that the smear is bad,
+but that there's still a gradient there at all."*
+
+Settled by measuring the field rather than reasoning about it. A transect of the darkness-level
+texture across the boundary changed value **every 8 screen pixels**, and its first differences were
+a clean bell:
+
+```
+0.015 0.028 0.051 0.078 0.106 0.126 0.126 0.109 0.078 0.051 0.028 0.012
+```
+
+**The derivative of a blurred step is the kernel**, so that bell is the fifteen taps of the blur
+itself, one per terrace. The ramp between them is perfectly smooth and finely quantised — the 8-bit
+`RED` texture and the tier ladder were both innocent.
+
+`PIXI.BlurFilter` spaces its taps `blur / quality` apart and nothing else moves them:
+`generateBlurVertSource` offsets tap `i` by `(i - 7) * strength`, and `BlurFilterPass#apply` sets
+that strength to `blur / passes`. Quality was left at PIXI's default of 4; at Patrick's zoom
+`blur ≈ 32`, and `32 / 4 = 8`. The arithmetic and the measurement agree to the pixel.
+
+So it was never a Gaussian — it was a comb, and a step convolved with a comb is a staircase. It
+reads as banding on straight boundaries and not on curved ones for the reason any regular sampling
+artefact does: along a straight edge the terraces line up into a stripe the eye can follow, and
+around a curve the same terraces are staggered and read as texture. *"Rounded ones look really
+good"* was the diagnosis, not a compliment.
+
+`quality` is now solved from the running blur to keep the taps within two screen pixels, bounded at
+24 passes. PIXI distributes one blur across its passes rather than compounding it, so this holds the
+visible width and only makes the profile smoother — nothing needs compensating. It is retuned on
+every sync rather than only when the setting changes, because zoom moves `filter.blur` without
+moving `strength`.
+
+##### The knob this file had already turned, in the wrong direction
+
+`kernelSize` was raised from PIXI's default 5 to 15 with the note *"the tap count is the one place
+§7.0 step 5's finding still applies, and this is the smooth end of what `PIXI.BlurFilter` offers."*
+More taps at the same spacing makes the kernel **wider**, not denser — 15 taps spanning
+`±7 × spacing` reach three times as far as 5 do, at identical coarseness. So the change widened the
+smear and left the banding exactly where it was, which is a fair description of the symptom that
+followed. It stays at 15, because a wider kernel per pass is a smoother profile *once the spacing is
+fixed*; it was simply never the term that fixed it.
+
+`render.blur()` reports `quality` and `tapSpacing`. `quality` pinned at its cap with the spacing
+still high means the transition is wider than the pass budget can sample — lower `transitionWidth`
+or raise the cap.
+
+**This smoothed the gradients; it did not make a wall's edge sharp**, which was the actual request
+§6.4.7 exists to serve. Those are separate defects that shared one symptom, and only the sampling
+half is fixed here. See Appendix C, *a wall's edge is still not sharp*.
+
+**`quality` is the cost term**, since it is the pass count in each direction. Solving for a
+two-pixel spacing on a wide transition can reach the 24-pass cap, which is 48 full-screen passes
+over the darkness texture per repaint — not per frame, since the container only redraws when it is
+dirty, but a visible hitch on a busy repaint would come from here first. `TAP_SPACING` is the knob:
+raising it to 3 or 4 cuts the passes proportionally and the banding it buys back is well under what
+was measured.
+
+##### What this cost, and the rule it earns
+
+Two wrong answers before the measurement: §6.4.7's wall mask, which was a real hard edge and not
+this one; and the tier ladder, on the strength of a note this project had itself written
+predicting exactly that risk. Both fit *"straight bad, curved good"* — and so does every regular
+sampling artefact, which is what should have been suspected first.
+
+> **A defect that tracks the *orientation* of a boundary rather than its content is a sampling
+> artefact.** Nothing in the model knows which way a wall runs. Measure the field before
+> theorising about what put it there — one transect settled in a single command what two rounds of
+> reading source did not.
+
 #### 6.4.3 One gradient, everywhere — BUILT AND PLAY-TESTED, 2026-08-27
 
 Patrick, 2026-08-27: *"our implementation looks very piecemeal right now. Can we consolidate that
@@ -5455,6 +5573,97 @@ Dark yields `B = 0`, which then resolves through the default floor of Dark and c
 **Dark**. The fix is one line in the writer, not the model: when *set* is chosen the section
 writes `floor` equal to the clamp target, so the two cannot disagree.
 
+#### 10.4.1 The activation range is a tier range — built 2026-08-28
+
+Patrick, 2026-08-28: *"I want to update the darkness activation range in light settings — rather
+than a numerical value, I want them to be dropdowns of our light levels."*
+
+`config.darkness.min`/`max` gate the source on `canvas.darknessLevel`
+(`canvas/placeables/light.mjs:148-159`), a raw `[0,1]` number, against a model that quantises the
+ambient to four rungs. §10.5's argument about the scene slider applies unchanged: a continuous
+control offers precision that does not exist. Both inputs are **moved** into hidden slots and
+driven by a pair of tier dropdowns, the same relocation §10.3 uses for the radii and for the same
+reason — two fields sharing a `name` make `FormDataExtended` return an array.
+
+| Group | Controls |
+| --- | --- |
+| Active when scene is | brightest (`activeFrom`) · **down to** · darkest (`activeTo`) |
+
+Outside both branches of §10.4's table, because Foundry gates a *darkness* source on the same
+field — `_isLightSourceDisabled` runs before the source is built.
+
+##### Two ways to map it wrong
+
+**The range is bands, not points.** `darknessTable()[tier]` is the level a tier *paints* at; the
+set of levels that *read back* as that tier is a band around it. They are not the same set and
+only coincide on scenes configured through §10.5's dropdown. Writing the point levels would leave
+a light set to *Normal* switched off on a scene at darkness 0.30 — which the module itself calls
+Normal, and says so in its own readout. `tiers.darknessBand(tier)` is the inverse as a range:
+midpoints to the neighbouring rungs, `[from, to)`, neighbours found by **sorting on level** rather
+than by position, because the table is four editable settings and nothing stops a GM from making
+Dim brighter than Normal.
+
+The half-open interval matters. `Number#between` is inclusive at both ends
+(`primitives/number.mjs:83`, and `light.mjs:159` calls it with two arguments), so the dark end is
+closed by hand with a 1e-6 nudge. That is not defensive rounding: the Normal/Dim edge under the
+default table is exactly **0.5**, which is where a hand-dragged darkness slider likes to sit, and
+without the nudge *Bright→Normal* and *Dim→Dark* would both claim it. With it, the four tiers
+partition `[0,1]` exactly — verified against `matched`, `even`, `bands` and a retuned table.
+
+**The two ends invert.** Low darkness is bright light, so the *brightest* tier drives `min` and
+the *darkest* drives `max`. Nothing in the control says min or max; both dropdowns are in tiers
+and the joining word carries the direction. The ordering is also enforced in the sheet rather
+than left to the schema — `LightData` refuses `darkness.max < darkness.min` outright
+(`common/data/data.mjs:68`), which as a failure mode is a validation error on save rather than
+anything the GM could see coming. Whichever select was just moved keeps its value.
+
+##### What it does not do
+
+The test is `canvas.darknessLevel` — the **scene's** number, not `areas.ambientTierAt` at the
+light's own position. A lamp set to come on in the dark does not notice that it is standing in an
+unlit building on a bright scene. Reaching the per-region ambient would mean overriding
+`_isLightSourceDisabled`, which is a §6.2.10 question and not this change; the hint says plainly
+which level is being tested rather than letting the tier vocabulary imply the other one.
+
+##### Storing the tier, and the restraint around it
+
+§10.5.1's argument applies verbatim — the tier a GM chose is a fact about history and cannot be
+recovered from the number once the table is editable — so `activeFrom`/`activeTo` are the source
+of truth and the numbers are derived output, resynced from the same `tierTableChanged` broadcast
+and `canvasReady` net, behind the same `activeGM` writer guard. `render.lights()` reports which
+lights carry a range and whether their numbers still match; `render.resyncLights()` forces it.
+
+The restraint is the part that took a decision. Unlike the scene control, this sheet submits its
+whole form on save, so a light merely *opened* would have had its hand-set range snapped onto the
+nearest band edge. §10.5.1 says leave it alone, and that wins here too: the flag carriers ship
+`disabled` until a dropdown moves, and `FormDataExtended` omits disabled fields, so a light that
+has never been through this control writes no flag and keeps its numbers exactly. The cost is
+that the dropdowns can then disagree with the stored numbers, so the hint says when they do
+rather than the control quietly pretending otherwise.
+
+##### Not governed by presets
+
+`activeFrom`/`activeTo` are deliberately absent from `GOVERNED` (§10.2), on the same footing as
+the radii: they say where this particular light is placed and when the GM wants it burning, not
+what kind of thing it is. A torch that only burns after dark is still a torch.
+
+##### The token sheet has no such field
+
+`templates/scene/token/light.hbs` omits the activation range entirely, though `LightData` carries
+it. There is nothing to relocate, so the row is left out rather than rendered with nothing behind
+it. Adding it for tokens would mean authoring the inputs ourselves, which is a feature rather
+than this change.
+
+##### A tie rule that was not holding
+
+Found while checking that a band round-trips its own lower edge. `tierFromDarkness` resolves an
+exact tie to the darker rung by visiting darkest-first with a strict `<` — but a midpoint
+computed as `(a + b) / 2` is not reliably equidistant in binary. `(2/3 + 1) / 2` sits one ulp
+nearer ⅔ than 1, so the Dim/Dark boundary resolved to **Dim** while the Normal/Dim boundary at
+0.5 resolved to Dim as intended: the rule held or broke depending on which rungs it fell between.
+The comparison now carries a 1e-9 tolerance. Everything it changes was decided by float noise
+before it, and it was invisible until something asked the inverse question.
+
 ### 10.5 The scene — one control, not two
 
 The tier → darkness-level table is the one number §7.0 says can only be settled by looking at a
@@ -5550,6 +5759,48 @@ the protected `_setValue`, which would only exist on the custom elements — a p
 
 `render.scenes()` reports which scenes carry a tier and whether their stored level still matches
 it; `render.resyncScenes()` forces the pass.
+
+#### 10.5.2 The lighting palette — four buttons, no transition — built 2026-08-28
+
+Patrick, 2026-08-28: *"vanilla, there's transition to daylight and transition to darkness buttons
+in the lighting controls. They transition over 10 seconds, which looks stilted and slightly
+glitchy with our new discrete light settings system."*
+
+Core's `day` and `night` tools are **deleted** from the palette and replaced by one button per
+tier — sun, cloud-sun, cloud-moon, moon, brightest first, keeping core's two icons at the ends so
+the buttons a GM already knows keep their meaning. Two independent reasons, either of which would
+be enough:
+
+- **The animation crosses states the model does not have.** They slide `darknessLevel` over
+  `CONFIG.Canvas.darknessToDaylightAnimationMS` — ten seconds — and every frame of that slide is a
+  darkness the four-rung ladder has to quantise. What the GM sees is not a fade but the ambient
+  stepping through Dim and Normal on its way somewhere else, with the model recomputing at each
+  rung crossing. The same objection §10.5 makes to the slider, in time rather than in value.
+- **They write the number without the tier.** §10.5.1 makes `flags.pf1-lighting.tier` the source
+  of truth, so a scene set by core's button is a scene this module has to fall back to guessing
+  about, and the next tier-table change moves it somewhere the GM did not put it.
+
+`setSceneTier(tier)` writes both fields in one update and **omits `animateDarkness`**, which is
+what makes it instant: `Scene##onUpdate` only reaches for the animator when the option is present
+(`documents/scene.mjs:606`), so leaving it out is a different code path rather than a zero
+duration. `canvas.environment.initialize()` still dispatches one `darknessChange`
+(`groups/environment.mjs:193-200`), so `spill.watchDarkness` and everything downstream of it fire
+exactly once instead of six hundred times.
+
+**No current-tier marker on the buttons.** `SceneControlTool#active` is documented as not
+applicable to buttons and is overwritten at prepare time anyway
+(`ui/scene-controls.mjs:265`), and `cssClass` is rebuilt on the same line — so marking the
+current tier would take a `renderSceneControls` DOM pass *plus* a controls re-render on every
+darkness change, including ones this module did not cause. Core's day/night carried no state
+marker either. Left out; the scene config and the map both already say where the scene is.
+
+The lock is handled the way core handles it: `visible` is evaluated inside `#prepareControls`,
+which core re-runs on `canvasReady` and whenever `darknessLock` changes
+(`documents/scene.mjs:625-627`) — the two moments it could go stale — so honouring the lock needs
+nothing of its own. `setSceneTier` refuses and says so regardless, because it is also a public
+call.
+
+`render.setSceneTier(tier)` is the same entry point from a macro.
 
 ### 10.6 Settings
 
@@ -5893,6 +6144,64 @@ Two smaller things worth having recorded:
   emitter is a disc on the floor — so consulting it here would make ambient the one quantity
   with a third dimension, and a cellar authored at its real depth would then apply to nothing.
 
+#### 10.7.1 No global light source meant no ground at all — FIXED 2026-08-28
+
+Patrick, 2026-08-28: *"it's definitely global illumination getting turned off — if I manually
+uncheck it at any light level the brightness inside the light look the same as they do when the
+scene is set to dark … it only happens when inside a region with our restrict global illumination
+setting enabled. If I move the light outside it they look as they should."*
+
+`registry.buildEmitters` drops a source that is not `active` (`registry.mjs:259`), the global light
+source included — and **every ground-emitting branch in `field.mjs` was gated on that entry
+existing.** So whenever global illumination was off, the field emitted no `ambient` cells at all,
+and the darkness-level texture had nothing in it.
+
+What stands in is core's clear colour, and core keeps it at `canvas.environment.darknessLevel`
+(`groups/effects.mjs:240-241`) — **the scene's own number, flat across the whole map**. Every
+ambient area silently lost its tier, and a light inside one was then drawn against the scene's
+background rather than the room's. The model was never involved and never wrong, which is why the
+overlay stayed right throughout.
+
+Three routes to one condition, which is why it looked like three separate bugs:
+
+| Route | Why the source goes inactive |
+| --- | --- |
+| The scene's *Global Illumination* checkbox | `globalLight.enabled` is false |
+| The scene set to Dark | darkness leaves the source's own `darkness.min/max` band |
+| A *Restrict Global Illumination* region | the behaviour's whole purpose |
+
+**The ground's tier was never the source's to give.** `registry.ambientBrightness` is
+`tierCeiling(ambientTier(point))`, and `ambientTier` reads the scene's darkness and its areas —
+neither consults the global light source. So `groundBrightness(ambient)` falls back to it, the
+branches lose their `ambient &&` gates, and on a scene with no areas this reproduces the clear
+exactly and nothing moves. What it adds is the area tiers, which had no other way into the texture.
+
+`ambientB` and `domainBases` keep their `ambient` gates deliberately. Those are *contest* inputs —
+what a suppressor transforms down from — and 0 is the right answer there when nothing is lighting
+the scene. That leaves a known inconsistency: a *darkness* cast inside an ambient area on a scene
+with global illumination off transforms from 0 rather than from the area's tier. Not this report,
+and fixing it changes model output rather than the picture, so it is recorded rather than bundled.
+
+##### The wrong turn before it
+
+The first fix attempt was `cell.base` — read in `light-ramps.rampsFrom` as `cell.base ?? sceneTier`
+and, it turned out, **never assigned anywhere.** That is a real defect and the fix for it is kept:
+`baseFor(emitter)` stamps `areas.ambientTierAt` at the emitter's origin onto every cell it
+produces, so `levels.levelForTier` gets the ambient the light is standing on instead of the
+scene's. `stack` cells already knew — `emitStacks` is called once per domain and takes `base` as an
+argument — and simply never carried it onto the cell.
+
+It was not, however, *this* bug, and the reason is worth keeping: **it fit the region clue, and the
+region clue had two mechanisms behind it.** Ambient areas are both the thing `cell.base` was wrong
+about and the thing that turns the global light source off, and the first was a defect visible in
+the source while the second needed core's clear-colour behaviour to see. Patrick's own reading —
+*"it's definitely global illumination getting turned off"* — was the discriminator, and it was
+available a round earlier than it was used.
+
+*General shape, and the second time this section has produced it: a value that is right in two of
+the three places it is consumed. Here the ground's tier was right in the model, right in the
+overlay, and absent from the picture.*
+
 ### 10.8 Build order
 
 1. ~~`model/presets.mjs`~~ — **built 2026-08-24.**
@@ -6201,6 +6510,41 @@ Clear an entry only after seeing it work, and delete it rather than annotating i
 
 ### Awaiting the next play session
 
+#### §3.4.1 light spill — the geodesic rewrite, 2026-08-28
+
+Play-tested through five rounds and signed off: *“ok, that fixed it.”* The bands, the contours, the
+one-march-per-room grouping, the per-tier ladder, and both eligibility fixes were each provoked and
+confirmed on a live scene. Not carried here as unverified.
+
+**Three things are worth a second look when convenient, none blocking:**
+
+- **Does the falloff band?** §7.0 step 5’s gradient mesh is dormant — `spill.ramps()` returns empty
+  — on the bet that 40/20/10 ft bands are wide enough to read on §6.4.4’s blur alone. If the steps
+  are visible, ask `geodesic.contour` for quarter-band thresholds instead of tier thresholds and
+  hand the rings over with the distances they already carry. §3.4.1 has the detail.
+- **A double-drawn wall now needs the window cut in both faces.** The occlusion probe (§3.4.1) is
+  exact about what separates two samples, so an inner face standing behind an outer one blocks it.
+  Believed correct rather than regressive; `spill.stats().rejected.occluded` counts it if not.
+- **A 1.25 ft gap no longer passes light** at the default 25 px resolution, where 2.5 ft does. Almost
+  certainly the right answer for a slot that narrow, but it is a behaviour change from the old
+  construction and nobody has met one in play yet.
+
+#### The intermittent brightness fault, 2026-08-28 — closed
+
+Four rounds of wrong diagnoses before §6.2.13 found it: a pooled source keeping the previous
+occupant’s `color`. Worth recording what the wrong turns cost, because the shape recurs.
+
+The fault was **intermittent, cleared on reload, and left the overlay correct**. Each of those
+pointed away from the model and at reused state, and each was individually explained away instead —
+as a stale cache, as a threshold, as a cap. The colour cast was the decisive clue and it arrived
+last: an *orange tint matching a light that was switched off* can only be a copy held somewhere no
+live source owns.
+
+> **Intermittent + clears on F5 + model is right = something is being reused, not something is being
+> computed wrong.** Reach for the pool before the model. Three of the four faults this shape has
+> produced in this module were pooled-source state; none was ever arithmetic.
+
+
 #### Cleared 2026-08-27 — the rendering rewrite
 
 Patrick, at the end of the session: *"I think we're looking good on the lighting rendering side of
@@ -6290,6 +6634,90 @@ re-lights a region and cuts off hard at its clip boundary.
 > per-point tooltip. Had the field lost the summation too, all three views would have agreed and all
 > three would have been wrong. A grid sampler painting `evaluate()` per square is the companion to
 > `transect` (is this edge smooth) and `isolate` (which layer owns it).
+
+#### 6.2.13 A pooled source keeps what the payload does not mention — FIXED 2026-08-28
+
+Patrick, 2026-08-28, after four rounds on an intermittent brightness fault: *"this time it's adding
+an orange tint to the incorrect lighting that seems to match the tint of another light on the scene
+(the one I turned off in the screenshot, seeing if disabling it would clear the bug — it did not)…
+I really feel like we aren't holding to the paradigm of the overlay model being the only thing that
+affects lighting in the scene."*
+
+Correct, and the violation was §9.5's pool rather than anything in the model.
+
+##### The mechanism
+
+`BaseEffectSource#initialize` writes only the keys the payload **mentions**, and `reset` defaults to
+`false` (`base-effect-source.mjs:126160-126174`):
+
+```js
+for ( const key in data ) {
+  if ( !(key in this.data) ) continue;
+  this.data[key] = data[key] ?? this.constructor.defaultData[key];
+}
+```
+
+On a fresh source that is harmless — everything is at its default already. On a **pooled** source it
+means an omitted key silently inherits the previous occupant's value. The `??` inside that loop is
+the escape hatch: an explicit `null` resolves to the class default, which is the reset a fresh
+source would have had.
+
+`pool.fill` spread two keys in conditionally:
+
+```js
+...(color !== undefined ? { color } : {}),
+...(seed  !== undefined ? { seed  } : {}),
+```
+
+directly beneath a comment explaining why that shape is wrong for a third:
+
+> *Pooled, so these are assigned unconditionally rather than only when present — a source reused
+> from an animated clone into a still one would otherwise keep flickering.*
+
+`animation` had been fixed for exactly this failure and the neighbouring keys were left alone.
+
+The call sites made it certain rather than merely possible. All three in `render/renderer.mjs`
+passed `source.data?.color ?? undefined`, and an **uncoloured light's `data.color` is `null`** — so
+`null ?? undefined` is `undefined`, and the key vanished at precisely the moment the payload most
+needed to say *no colour*.
+
+##### Why every symptom followed
+
+- **The tint belonged to the pool slot, not to a source.** Switching the orange lamp off changed
+  nothing; the slot had its own copy.
+- **Moving the lamp to dim changed the colour** rather than clearing it — a different partition, a
+  different slot, a different previous occupant.
+- **It needed pool reuse to appear**, so it was intermittent, and churning global illumination and
+  doors provoked it: that churns the cell partition, which is what reshuffles the pool.
+- **F5 always cleared it**, because `dispose()` destroys the pool.
+- **The overlay stayed right throughout**, because the model has no colour axis at all. Brightness
+  came from the texture exactly as §7.0 step 6 intends; a stale *source* was painting coloration
+  over the top.
+
+##### Where the paradigm line actually sits
+
+§6.2.10 reads as though the model owns everything. It owns **brightness**, and has since §7.0
+step 6. It does not own **colour** — §6.2.9 keeps a light's colour, flicker and animation coming
+from the real source on purpose, because the model has no colour axis to express them with.
+
+So the rule this leaves is narrower than §6.2.10's and still absolute:
+
+> **No source may paint colour on ground no live light reaches.** Brightness is the model's alone;
+> colour belongs to whichever source is actually there, and to no other.
+
+##### The general lesson
+
+**Anything reused across frames must state its whole payload, every time.** A conditional spread is
+correct for a freshly constructed object and a latent bug for a pooled one, and the two read
+identically at the call site. §9.5 exists because construction dominates the renderer's cost, so the
+pool is not optional — which makes "assign unconditionally" a standing rule for everything that goes
+through `pool.fill`, not a fix for two keys.
+
+The three earlier faults this resembles are all the same shape: four bugs from cloning
+`GlobalLightSource` property by property (§7.0), a split cell's clones never carrying their
+animation (§7.0), and a pooled *darkness* clone that nothing ever wrote `HIDDEN` to (2026-08-25).
+Four occurrences is a pattern, and the pattern is the pool.
+
 
 #### 10.6.2 Settings audit — 2026-08-27
 
@@ -6770,3 +7198,37 @@ Add to this list whenever something is built without being seen.
 | **Two observers with umbra painting** (§5.3) | Two vision-shared tokens on opposite sides of a darkness. A point shadowed for one and lit for the other must render **lit**. | The multi-observer intersection was rewritten as an exact identity rather than the approximation §5.3 assumed. Verified with two observers before umbra was *painted*; the painting path has only ever run with one. |
 | **Cost during a drag** (§9.5) | Drag a token across a scene with a darkness on it. Motion should stay smooth. | The pass is deliberately outside `renderer.rebuild()` so movement never re-initialises a source, but it now runs two sweeps per observer rather than one. `render.paint().ops` says how many Clipper calls a frame is paying; `split` says how many cells the clamp guard did not skip. |
 
+
+### Dropped 2026-08-28 — a wall's edge is still not sharp
+
+Patrick, 2026-08-28, after §6.4.8: *"The gradients are now buttery smooth, but the goal here was
+not to smooth the gradients, but rather keep a sharp edge along walls. That said, this issue
+doesn't really seem to show anything for players, and it's really just a DM side visual
+discrepancy, so I'm willing to drop it."*
+
+Recorded rather than fixed, because the diagnosis is worth more than the state it describes and
+the next person to look will otherwise start where the last two rounds started.
+
+**§6.4.7 cannot make a wall's edge sharp, and never could.** It chooses per fragment between the
+blurred field and the **unblurred** one — and the unblurred field is not hard at a wall either.
+`render/transition.levelAtDistance` bakes a Hermite ramp into the field itself, and every producer
+calls it; `render/light-ramps.mjs` evaluates it as *distance from the light's origin*. So a light's
+falloff is a genuine gradient written into the darkness-level texture, which runs up to the wall
+and is clipped by it. Suppressing the blur reveals that ramp, not a step.
+
+Patrick had this exactly right a round before it was acted on — *"they're removing the smear, but
+not the gradient the smear acts on"* — and it was read as a description of the blur instead of of
+the field.
+
+**Where a fix would go, if it is ever wanted.** Not in the mask and not in the blur: the field
+would have to carry the hardness. `emitAmbient` already has the vocabulary — its `hardEdge` flag
+marks a boundary that must not be feathered — but it is a property of a *cell*, and what needs
+marking here is one *edge* of a light's zone: the arc that came from a wall clip rather than from
+the light's own radius. `light-ramps` can tell them apart cheaply (a sweep vertex nearer the origin
+than `source.radius` is wall-derived by construction), which is the observation §6.4.7 rejected for
+the mask and which is the right one for this. `levelAtDistance` would then need a per-boundary
+hardness rather than one profile for the whole ramp.
+
+**What it costs to leave.** A GM-side discrepancy only: light bleeds about one transition width
+past a wall in the *picture*. The model is untouched, so nothing a player is told, nothing a
+creature can see by, and nothing in the readout moves.

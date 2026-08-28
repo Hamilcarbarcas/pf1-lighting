@@ -99,9 +99,12 @@ export const BUILT_IN = Object.freeze({
       cancelsDarkness: false,
       // **`emitTier` never applies and is set to match the cap anyway.** The inner radius is
       // zero, so `contributionAt` only reaches the inner zone at the origin point itself
-      // (`ramp.mjs:86`) — a candle sets no light level, it only raises whatever is there. What
-      // the value must not be is *above* the cap: `normaliseEmission` floors `cap` at `tier`
-      // (`ramp.mjs:66`), so the two disagreeing would silently raise the ceiling.
+      // (`ramp.mjs:86`) — a candle sets no light level, it only raises whatever is there.
+      //
+      // It used to matter that the two agreed, because `normaliseEmission` floored `cap` at
+      // `tier` and a higher `emitTier` would silently raise the ceiling. That floor is gone as of
+      // 2026-08-28 — `cap` now means what it says — so this is redundancy rather than a
+      // constraint. Left matching because a preset that reads oddly invites someone to "fix" it.
       emitTier: TIER.NORMAL,
       steps: 1,
       cap: TIER.NORMAL,

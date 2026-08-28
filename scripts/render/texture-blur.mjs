@@ -64,6 +64,57 @@ export const SETTING_SHARP_WALLS = "sharpWalls";
 
 const MARK = "pf1LightingFieldBlur";
 
+/**
+ * How far apart the blur's samples may land, in **screen** pixels. DESIGN.md §6.4.8.
+ *
+ * @remarks
+ * **`PIXI.BlurFilter`'s taps are spaced `blur / quality` apart**, and nothing else moves them.
+ * `generateBlurVertSource` offsets tap `i` by `(i - 7) * strength` and `BlurFilterPass#apply` sets
+ * that strength to `blur / passes` — so with the default quality of 4 and a wide blur the "Gaussian"
+ * is a comb, and a step edge convolved with a comb is a staircase.
+ *
+ * Patrick, 2026-08-28, measuring the field directly: the transect across a boundary changed value
+ * every **8 screen pixels** and its first differences traced a clean bell —
+ * `0.015 0.028 0.051 0.078 0.106 0.126 0.126 0.109 0.078 0.051 0.028 0.012`. The derivative of a
+ * blurred step *is* the kernel, so that bell is the fifteen taps themselves, one per terrace. At his
+ * zoom `blur ≈ 32` and `32 / 4 = 8`: the arithmetic and the measurement agree to the pixel.
+ *
+ * It reads as banding on straight boundaries and not on curved ones for the reason any regular
+ * sampling artefact does — along a straight edge every terrace lines up into a stripe the eye can
+ * follow, and around a curve the same terraces are staggered and read as texture.
+ *
+ * **Raising `kernelSize` was the wrong knob and this file had already turned it.** More taps at the
+ * same spacing makes the kernel *wider*, not denser: 15 taps spanning `±7 × spacing` is three times
+ * the reach of PIXI's default 5 at the same coarseness. It is kept at 15 because a wider kernel per
+ * pass is a smoother profile once the spacing is fixed — but it was never going to fix the spacing.
+ *
+ * Two screen pixels is chosen to sit just under what an eye can pick out of a low-contrast ramp
+ * while keeping the pass count bounded; `quality` is the number of passes in **each** direction, so
+ * this is the term that decides the cost.
+ */
+const TAP_SPACING = 2;
+
+/** Never fewer passes than PIXI's own default, and never more than this. */
+const MIN_QUALITY = 4;
+const MAX_QUALITY = 24;
+
+/**
+ * Passes needed to keep the taps within {@link TAP_SPACING} of each other.
+ *
+ * @remarks
+ * From the **running** blur, not the configured strength: `canvas.addBlurFilter` re-derives
+ * `filter.blur` from the stage scale on every zoom (`board.mjs:1657-1670`), so a map zoomed out far
+ * enough would otherwise spread the same taps over more screen than they were solved for.
+ *
+ * PIXI distributes one blur across its passes rather than compounding it, so raising `quality`
+ * holds the visible width and only makes the profile smoother. Nothing has to compensate.
+ */
+function qualityFor(strength) {
+  const blur = strength * (canvas?.stage?.scale?.x ?? 1);
+  const needed = Math.ceil(blur / TAP_SPACING);
+  return Math.min(MAX_QUALITY, Math.max(MIN_QUALITY, needed));
+}
+
 let filter = null;
 let lastStrength = null;
 
@@ -262,9 +313,7 @@ export function sync({ force = false } = {}) {
   }
 
   if (!filter) {
-    // Quality 4 and a 15-tap kernel: the tap count is the one place §7.0 step 5's finding still
-    // applies, and this is the smooth end of what `PIXI.BlurFilter` offers.
-    filter = new PIXI.BlurFilter(strength, 4, undefined, 15);
+    filter = new PIXI.BlurFilter(strength, qualityFor(strength), undefined, 15);
     filter[MARK] = true;
     filter.padding = 0;
   }
@@ -275,6 +324,10 @@ export function sync({ force = false } = {}) {
   // attached directly, so that path stays exactly what it was.
   const outer = sharpWalls() ? sharpWallFilter() : filter;
   if (container.filters?.[0] !== outer) container.filters = [outer];
+
+  // Zoom moves `filter.blur` without moving `strength`, and the tap spacing is derived from the
+  // running blur — so this is retuned every sync rather than only when the setting changes.
+  filter.quality = qualityFor(strength);
 
   if (force || lastStrength !== strength) {
     filter._configuredStrength = strength;
@@ -289,7 +342,12 @@ export function sync({ force = false } = {}) {
 
   if (sharpWalls()) wallMask.sync();
 
-  return { strength, applied: container.filters?.[0] === outer, sharpWalls: sharpWalls() };
+  return {
+    strength,
+    quality: filter.quality,
+    applied: container.filters?.[0] === outer,
+    sharpWalls: sharpWalls(),
+  };
 }
 
 /** Scene teardown — the container goes with the canvas, so this only drops our references. */
@@ -317,6 +375,13 @@ export function status() {
     strength: lastStrength,
     // In world units; `blur` is what PIXI is running, which is this times the stage scale.
     running: filter?.blur ?? null,
+    // **The banding number.** `tapSpacing` is how far apart the blur's samples land on screen, in
+    // pixels — `blur / quality`, and nothing else moves it (§6.4.8). Much above `TAP_SPACING` and
+    // a straight boundary shows the kernel's own taps as terraces. `quality` at `MAX_QUALITY`
+    // with the spacing still high means the transition width is wider than the pass budget can
+    // sample; lower `transitionWidth` or raise the cap.
+    quality: filter?.quality ?? null,
+    tapSpacing: filter ? +(filter.blur / filter.quality).toFixed(2) : null,
     applied: container?.filters?.[0] === filter && !!filter,
     // Above zero means the halos are also running, which would soften everything twice.
     haloesExpected: !isEnabled(),

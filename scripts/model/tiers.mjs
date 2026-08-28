@@ -264,6 +264,13 @@ const AMBIENT_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
  * tiers rather than sliding through them, which is the honest presentation of a quantised
  * model.
  *
+ * **The tie is decided with a tolerance, not on exact equality** (2026-08-28). A midpoint
+ * computed as `(a + b) / 2` is not reliably equidistant in binary: `(2/3 + 1) / 2` sits one ulp
+ * nearer ⅔ than 1, so the Dim/Dark boundary resolved to *Dim* while the Normal/Dim boundary at
+ * 0.5 resolved to *Dim* as intended — the rule held or broke depending on which rungs it fell
+ * between. Found by {@link darknessBand} failing to round-trip its own lower edge. Anything the
+ * tolerance changes was decided by float noise before it.
+ *
  * @param {number} darkness - 0..1
  * @returns {number} A {@link TIER} value in `[TIER.DARK, TIER.BRIGHT]`
  */
@@ -271,14 +278,53 @@ export function tierFromDarkness(darkness) {
   const d = Math.min(1, Math.max(0, darkness ?? 0));
   let best = TIER.DARK;
   let bestGap = Infinity;
-  // Darkest first, and `<` rather than `<=`, so an exact tie keeps the darker rung.
+  // Darkest first, and a rung must be *meaningfully* nearer to displace the darker one.
   for (let i = AMBIENT_TIERS.length - 1; i >= 0; i--) {
     const tier = AMBIENT_TIERS[i];
     const gap = Math.abs((table[tier] ?? 1) - d);
-    if (gap < bestGap) {
+    if (gap < bestGap - TIE) {
       bestGap = gap;
       best = tier;
     }
   }
   return best;
+}
+
+/** How near two rungs' distances must be to count as a tie. Far below any real rung spacing. */
+const TIE = 1e-9;
+
+/**
+ * The span of darkness levels that {@link tierFromDarkness} answers `tier` for.
+ *
+ * @remarks
+ * The inverse of `tierFromDarkness` as a **range** rather than a point, and the thing anything
+ * comparing a raw darkness number against a tier actually needs. `darknessTable()[tier]` is the
+ * level a tier *paints* at; it is not the set of levels that *read* as that tier, and a control
+ * built on the point rather than the band is wrong for every scene whose darkness was not set
+ * through §10.5's dropdown. See §10.4.1 — Foundry's own activation test is
+ * `canvas.darknessLevel.between(min, max)` on the raw number.
+ *
+ * Nearest rung means the edges are the midpoints to the neighbouring rungs, and ties-to-the-darker
+ * means the band is **`[from, to)`** — closed at the bright end, open at the dark end. A caller
+ * feeding an inclusive comparison has to close `to` itself.
+ *
+ * Neighbours are found by sorting on level rather than by position in {@link AMBIENT_TIERS},
+ * because the table is four editable settings and nothing stops a GM from making Dim brighter
+ * than Normal. A non-monotone table gives degenerate bands here rather than crossed ones; the
+ * tie rule in `tierFromDarkness` is the one place the two can still disagree, and only for a
+ * table that has already made a tier unreachable.
+ *
+ * @param {number} tier - A {@link TIER} value the ambient can hold
+ * @returns {{from: number, to: number}} Darkness levels, `from` inclusive and `to` exclusive
+ */
+export function darknessBand(tier) {
+  const level = (t) => table[t] ?? 1;
+  const ordered = [...AMBIENT_TIERS].sort((a, b) => level(a) - level(b));
+  const i = ordered.indexOf(tier);
+  if (i < 0) return { from: 0, to: 1 };
+  const here = level(tier);
+  return {
+    from: i === 0 ? 0 : (level(ordered[i - 1]) + here) / 2,
+    to: i === ordered.length - 1 ? 1 : (here + level(ordered[i + 1])) / 2,
+  };
 }

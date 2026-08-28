@@ -61,9 +61,21 @@ export function normaliseEmission(emission) {
     inner,
     outer,
     steps: Math.max(0, Math.trunc(emission?.steps ?? 1)),
-    // A cap below the set tier is meaningless — the band can only ever raise — so the floor
-    // here is the tier itself. Authoring `cap` at all is the rare case (§3.2.1's lever).
-    cap: Math.max(tier, emission?.cap ?? tier),
+    // **Not floored at `tier`, as of 2026-08-28** (Patrick: *"max seems to be automatically set to
+    // the brightness level of the inner radius (it should default to that, but max should be able
+    // to override it)"*).
+    //
+    // The old floor read `Math.max(tier, cap ?? tier)` on the reasoning that a cap below the set
+    // tier is meaningless because a band can only raise. The premise is right and the conclusion
+    // does not follow: the cap bounds the **band**, and the band's job is to raise whatever is
+    // *already there* — which is the ambient, not this emitter's inner tier. A bright lamp with a
+    // Normal-capped halo is an ordinary thing to want, and the floor silently turned every such
+    // halo Bright, so the control looked ignored.
+    //
+    // Nothing downstream needs the floor: `contest.stack`, `field.overlapCells` and
+    // `light-ramps.zonesFor` all resolve the band as `max(base, min(step(base, n), cap))`, which is
+    // §3.2.1's rule and already refuses to let a low cap *lower* anything.
+    cap: emission?.cap ?? tier,
   };
 }
 
@@ -86,7 +98,10 @@ export function contributionAt(distance, emission) {
   if (distance <= e.inner) return { zone: ZONE.INNER, tier: e.tier };
   // A band with no steps reaches nothing, and saying so here keeps it out of the sum.
   if (e.steps <= 0) return { zone: ZONE.NONE };
-  return { zone: ZONE.BAND, steps: e.steps, cap: e.cap };
+  // `tier` rides along unread by `contest.stack`'s band branch — it is the *inner* zone's level and
+  // a band has no use for it. It is here so the contest can fall back the same way the renderer
+  // does when `cap` is missing; see the note on that fallback in `contest.stack`.
+  return { zone: ZONE.BAND, steps: e.steps, cap: e.cap, tier: e.tier };
 }
 
 /**

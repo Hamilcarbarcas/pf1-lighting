@@ -41,12 +41,30 @@
  * `emitTier`/`steps`/`cap` **only** for emitters and `transform`/`floor` **only** for
  * suppressors. A light toggled to darkness and back keeps its emission settings, and the
  * opposite-mode flags sitting in the document are inert by construction.
+ *
+ * ## The activation range is a tier range (§10.4.1)
+ *
+ * `config.darkness.min`/`max` gate the source on `canvas.darknessLevel` — a raw `[0,1]` number
+ * against a model that quantises to four ambient rungs, so the same argument §10.5 makes about
+ * the scene slider applies: a continuous control offers precision that does not exist. Both
+ * inputs are moved into hidden slots and driven by a pair of tier dropdowns.
+ *
+ * Two things the mapping has to get right, and both are easy to get plausibly wrong:
+ *
+ * - **The range is bands, not points.** `darknessTable()[tier]` is the level a tier *paints* at;
+ *   the set of levels that *read* as that tier is `darknessBand(tier)`. Writing the point levels
+ *   would leave a light set to *Normal* off on a scene at darkness 0.30, which the module itself
+ *   calls Normal.
+ * - **The two ends invert.** Low darkness is bright light, so the *brightest* tier drives `min`
+ *   and the *darkest* drives `max`. The labels are in tiers throughout and never say min/max.
  */
 
 import { MODULE_ID } from "../constants.mjs";
 import { CUSTOM, GOVERNED, presetChoices, table as presetTable } from "../model/presets.mjs";
-import { TIER } from "../model/tiers.mjs";
+import { TIER, TIER_NAME, darknessBand, tierFromDarkness } from "../model/tiers.mjs";
+import { TABLE_CHANGED_HOOK } from "../render/levels.mjs";
 import * as registry from "../model/registry.mjs";
+import { isWriter } from "./scene-config.mjs";
 
 /** Our own de-dup marker. Per-feature, never a shared utility class. */
 const MARKER = "pf1-lighting-config";
@@ -150,6 +168,90 @@ const EFFECT_CHOICES = [
   { value: "clamp", label: "Set level to" },
 ];
 
+/* -------------------------------------------- */
+/*  Activation range (§10.4.1)                  */
+/* -------------------------------------------- */
+
+/**
+ * Scene light levels a light may be switched on at, brightest first.
+ *
+ * Mirrors `ui/scene-config.SCENE_TIERS` and for the same reason: the test is against the
+ * *ambient*, and Supernatural Dark is not somewhere ambient light can be.
+ */
+const ACTIVATION_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
+
+const ACTIVATION_CHOICES = ACTIVATION_TIERS.map((value) => ({
+  value,
+  label: TIER_NAME[value],
+}));
+
+/**
+ * How far below a band's open upper edge to land.
+ *
+ * @remarks
+ * `darknessBand` returns `[from, to)` but `Number#between` is **inclusive at both ends**
+ * (`primitives/number.mjs:83`, and `light.mjs:159` calls it with no third argument), so the
+ * dark end has to be closed by hand. It matters at exactly one value per boundary and that
+ * value is reachable: the Normal/Dim edge under the default table is 0.5, which is where a
+ * hand-dragged darkness slider likes to sit.
+ */
+const EDGE = 1e-6;
+
+/** Float comparison for "the stored number is still the one we would write". */
+const NEAR = 1e-6;
+
+/**
+ * A tier range → the `darkness.min`/`max` pair Foundry gates the source on.
+ *
+ * @param {number} brightest - The brightest ambient this light is on at
+ * @param {number} darkest - The darkest ambient this light is on at
+ */
+function rangeFor(brightest, darkest) {
+  const bright = darknessBand(brightest);
+  const dark = darknessBand(darkest);
+  return {
+    // Closed at the bright end already — a midpoint belongs to the darker tier, which is the
+    // one we are starting from.
+    min: bright.from,
+    max: dark.to >= 1 ? 1 : dark.to - EDGE,
+  };
+}
+
+/** A stored tier, or null if it is not one this control can have written. */
+const storedTier = (value) =>
+  Number.isFinite(value) && ACTIVATION_TIERS.includes(value) ? value : null;
+
+/**
+ * The tier range a light is set to, and whether it was set *through this control*.
+ *
+ * @remarks
+ * Flags first, numbers as the fallback — §10.5.1's argument, unchanged. A light that has never
+ * been through this control shows the nearest rungs so it reads sensibly, and **nothing is
+ * written until the GM picks one**: opening a sheet to change a radius must not quietly move a
+ * hand-authored range onto the nearest band edge. Foundry's own defaults of `0`/`1` read back as
+ * Bright→Dark, which is "always on" said in tiers.
+ *
+ * `exact` is the price of that restraint. Where the numbers do not already sit on the band edges
+ * the dropdowns claim, the two disagree — a light reading *Dim down to Dark* with `min = 0.6` is
+ * off at a scene darkness of 0.55, which is Dim. The hint says so rather than the control
+ * pretending otherwise, and picking either dropdown resolves it.
+ */
+function activationOf(config, minValue, maxValue) {
+  const storedFrom = storedTier(config?.activeFrom);
+  const storedTo = storedTier(config?.activeTo);
+  const stored = storedFrom !== null || storedTo !== null;
+
+  let from = storedFrom ?? tierFromDarkness(minValue);
+  let to = storedTo ?? tierFromDarkness(maxValue);
+  // Brightest carries the *higher* TIER value, so this is `from >= to`, not the other way.
+  if (from < to) [from, to] = [to, from];
+
+  const want = rangeFor(from, to);
+  const exact =
+    Math.abs(minValue - want.min) <= NEAR && Math.abs(maxValue - want.max) <= NEAR;
+  return { from, to, stored, exact };
+}
+
 /** Spell levels, with 0 named for what it means rather than numbered. */
 function levelChoices(zeroLabel) {
   const out = [{ value: 0, label: zeroLabel }];
@@ -162,8 +264,10 @@ function levelChoices(zeroLabel) {
  *
  * @param {object} config - Current module flags
  * @param {boolean} negative - Is this currently a darkness?
+ * @param {?{from: number, to: number}} activation - Tier range, or null if this sheet has no
+ *   `darkness.min`/`max` fields to drive (the token sheet does not)
  */
-function fieldset(config, negative) {
+function fieldset(config, negative, activation) {
   const magical = (config.kind ?? "mundane") === "magical";
   const transform = config.transform ?? {};
   const op = transform.op ?? "reduce";
@@ -259,11 +363,14 @@ function fieldset(config, negative) {
         <label>Steps</label>
         <input type="number" name="${FLAG}.steps" value="${esc(config.steps ?? 1)}"
                min="0" max="4" step="1">
-        <label>Maximum</label>
+        <!-- "Max", not "Maximum" (Patrick, 2026-08-28). Three controls share this row and the
+             long label was taking the width the dropdown needed to show its own value. -->
+        <label>Max</label>
         ${select(`${FLAG}.cap`, TIER_CHOICES, config.cap ?? emitTier, { numeric: true })}
       </div>
       <p class="hint">Beyond the inner radius the light raises whatever level is already there
-        by that many steps, never past the maximum.</p>
+        by that many steps, never past the maximum. Defaults to the level above, and can be set
+        lower — a bright lamp with a normal-capped halo.</p>
     </div>
   </div>
 
@@ -315,7 +422,51 @@ function fieldset(config, negative) {
         its like should reach Supernatural Dark.</p>
     </div>
   </div>
+${activation ? activationGroup(activation) : ""}
 </fieldset>`;
+}
+
+/**
+ * The activation range, in tiers. DESIGN.md §10.4.1.
+ *
+ * @remarks
+ * **Outside both branches**, because Foundry gates a darkness source on the same field
+ * (`light.mjs:148-159` runs before the source is built, so it applies whichever kind this is).
+ *
+ * The two hidden slots sit outside `.form-fields` deliberately: `styles/config.css` gives
+ * `.form-fields > span[data-slot]` `display: contents`, which would override the `hidden`
+ * attribute and put the raw 0–1 numbers back on screen beside the dropdowns.
+ */
+function activationGroup({ from, to, stored, exact }) {
+  // **Disabled until the range is this control's to own.** `FormDataExtended` omits disabled
+  // fields, so an untouched light that has never been set through here submits no flag at all
+  // and stays untouched — the same restraint §10.5.1 applies to scenes. `syncActivation` enables
+  // them the moment a dropdown moves.
+  const off = stored ? "" : " disabled";
+  return `
+  <div class="form-group slim">
+    <label>Active when scene is</label>
+    <div class="form-fields">
+      ${select(null, ACTIVATION_CHOICES, from, { drives: `${FLAG}.activeFrom` })}
+      <label>down to</label>
+      ${select(null, ACTIVATION_CHOICES, to, { drives: `${FLAG}.activeTo` })}
+    </div>
+    <span data-slot="darkness-min" hidden></span>
+    <span data-slot="darkness-max" hidden></span>
+    <input type="hidden" name="${FLAG}.activeFrom" value="${from}" data-dtype="Number"${off}>
+    <input type="hidden" name="${FLAG}.activeTo" value="${to}" data-dtype="Number"${off}>
+    <p class="hint">The light switches off outside this range. Tested against the
+      <strong>scene's own</strong> light level, not the level where the light stands — a lamp
+      set to come on in the dark will not notice that it is indoors.${
+        // Only for a light this control has never owned. A *stored* range that has drifted is
+        // snapped by the first `sync`, so saying it was set by hand would be describing a state
+        // the sheet has already corrected.
+        stored || exact
+          ? ""
+          : " <strong>This light's stored range was set by hand</strong> and does not line up with"
+            + " these levels; choosing either will replace it."
+      }</p>
+  </div>`;
 }
 
 /* -------------------------------------------- */
@@ -367,9 +518,11 @@ function show(node, visible) {
  * matter. The alternative — working out which control affects which other one — is a second
  * dependency graph to keep in step with the first.
  */
-function sync(root, prefix) {
+function sync(root, prefix, changed) {
   const fieldsetEl = root.querySelector(`.${MARKER}`);
   if (!fieldsetEl) return;
+
+  syncActivation(fieldsetEl, prefix, changed);
 
   const negative = root.querySelector(`[name="${prefix}.negative"]`)?.checked === true;
   const lightBranch = fieldsetEl.querySelector('[data-branch="light"]');
@@ -424,6 +577,56 @@ function sync(root, prefix) {
     const floor = fieldsetEl.querySelector(`[name="${FLAG}.floor"]`);
     if (floor && max !== undefined) floor.value = max;
   }
+}
+
+/**
+ * Drive `darkness.min`/`max` from the two tier dropdowns.
+ *
+ * @remarks
+ * The dropdowns carry no `name`, so nothing but the derived numbers and the two flag carriers
+ * reach `FormDataExtended`. The write happens here rather than on submit because
+ * `AmbientLightConfig#_onChangeForm` rebuilds a `FormDataExtended` from the live DOM on **every**
+ * change and previews it (`ambient-light-config.mjs:163-169`) — our fieldset's listener is inside
+ * the form's, so the numbers are already in place by the time core reads them, and the preview
+ * light goes out on screen the moment the GM picks a range that excludes the current darkness.
+ *
+ * **Ordering is enforced here, not left to the schema.** `LightData` refuses
+ * `darkness.max < darkness.min` outright (`common/data/data.mjs:68`), which as a failure mode is
+ * a validation error on save rather than anything the GM can see coming. Brightest carries the
+ * higher `TIER` value, so the valid relation is `from >= to`, and whichever select the GM just
+ * moved is the one that keeps its value.
+ */
+function syncActivation(fieldsetEl, prefix, changed) {
+  const fromSel = fieldsetEl.querySelector(`[data-drives="${FLAG}.activeFrom"]`);
+  const toSel = fieldsetEl.querySelector(`[data-drives="${FLAG}.activeTo"]`);
+  if (!fromSel || !toSel) return;
+
+  // Moving either dropdown is the GM adopting the control; from then on the numbers are ours to
+  // keep in step, including on the sheet's first `sync` after a later re-render.
+  if (changed === fromSel || changed === toSel) fieldsetEl.dataset.activation = "set";
+  if (fieldsetEl.dataset.activation !== "set") return;
+
+  let from = Number(fromSel.value);
+  let to = Number(toSel.value);
+  if (from < to) {
+    if (changed === toSel) from = to;
+    else to = from;
+    fromSel.value = from;
+    toSel.value = to;
+  }
+
+  const write = (name, value) => {
+    const input = fieldsetEl.querySelector(`[name="${name}"]`);
+    if (!input) return;
+    input.disabled = false;
+    input.value = value;
+  };
+  write(`${FLAG}.activeFrom`, from);
+  write(`${FLAG}.activeTo`, to);
+
+  const { min, max } = rangeFor(from, to);
+  write(`${prefix}.darkness.min`, min);
+  write(`${prefix}.darkness.max`, max);
 }
 
 /**
@@ -510,6 +713,18 @@ function fill(root, name, prefix) {
   for (const driver of root.querySelectorAll(`[data-drives="${FLAG}.cancelsDarkness"]`)) {
     driver.checked = !!preset.config.cancelsDarkness;
   }
+  // No shipped preset sets an activation range, and one that did would otherwise write the
+  // hidden carrier without moving the dropdown that `syncActivation` reads back out of it.
+  for (const key of ["activeFrom", "activeTo"]) {
+    if (preset.config[key] === undefined) continue;
+    for (const driver of root.querySelectorAll(`[data-drives="${FLAG}.${key}"]`)) {
+      driver.value = preset.config[key];
+    }
+    // Choosing that preset is the GM adopting the range, so the carriers have to come off
+    // `disabled` — `put` above set their values but a disabled field still does not submit.
+    const fieldsetEl = root.querySelector(`.${MARKER}`);
+    if (fieldsetEl) fieldsetEl.dataset.activation = "set";
+  }
 
   // Radii are written but not governed (§10.2's `GOVERNED`): applying a preset should fill in a
   // torch's 20/40, and a GM who then drags the radius out to light a bigger room has not
@@ -569,7 +784,10 @@ function wire(root, prefix) {
       if (preset) preset.value = CUSTOM;
     }
 
-    sync(root, prefix);
+    // Activation is deliberately **not** in `GOVERNED`. It says where this particular light is
+    // placed and when the GM wants it lit, not what kind of thing it is — the same argument the
+    // radii are left ungoverned on. A torch that only burns after dark is still a torch.
+    sync(root, prefix, target);
   });
 
   // The `negative` checkbox lives in our fieldset now but belongs to core, so its own change
@@ -592,7 +810,24 @@ function inject(app, element, prefix) {
 
   const config = configOf(app);
   const negative = root.querySelector(`[name="${prefix}.negative"]`)?.checked === true;
-  host.insertAdjacentHTML("afterend", fieldset(config, negative));
+
+  // **Only where core drew the fields.** `templates/scene/token/light.hbs` has no activation
+  // range at all, though `LightData` carries one — so on a token sheet there is nothing to
+  // relocate and the row is left out rather than rendered with nothing behind it.
+  const minInput = root.querySelector(`[name="${prefix}.darkness.min"]`);
+  const maxInput = root.querySelector(`[name="${prefix}.darkness.max"]`);
+  // Empty means the field's own initial, not zero — `darkness.max` initialises to 1, and
+  // `Number("0" || 1)` would answer 1 for a light genuinely set to 0.
+  const numberOr = (input, fallback) => {
+    const n = Number(input.value);
+    return input.value === "" || !Number.isFinite(n) ? fallback : n;
+  };
+  const activation =
+    minInput && maxInput
+      ? activationOf(config, numberOr(minInput, 0), numberOr(maxInput, 1))
+      : null;
+
+  host.insertAdjacentHTML("afterend", fieldset(config, negative, activation));
 
   const fieldsetEl = root.querySelector(`.${MARKER}`);
   relocate(root, `${prefix}.bright`, fieldsetEl.querySelector('[data-slot="bright"]'));
@@ -602,9 +837,99 @@ function inject(app, element, prefix) {
     `${prefix}.negative`,
     fieldsetEl.querySelector('[data-slot="negative"] .form-fields')
   );
+  if (activation) {
+    // Both live in one core row, so the second `relocate` re-hides a row already hidden.
+    relocate(root, `${prefix}.darkness.min`, fieldsetEl.querySelector('[data-slot="darkness-min"]'));
+    relocate(root, `${prefix}.darkness.max`, fieldsetEl.querySelector('[data-slot="darkness-max"]'));
+    // A light already set through this control is ours to keep in step — including snapping a
+    // range left stale by a tier-table change the resync pass did not reach.
+    if (activation.stored) fieldsetEl.dataset.activation = "set";
+  }
 
   wire(root, prefix);
   sync(root, prefix);
+}
+
+/* -------------------------------------------- */
+/*  Keeping lights in step with the table       */
+/* -------------------------------------------- */
+
+/**
+ * Rewrite `darkness.min`/`max` on every light that carries an activation tier.
+ *
+ * @remarks
+ * The same obligation §10.5.1 puts on scenes, for the same reason and with the same guard: the
+ * tier is the GM's decision and the numbers are derived output, so moving Dim from 0.67 to 0.80
+ * has to carry every light set to *Dim down to Dark* along with it. Lights with no flag are
+ * skipped — they were never set through this control.
+ *
+ * `isWriter` is shared with `ui/scene-config.mjs` rather than reimplemented: a world setting's
+ * `onChange` fires on every connected client, so without it players attempt a write they are
+ * refused and every GM issues the same one.
+ *
+ * @param {Scene[]} scenes
+ * @returns {Promise<{updated: number, checked: number}>}
+ */
+export async function syncLights(scenes) {
+  const report = { updated: 0, checked: 0 };
+  if (!isWriter()) return report;
+
+  for (const scene of scenes ?? []) {
+    const updates = [];
+    for (const light of scene.lights ?? []) {
+      const config = light.flags?.[MODULE_ID]?.config;
+      const from = storedTier(config?.activeFrom);
+      const to = storedTier(config?.activeTo);
+      if (from === null || to === null) continue;
+      report.checked++;
+
+      const { min, max } = rangeFor(Math.max(from, to), Math.min(from, to));
+      const current = light.config?.darkness ?? {};
+      if (
+        Math.abs((current.min ?? 0) - min) <= NEAR &&
+        Math.abs((current.max ?? 1) - max) <= NEAR
+      ) {
+        continue;
+      }
+      updates.push({ _id: light.id, "config.darkness.min": min, "config.darkness.max": max });
+    }
+    if (updates.length) {
+      await scene.updateEmbeddedDocuments("AmbientLight", updates);
+      report.updated += updates.length;
+    }
+  }
+  return report;
+}
+
+/** Every light in the world that has been given an activation range. */
+export const syncAllLights = () => syncLights(game.scenes?.contents ?? []);
+
+/** Debug readout: which lights carry an activation range, and whether their numbers match it. */
+export function status() {
+  const rows = [];
+  for (const scene of game.scenes?.contents ?? []) {
+    for (const light of scene.lights ?? []) {
+      const config = light.flags?.[MODULE_ID]?.config;
+      const from = storedTier(config?.activeFrom);
+      const to = storedTier(config?.activeTo);
+      if (from === null || to === null) continue;
+      const want = rangeFor(Math.max(from, to), Math.min(from, to));
+      const current = light.config?.darkness ?? {};
+      rows.push({
+        scene: scene.name,
+        id: light.id,
+        range: `${TIER_NAME[from]} → ${TIER_NAME[to]}`,
+        stored: [+(current.min ?? 0).toFixed(4), +(current.max ?? 1).toFixed(4)],
+        shouldBe: [+want.min.toFixed(4), +want.max.toFixed(4)],
+        matches:
+          Math.abs((current.min ?? 0) - want.min) <= NEAR &&
+          Math.abs((current.max ?? 1) - want.max) <= NEAR,
+      });
+    }
+  }
+  const report = { writer: isWriter(), withRange: rows.length, lights: rows };
+  console.error(`${MODULE_ID} | light activation ranges`, report);
+  return report;
 }
 
 /* -------------------------------------------- */
@@ -637,4 +962,18 @@ export function registerHooks() {
   // `refreshAmbientLight`, so the invalidation is made explicit here.
   Hooks.on("closeAmbientLightConfig", () => registry.invalidate());
   Hooks.on("closeTokenApplication", () => registry.invalidate());
+
+  // The tier table moved: every light with an activation range now stores the wrong numbers.
+  // Same two triggers as the scene sync (§10.5.1) — the broadcast for every scene, and
+  // `canvasReady` as a safety net for the one being drawn.
+  Hooks.on(TABLE_CHANGED_HOOK, () => {
+    syncAllLights().then((report) => {
+      if (report.updated) {
+        console.error(`${MODULE_ID} | light activation ranges re-synced`, report);
+      }
+    });
+  });
+  Hooks.on("canvasReady", () => {
+    if (canvas?.scene) syncLights([canvas.scene]);
+  });
 }

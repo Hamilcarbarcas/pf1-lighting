@@ -569,6 +569,36 @@ function stampDomains(cells, domains, sceneTier) {
 const domainNeedsCell = (tier, base) => tierCeiling(tier) > 0 || tier !== base;
 
 /**
+ * What the open ground is worth, **whether or not a global light source exists**.
+ *
+ * @remarks
+ * **The bug this exists for — 2026-08-28.** Every ground-emitting branch below used to be gated
+ * on `ambient` being non-null, and `registry.buildEmitters` drops the global entry outright when
+ * `source.active` is false (`registry.mjs:259`). So with global illumination off — the scene
+ * checkbox, its darkness threshold, or a *Restrict Global Illumination* region — the field
+ * emitted **no ground cells at all**, and the darkness-level texture fell back to core's clear.
+ *
+ * That clear is `canvas.environment.darknessLevel` (`groups/effects.mjs:240-241`): the scene's
+ * own number, flat across the map. So every ambient area silently lost its tier, and a light
+ * inside one was drawn against the scene's background instead of the room's — which is a light
+ * rendered against a brighter ground than the model says it stands on, and reads as blown out.
+ *
+ * Patrick, 2026-08-28: *"it's definitely global illumination getting turned off — if I manually
+ * uncheck it at any light level the brightness inside the light look the same as they do when the
+ * scene is set to dark."* Three routes to one condition, which is why it looked like three
+ * different bugs.
+ *
+ * **The ground's tier was never the source's to give.** `registry.ambientBrightness` is
+ * `tierCeiling(ambientTier(point))` and `ambientTier` reads the scene's darkness and its areas —
+ * neither consults the global light source. So on a scene with no areas this reproduces the clear
+ * exactly and nothing moves; what it adds is the area tiers, which had no other way in.
+ *
+ * `ambient.brightnessAt()` is still preferred where the entry exists, so the live read that keeps
+ * a darkness animation from leaving the ambient stale (see `EmitterEntry`) is unchanged.
+ */
+const groundBrightness = (ambient) => (ambient ? ambient.brightnessAt() : ambientBrightness());
+
+/**
  * Everything outside a domain, as a clip for `emitStacks`.
  *
  * @remarks
@@ -668,6 +698,43 @@ export function compute({ filter = true } = {}) {
   const sceneTier = ambientTier();
   const domains = ambientDomains(SCALE, sceneTier);
 
+  /**
+   * The ambient tier a light's zones are **standing on**, for `levels.levelForTier`.
+   *
+   * @remarks
+   * **This was `sceneTier` at every call site until 2026-08-28, and `cell.base` was read with a
+   * `?? sceneTier` fallback that nothing ever overrode** — the field was declared, consumed and
+   * never assigned. Inside an ambient area (§10.7) that is the wrong background, and
+   * `levelForTier` is exactly the function it is wrong for: its first rule is *return `UNLIT`
+   * when the target is no brighter than the ground*, which is what stops a zone painting a level
+   * on top of ground that already carries it. Given the scene's tier instead of the region's,
+   * that shortcut stops firing and every zone double-counts — the tier once in the darkness-level
+   * texture (§7.0 step 6) and again as a lighting level over it.
+   *
+   * Patrick, 2026-08-28: *"the brightness level of the light sources seems to get maxed out …
+   * it only happens when inside a region with our restrict global illumination setting enabled.
+   * If I move the light outside it they look as they should."* Both halves follow: outside a
+   * region there are no domains, so `sceneTier` was right by definition; and the darker the
+   * scene, the more zones clear `target > background` and start painting.
+   *
+   * **One tier per emitter, from its origin.** Not per fragment, and that is the same bargain
+   * §6.3 and `render/renderer.levelForTier`'s note already state: the shader has one uniform per
+   * zone per source, so a light whose band crosses two differently lit areas paints one level
+   * throughout either way. The choice here is only *which* one, and the ambient where the light
+   * actually stands beats the scene's own on every count.
+   */
+  const baseFor = (emitter, fallback) => {
+    // No ambient areas on the scene means `sceneTier` is right by definition, and the query is
+    // pure cost — the same guard every other §10.7 path in this file carries.
+    if (!domains) return fallback;
+    // `emitter.source.x/y`, matching `registry.markOriginSuppression`'s reading of the same
+    // origin. Global illumination has none and never reaches here (it is not in `emitters`).
+    const x = emitter?.source?.x;
+    const y = emitter?.source?.y;
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return fallback;
+    return areas.ambientTierAt({ x, y }, fallback);
+  };
+
   // --- No suppressors: every emitter renders untouched. The common case by far, and it
   //     must not cost a single Clipper op — nor a scale-and-round trip out to integer
   //     coordinates and straight back, which is what building a path here would be. The
@@ -681,13 +748,14 @@ export function compute({ filter = true } = {}) {
         suppressor: null,
         emission: emitter.emission,
         clipped: false,
+        base: baseFor(emitter, sceneTier),
       });
     }
     // Nothing governs any part of the scene, so the ambient cell *is* the scene rect —
     // no union, no difference, no Clipper at all. Preserving that is the point of having
     // this branch: §7.0 must not make the common case pay for a feature it does not use.
-    if (ambient && !domains) {
-      const B = ambient.brightnessAt();
+    if (!domains) {
+      const B = groundBrightness(ambient);
       const rect = canvas?.dimensions?.sceneRect;
       // Unguarded on `B`, for the reason given at the other ambient branch below: the ground has
       // to be painted even when it is fully dark, or the two composited passes of §7.0 step 6 have
@@ -702,7 +770,7 @@ export function compute({ filter = true } = {}) {
           tier: tierOf(B),
         });
       }
-    } else if (ambient) {
+    } else {
       // Ambient areas, with no darkness anywhere to cut them against (§10.7). Each domain is
       // already the shape it should be painted at; nothing is subtracted from it here.
       for (const domain of domains.list) {
@@ -744,8 +812,9 @@ export function compute({ filter = true } = {}) {
   const cache = new Map();
 
   const emit = (kind, paths, emitter, suppressor, emission, tier, clipped = false) => {
+    const base = baseFor(emitter, sceneTier);
     for (const polygon of toPolygons(splitAnnuli(paths))) {
-      cells.push({ kind, polygon, emitter, suppressor, emission, tier, clipped });
+      cells.push({ kind, polygon, emitter, suppressor, emission, tier, clipped, base });
     }
   };
 
@@ -776,6 +845,7 @@ export function compute({ filter = true } = {}) {
         suppressor: null,
         emission: emitter.emission,
         clipped: false,
+        base: baseFor(emitter, sceneTier),
       });
     } else {
       emit("clip", difference([path], remove), emitter, null, emitter.emission, undefined, true);
@@ -878,7 +948,7 @@ export function compute({ filter = true } = {}) {
   // this, so it is unioned once — it was two identical ops when `stack` landed.
   const governed = union(regions.map((r) => r.effective).filter((p) => p.length).flat());
 
-  if (ambient && !domains) {
+  if (!domains) {
     // **No `ambientB > 0` guard, since §7.0 step 6.** An unlit scene used to emit no ambient cell
     // at all and let the container's clear colour stand in, which was invisible only because that
     // clear is `canvas.environment.darknessLevel` and the default table puts Dark at 1.0 as well.
@@ -888,9 +958,9 @@ export function compute({ filter = true } = {}) {
     const rect = ambientDomain(SCALE);
     if (rect?.length) {
       const open = governed.length ? difference([rect], governed) : [rect];
-      emitAmbient(open, ambient, tierOf(ambientB));
+      emitAmbient(open, ambient, tierOf(groundBrightness(ambient)));
     }
-  } else if (ambient) {
+  } else {
     // The same complement, taken per domain (§10.7). Each is already confined to its own part
     // of the map, so the only thing still to remove is what a suppressor governs.
     for (const domain of domains.list) {
@@ -1095,6 +1165,11 @@ function emitStacks(emitters, base, governed) {
             suppressor: null,
             emission: null,
             tier,
+            // **The domain's base, which this function is already called once per** (§10.7) —
+            // so a stack cell has always known the right answer and simply never carried it to
+            // `light-ramps.rampsFrom`, whose `cell.base ?? sceneTier` then fell through to the
+            // scene's tier. See `baseFor`.
+            base,
             // **The emitters whose bands made this region, and the renderer needs every one.**
             // A stack cell is drawn by cloning each of them at a raised level and letting
             // `MAX_COLOR` pick the brightest — which reproduces `max(falloff_i)` with the

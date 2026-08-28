@@ -56,6 +56,33 @@
   min-width: 3.5rem;
 }
 
+/* A `<select>` in a flex row will shrink below its own content unless told not to, and the
+ * *Increase brightness* row puts three controls on one line — so the *Max* dropdown collapsed to a
+ * sliver too narrow to read (Patrick, 2026-08-28: *"the maximum dropdown is too small to see what
+ * it says"*). A real basis plus a floor is the fix. The row had the width to spend; nothing was
+ * competing for it except the defaults. */
+.pf1-lighting-config .form-fields > select {
+  flex: 1 1 7rem;
+  min-width: 6rem;
+}
+
+/* The activation range puts two dropdowns and a joining word on one line, and its four options are
+ * all short words — so the 6rem floor above, sized for *Supernatural Dark*, is more than these need
+ * and enough to make the row wrap. Sized to their own content instead. */
+.pf1-lighting-config .form-fields > select[data-drives$="activeFrom"],
+.pf1-lighting-config .form-fields > select[data-drives$="activeTo"] {
+  flex: 1 1 4.5rem;
+  min-width: 4rem;
+}
+
+/* *Steps* is a single digit, 0–4. Claiming the same basis as a radius in feet took the width the
+ * dropdown beside it needed, so it is sized to its content instead. Ends-with rather than an exact
+ * name, because the flag path is the whole `name`. */
+.pf1-lighting-config .form-fields > input[type="number"][name$="steps"] {
+  flex: 0 1 3.25rem;
+  min-width: 2.75rem;
+}
+
 .pf1-lighting-config .hint {
   margin: 0.25rem 0 0;
 }

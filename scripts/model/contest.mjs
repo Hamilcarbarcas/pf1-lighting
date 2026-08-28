@@ -78,7 +78,17 @@ export function stack(emitters) {
   for (const e of emitters) {
     if (e.zone === ZONE.BAND) {
       steps += e.steps ?? 0;
-      ceiling = Math.max(ceiling, e.cap ?? TIER.NORMAL);
+      // **`?? e.tier` before `?? TIER.NORMAL`, and the order is the point.** This fallback used to
+      // be `TIER.NORMAL` alone while `light-ramps.zonesFor` and `renderer` used `emission.tier`, so
+      // a band whose `cap` went missing was ceilinged at Normal by the *model* and at the light's
+      // own level by the *picture*. For a Bright lamp that is the overlay reading Normal while the
+      // screen reads Bright — two answers to one question, and the hardest kind to chase because
+      // each half is individually defensible.
+      //
+      // `normaliseEmission` sets `cap` for anything built from a real light, so this is a guard on
+      // synthetic entries rather than a live path. Aligned 2026-08-28 anyway: a divergence that
+      // only fires on an unusual input is one that surfaces on an unusual day.
+      ceiling = Math.max(ceiling, e.cap ?? e.tier ?? TIER.NORMAL);
     } else if (e.zone === ZONE.INNER) {
       absolute = Math.max(absolute, e.tier ?? TIER.DARK);
     } else if (e.B > 0) {

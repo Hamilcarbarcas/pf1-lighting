@@ -29,6 +29,15 @@
  * update each other is the arrangement §10.5 already rejected for this exact field. Core's input
  * is *moved* into a hidden slot rather than duplicated, because two fields sharing a name make
  * `FormDataExtended` return an array.
+ *
+ * ## And so are the two transition buttons
+ *
+ * The lighting palette's *Transition to Daylight* and *Transition to Darkness* are replaced by one
+ * button per tier (Patrick, 2026-08-28), for the same reason twice over: they slide `darknessLevel`
+ * across ten seconds, which against a four-rung model is a long crossfade through states the model
+ * does not have, and they write the raw number without the tier flag — so a scene set by one of
+ * them is a scene this file has to guess about. `setSceneTier` writes both fields at once and
+ * omits `animateDarkness`, which is what makes the change instant.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -78,7 +87,7 @@ export function tierOf(scene) {
  * every GM at once (who would each issue the same write). `activeGM` is Foundry's own answer to
  * "exactly one GM should do this".
  */
-const isWriter = () => game.users?.activeGM?.isSelf === true;
+export const isWriter = () => game.users?.activeGM?.isSelf === true;
 
 /**
  * Bring scenes' stored darkness back in line with the tier they were set to.
@@ -122,6 +131,102 @@ export async function syncScenes(scenes) {
 
 /** Every scene in the world that has been given a tier. */
 export const syncAllScenes = () => syncScenes(game.scenes?.contents ?? []);
+
+/* -------------------------------------------- */
+/*  The lighting-control buttons (§10.5.2)      */
+/* -------------------------------------------- */
+
+/**
+ * Set the current scene's light level, instantly.
+ *
+ * @remarks
+ * **Both halves, or neither.** `flags.pf1-lighting.tier` is the source of truth and
+ * `environment.darknessLevel` is derived output (§10.5.1) — a button that wrote only the number
+ * would leave the scene looking right and *thinking* it was still whatever tier it last carried,
+ * so the next table change would drag it somewhere else. One update, both fields.
+ *
+ * **No `animateDarkness` option.** `Scene##onUpdate` only hands the change to
+ * `canvas.effects.animateDarkness` when the option is present (`documents/scene.mjs:606`), so
+ * omitting it is the instant change rather than a zero passed to the animator.
+ *
+ * @param {number} tier - A {@link TIER} value from {@link SCENE_TIERS}
+ * @param {Scene} [scene=canvas.scene]
+ * @returns {Promise<?number>} The tier set, or null if nothing was written
+ */
+export async function setSceneTier(tier, scene = canvas?.scene) {
+  if (!scene) return null;
+  if (!SCENE_TIERS.includes(tier)) return null;
+  if (scene.environment?.darknessLock) {
+    ui.notifications?.warn(
+      `PF1 Lighting: darkness is locked on ${scene.name}, so its light level cannot be changed.`
+    );
+    return null;
+  }
+  await scene.update({
+    [FLAG_PATH]: tier,
+    "environment.darknessLevel": levelFor(tier),
+  });
+  return tier;
+}
+
+/** Tool id for a tier's button. Also the prefix everything below matches on. */
+const toolId = (tier) => `pf1LightingTier${tier}`;
+
+/**
+ * Brightest to darkest. Core's own sun and moon at the ends, so the two buttons a GM already
+ * knows keep their meaning and the two new ones read as the rungs between them.
+ */
+const TIER_ICONS = Object.freeze({
+  [TIER.BRIGHT]: "fa-solid fa-sun",
+  [TIER.NORMAL]: "fa-solid fa-cloud-sun",
+  [TIER.DIM]: "fa-solid fa-cloud-moon",
+  [TIER.DARK]: "fa-solid fa-moon",
+});
+
+/**
+ * Replace core's two transition buttons with one per tier. DESIGN.md §10.5.2.
+ *
+ * @remarks
+ * **Replaced, not added to.** Core's *Transition to Daylight* and *Transition to Darkness* slide
+ * `darknessLevel` over ten seconds (`CONFIG.Canvas.darknessToDaylightAnimationMS`), which against
+ * a four-rung model is a long crossfade through states the model does not have — and they write
+ * the raw number without the tier flag, so a scene set by one of them is a scene this module has
+ * to guess about. The same argument §10.5 makes for replacing the slider outright.
+ *
+ * `visible` is evaluated once per `#prepareControls`, which core re-runs on `canvasReady` and
+ * whenever `darknessLock` changes (`documents/scene.mjs:625-627`) — the two moments it can go
+ * stale — so honouring the lock here needs nothing of its own.
+ *
+ * v13 passes `controls` as a **Record keyed by control name**, not an array; see the note on
+ * `vision/observer.registerSceneControls`.
+ */
+export function registerSceneControls() {
+  Hooks.on("getSceneControlButtons", (controls) => {
+    const lighting = controls.lighting;
+    if (!lighting?.tools) return;
+
+    delete lighting.tools.day;
+    delete lighting.tools.night;
+
+    // Core numbered these 4 and 5, behind the two buttons just removed. Ours take 2–5, so the
+    // palette keeps one order per tool rather than relying on how equal orders happen to sort.
+    if (lighting.tools.reset) lighting.tools.reset.order = 6;
+    if (lighting.tools.clear) lighting.tools.clear.order = 7;
+
+    if (canvas?.scene?.environment?.darknessLock) return;
+
+    SCENE_TIERS.forEach((tier, i) => {
+      lighting.tools[toolId(tier)] = {
+        name: toolId(tier),
+        order: 2 + i,
+        title: `Set ambient light to ${TIER_NAME[tier]}`,
+        icon: TIER_ICONS[tier],
+        button: true,
+        onChange: () => setSceneTier(tier),
+      };
+    });
+  });
+}
 
 /* -------------------------------------------- */
 /*  The control                                 */
