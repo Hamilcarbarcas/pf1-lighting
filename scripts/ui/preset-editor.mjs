@@ -152,7 +152,9 @@ class PresetEditor extends foundry.applications.api.ApplicationV2 {
   static DEFAULT_OPTIONS = {
     id: "pf1-lighting-preset-editor",
     tag: "form",
-    classes: ["pf1-lighting", "preset-editor"],
+    // `pf1-lighting-rows` is the layout scope this window shares with the fieldset injected into
+    // the light sheet, so the two forms cannot drift apart. See `styles/config.css`.
+    classes: ["pf1-lighting", "preset-editor", "pf1-lighting-rows"],
     window: {
       title: "PF1LIGHTING.Presets.Title",
       icon: "fa-solid fa-lightbulb",

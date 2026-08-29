@@ -1,42 +1,45 @@
 /*
- * The Lighting Configuration fieldset, injected into the light and token config sheets.
+ * The two places this module draws a lighting form: the fieldset injected into the light and
+ * token config sheets, and the standalone preset editor.
  *
- * Every selector is scoped to `.pf1-lighting-config` or to a `pf1-lighting-` prefixed class.
- * Module CSS is unlayered and so outranks all of Foundry's `@layer` rules — a bare element or
- * utility-class selector here would repaint parts of the core UI that have nothing to do with
- * this module, which is a bug this project has already shipped once.
+ * Every selector is scoped to a `pf1-lighting-` prefixed class. Module CSS is unlayered and so
+ * outranks all of Foundry's `@layer` rules — a bare element or utility-class selector here would
+ * repaint parts of the core UI that have nothing to do with this module, which is a bug this
+ * project has already shipped once.
+ *
+ * ## The scopes, and the line between them
+ *
+ * | Class | On | For |
+ * | --- | --- | --- |
+ * | `.pf1-lighting-rows` | both forms | how a row of controls lays out |
+ * | `.pf1-lighting.preset-editor` | our own window | that window's own furniture |
+ * | `.pf1-lighting-moved`, `.pf1-lighting-scene-tier` | core's own elements | what we hid or drove |
+ *
+ * `.pf1-lighting-config` is **not** in that list and carries no rules at all any more. It is the
+ * fieldset's *identity* class — what `inject` and `sync` find the element by — and everything it
+ * used to style is now shared. Worth knowing before adding a rule under it: doing so would be
+ * re-opening the divergence the shared scope closed.
+ *
+ * **`.pf1-lighting-rows` exists because the two forms show the same controls** (Hamilcarbarcas,
+ * 2026-08-29: *"can we mirror it into the actual light's settings? Hopefully the same css without
+ * duplicating the code?"*). They had diverged into two near-identical blocks, and the divergence
+ * was not cosmetic — the preset editor had picked up fixes the sheet had not, including one real
+ * bug (see the `display: contents` note below). One class carried by both roots means a fix lands
+ * in both by construction.
+ *
+ * What stays scoped is what is genuinely local: the relocated native inputs are only a problem on
+ * the sheet, and the New/Duplicate/Delete cluster only exists in the window.
  */
 
-/* The rows whose inputs we moved into our own fieldset. Kept in the DOM so a re-render finds
- * the structure it built, hidden because their labels now describe fields that are elsewhere. */
-.pf1-lighting-moved {
-  display: none;
-}
+/* -------------------------------------------- */
+/*  Shared — how a row of controls lays out     */
+/* -------------------------------------------- */
 
 /* Branch and sub-branch switching. A class rather than `hidden` or an inline style: `hidden`
  * loses to any `display` rule the sheet's own stylesheet carries, and inline styles mean
  * fighting whatever wrote them last. */
-.pf1-lighting-config .pf1-lighting-off {
+.pf1-lighting-rows .pf1-lighting-off {
   display: none;
-}
-
-/* A control that is present but inert — a mundane light's spell level. Disabled already greys
- * the input; this carries the same signal to its label and hint, so the row reads as one
- * thing. */
-.pf1-lighting-config .pf1-lighting-dim > label,
-.pf1-lighting-config .pf1-lighting-dim > .hint {
-  opacity: 0.5;
-}
-
-/* The inline `<label>`s inside a `.form-fields` row — "Level", "Radius", "Steps". Core styles
- * these in its own slim rows; ours need the same treatment to line up with the Placement
- * fieldset directly above. */
-.pf1-lighting-config .form-fields > label {
-  flex: 0 0 auto;
-  align-self: center;
-  margin: 0 0.25rem 0 0;
-  font-size: var(--font-size-13, 0.8125rem);
-  white-space: nowrap;
 }
 
 /* Our slot and branch spans are wrappers, not layout: `display: contents` lets the input they
@@ -46,46 +49,155 @@
  * `display: contents` would beat `.pf1-lighting-off`'s `display: none` and a hidden control
  * would stay on screen. Excluding the off state from the match leaves the hide rule unopposed
  * rather than trying to out-specify it. */
-.pf1-lighting-config .form-fields > span[data-slot]:not(.pf1-lighting-off),
-.pf1-lighting-config .form-fields > span[data-effect]:not(.pf1-lighting-off) {
+.pf1-lighting-rows .form-fields > span[data-slot]:not(.pf1-lighting-off),
+.pf1-lighting-rows .form-fields > span[data-effect]:not(.pf1-lighting-off) {
   display: contents;
 }
 
-.pf1-lighting-config .form-fields > input[type="number"] {
-  flex: 1 1 4rem;
-  min-width: 3.5rem;
+/* The inline `<label>`s inside a `.form-fields` row — "Level", "Radius", "Steps". Core styles
+ * these in its own slim rows; ours need the same treatment to line up with the Placement
+ * fieldset directly above.
+ *
+ * The nested selectors for the reason the next block records: *Floor* rides inside a
+ * `span[data-effect]` so it can be withheld under *set level to*, and `display: contents` does
+ * not make its label a direct child as far as a selector is concerned. */
+.pf1-lighting-rows .form-fields > label,
+.pf1-lighting-rows .form-fields > span[data-effect] > label,
+.pf1-lighting-rows .form-fields > span[data-slot] > label {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 0.25rem 0 0;
+  font-size: var(--font-size-13, 0.8125rem);
+  white-space: nowrap;
 }
 
-/* A `<select>` in a flex row will shrink below its own content unless told not to, and the
- * *Increase brightness* row puts three controls on one line — so the *Max* dropdown collapsed to a
- * sliver too narrow to read (Hamilcarbarcas, 2026-08-28: *"the maximum dropdown is too small to see what
- * it says"*). A real basis plus a floor is the fix. The row had the width to spend; nothing was
- * competing for it except the defaults. */
-.pf1-lighting-config .form-fields > select {
-  flex: 1 1 7rem;
-  min-width: 6rem;
+/* **A dropdown gets twice the growth of a number box** (Hamilcarbarcas, 2026-08-29). They were
+ * competing on equal terms, and they do not carry equal content: a select has to show
+ * *Supernatural Dark*, a number box has to show one or two digits. On the *Brightness* and
+ * *Effect* rows that meant the select shrinking to a sliver, or the row wrapping to make room for
+ * width the number never needed.
+ *
+ * **The nested selectors are load-bearing, and their absence was a live bug.** `display: contents`
+ * removes a span's *box*, not its place in the DOM — CSS still matches the tree — so
+ * `.form-fields > select` never reached the `transformMax` select or the `transformSteps` input,
+ * both of which sit inside a `span[data-effect]`. They fell back to `flex: 0 1 auto` and sized
+ * themselves, which is why *Decrease by* and its number would not share a line. The sheet had the
+ * same omission and it was merely less visible there, which is the argument for one shared rule
+ * rather than two that drift. */
+.pf1-lighting-rows .form-fields > select,
+.pf1-lighting-rows .form-fields > span[data-effect] > select,
+.pf1-lighting-rows .form-fields > span[data-slot] > select {
+  flex: 2 1 6rem;
+  min-width: 5rem;
 }
 
-/* The activation range puts two dropdowns and a joining word on one line, and its four options are
- * all short words — so the 6rem floor above, sized for *Supernatural Dark*, is more than these need
- * and enough to make the row wrap. Sized to their own content instead. */
-.pf1-lighting-config .form-fields > select[data-drives$="activeFrom"],
-.pf1-lighting-config .form-fields > select[data-drives$="activeTo"] {
-  flex: 1 1 4.5rem;
-  min-width: 4rem;
+.pf1-lighting-rows .form-fields > input[type="number"],
+.pf1-lighting-rows .form-fields > span[data-effect] > input[type="number"],
+.pf1-lighting-rows .form-fields > span[data-slot] > input[type="number"] {
+  flex: 1 1 3rem;
+  min-width: 2.5rem;
 }
 
 /* *Steps* is a single digit, 0–4. Claiming the same basis as a radius in feet took the width the
  * dropdown beside it needed, so it is sized to its content instead. Ends-with rather than an exact
- * name, because the flag path is the whole `name`. */
-.pf1-lighting-config .form-fields > input[type="number"][name$="steps"] {
+ * name, because on the sheet the flag path is the whole `name` and in the editor it is bare. */
+.pf1-lighting-rows .form-fields > input[type="number"][name$="steps"],
+.pf1-lighting-rows .form-fields > span[data-effect] > input[type="number"][name$="Steps"] {
   flex: 0 1 3.25rem;
   min-width: 2.75rem;
 }
 
-.pf1-lighting-config .hint {
-  margin: 0.25rem 0 0;
+/* The activation range puts two dropdowns and a joining word on one line, and its four options are
+ * all short words — so the 5rem floor above, sized for *Supernatural Dark*, is more than these
+ * need and enough to make the row wrap. Sized to their own content instead. `data-drives` on the
+ * sheet, where the dropdowns carry no name; `name` in the editor, where they do. */
+.pf1-lighting-rows .form-fields > select[data-drives$="activeFrom"],
+.pf1-lighting-rows .form-fields > select[data-drives$="activeTo"],
+.pf1-lighting-rows .form-fields > select[name="activeFrom"],
+.pf1-lighting-rows .form-fields > select[name="activeTo"] {
+  flex: 1 1 4.5rem;
+  min-width: 4rem;
 }
+
+/* A forced line break inside a wrapping `.form-fields`. Zero-height so it costs no vertical
+ * space, `flex-basis: 100%` so everything after it starts a new row.
+ *
+ * Natural wrapping is not good enough for these rows: it breaks wherever the width runs out,
+ * which lands between an inline `<label>` and the field it names — *Maximum* on one line and its
+ * dropdown on the next. The break says where the row divides instead of leaving it to the
+ * window's current width. */
+.pf1-lighting-rows .form-fields > .pf1-lighting-break {
+  flex: 0 0 100%;
+  height: 0;
+  margin: 0;
+}
+
+/* **Half the row back from the title.** Core gives a `.form-group`'s label `flex: 1` and its other
+ * children `flex: 2`, then `.form-group.slim .form-fields` overrides that back to `flex: 1` — so a
+ * slim row splits 50/50. That is fine for one control and wrong for four: *Brightness* and
+ * *Increase Brightness* put a dropdown, two numbers and their inline labels in half a window, and
+ * the dropdowns collapsed (Hamilcarbarcas, 2026-08-29: *"the fields are getting squished too much"*).
+ * Restoring 1:2 gives the title a third of the row instead of half.
+ *
+ * A ratio rather than a fixed basis on purpose: `flex: 2` still resolves against content, so a
+ * longer label in another language takes the width it needs instead of clipping. */
+.pf1-lighting-rows .form-group.slim > .form-fields {
+  flex: 2;
+}
+
+/* **The branch wrappers have to be flex columns, and this was a layout bug rather than a
+ * preference.** `.standard-form` puts `gap: 1rem` between its children — but `div[data-branch]`
+ * *is* one of those children, so the form-groups inside it are not, and they stacked flush with
+ * no gap at all. That is why the rows above the branches looked right and everything inside them
+ * did not (Hamilcarbarcas, 2026-08-29: *"Type has good spacing, but then... the space between the
+ * tooltip and the next section below it is too small"*). Re-declaring the column here gives the
+ * groups inside a branch the same rhythm as the ones outside it.
+ *
+ * **`:not(.pf1-lighting-off)` is load-bearing**, for the reason the `display: contents` rule above
+ * records: this selector and the hide rule have equal specificity, so without the exclusion
+ * whichever came last would win and a hidden branch could stay on screen. */
+.pf1-lighting-rows [data-branch]:not(.pf1-lighting-off),
+.pf1-lighting-rows [data-needs]:not(.pf1-lighting-off) {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* **A hint belongs to the field above it, not to the section below.** It had `0.25rem` on top of
+ * the form-group's own `0.5rem` row-gap, and nothing beneath — so it sat nearer the next control's
+ * label than its own field, which reads as a caption for the wrong thing. Zero above leaves the
+ * row-gap alone to separate them, and the 1rem between groups then does the rest. */
+.pf1-lighting-rows .hint {
+  margin: 0;
+}
+
+/* -------------------------------------------- */
+/*  The injected fieldset only                  */
+/* -------------------------------------------- */
+
+/* The rows whose inputs we moved into our own fieldset. Kept in the DOM so a re-render finds
+ * the structure it built, hidden because their labels now describe fields that are elsewhere.
+ *
+ * Deliberately unscoped: it is applied to core's own `.form-group` elements, which are outside
+ * our fieldset by definition. The `pf1-lighting-` prefix is what keeps it from reaching anything
+ * this module did not mark. */
+.pf1-lighting-moved {
+  display: none;
+}
+
+/* Core's real `config.negative` checkbox, held behind the *Type* dropdown that drives it. Same
+ * job as the scene row's darkness slot below, and it needs the same rule for the same reason:
+ * `[hidden]` comes from the UA sheet and loses to any `display` a sheet stylesheet happens to
+ * carry, and a checkbox surfacing here would be a second live control for a value that already
+ * has one. The activation slots opposite are only ever raw numbers, so they can live on `hidden`
+ * alone; this one is a control and is worth the extra line. */
+.pf1-lighting-rows span[data-slot="negative"] {
+  display: none;
+}
+
+/* -------------------------------------------- */
+/*  The scene config row                        */
+/* -------------------------------------------- */
 
 /* The scene's light-level dropdown. It holds core's real darkness input out of sight and drives
  * it, so the slot must take no space and must not be resurrected by a `display` rule from
@@ -99,109 +211,8 @@
 }
 
 /* -------------------------------------------- */
-/*  The preset editor                           */
+/*  The preset editor only                      */
 /* -------------------------------------------- */
-
-/* Its own scope rather than reuse of `.pf1-lighting-config`: that class marks the fieldset
- * injected into somebody else's sheet, and this is our own window. Sharing it would make either
- * one's rules reach the other by accident, which is exactly the failure the file header names. */
-.pf1-lighting.preset-editor .pf1-lighting-off {
-  display: none;
-}
-
-.pf1-lighting.preset-editor .form-fields > span[data-effect]:not(.pf1-lighting-off) {
-  display: contents;
-}
-
-/* The nested selector for the same reason as the `select`/`input` pairs below: *Floor* rides
- * inside a `span[data-effect]` so it can be withheld under *set level to*, and `display: contents`
- * does not make it a direct child for matching purposes. */
-.pf1-lighting.preset-editor .form-fields > label,
-.pf1-lighting.preset-editor .form-fields > span[data-effect] > label {
-  flex: 0 0 auto;
-  align-self: center;
-  margin: 0 0.25rem 0 0;
-  font-size: var(--font-size-13, 0.8125rem);
-  white-space: nowrap;
-}
-
-/* **A dropdown gets twice the growth of a number box** (Hamilcarbarcas, 2026-08-29). They were
- * competing on equal terms, and they do not carry equal content: a select has to show
- * *Supernatural Dark*, a number box has to show one or two digits. On the *Brightness* and
- * *Effect* rows that meant the select shrinking to a sliver, or the row wrapping to make room
- * for width the number never needed.
- *
- * **The second selector in each pair is load-bearing, and its absence was a live bug.**
- * `display: contents` removes a span's *box*, not its place in the DOM — CSS still matches the
- * tree — so `.form-fields > select` never reached the `transformMax` select or the
- * `transformSteps` input, both of which sit inside a `span[data-effect]`. They were falling back
- * to `flex: 0 1 auto` and sizing themselves, which is why *Decrease by* and its number would not
- * share a line. The same omission is still present in `.pf1-lighting-config` above; it is
- * harmless there only because that sheet is wider. */
-.pf1-lighting.preset-editor .form-fields > select,
-.pf1-lighting.preset-editor .form-fields > span[data-effect] > select {
-  flex: 2 1 6rem;
-  min-width: 5rem;
-}
-
-.pf1-lighting.preset-editor .form-fields > input[type="number"],
-.pf1-lighting.preset-editor .form-fields > span[data-effect] > input[type="number"] {
-  flex: 1 1 3rem;
-  min-width: 2.5rem;
-}
-
-/* A forced line break inside a wrapping `.form-fields`. Zero-height so it costs no vertical
- * space, `flex-basis: 100%` so everything after it starts a new row.
- *
- * Natural wrapping is not good enough for these rows: it breaks wherever the width runs out,
- * which lands between an inline `<label>` and the field it names — *Maximum* on one line and its
- * dropdown on the next. The break says where the row divides instead of leaving it to the
- * window's current width. */
-.pf1-lighting.preset-editor .form-fields > .pf1-lighting-break {
-  flex: 0 0 100%;
-  height: 0;
-  margin: 0;
-}
-
-/* **The branch wrappers have to be flex columns, and this was a layout bug rather than a
- * preference.** `.standard-form` puts `gap: 1rem` between its children — but `div[data-branch]`
- * *is* one of those children, so the form-groups inside it are not, and they stacked flush with
- * no gap at all. That is why the rows above the branches looked right and everything inside them
- * did not (Hamilcarbarcas, 2026-08-29: *"Type has good spacing, but then... the space between the
- * tooltip and the next section below it is too small"*). Re-declaring the column here gives the
- * groups inside a branch the same rhythm as the ones outside it.
- *
- * **`:not(.pf1-lighting-off)` is load-bearing**, for the reason the `display: contents` rule
- * above records: this selector and the hide rule have equal specificity, so without the
- * exclusion whichever came last would win and a hidden branch could stay on screen. */
-.pf1-lighting.preset-editor [data-branch]:not(.pf1-lighting-off),
-.pf1-lighting.preset-editor [data-needs]:not(.pf1-lighting-off) {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-}
-
-/* **A hint belongs to the field above it, not to the section below.** It had `0.25rem` on top of
- * the form-group's own `0.5rem` row-gap, and nothing beneath — so it sat nearer the next control's
- * label than its own field, which reads as a caption for the wrong thing. Zero above leaves the
- * row-gap alone to separate them, and the 1rem between groups then does the rest. */
-.pf1-lighting.preset-editor .hint {
-  margin: 0;
-}
-
-/* **Half the row back from the title.** Core gives a `.form-group`'s label `flex: 1` and its
- * other children `flex: 2`, then `.form-group.slim .form-fields` overrides that back to `flex: 1`
- * — so a slim row splits 50/50. That is fine for one control and wrong for four: *Brightness* and
- * *Increase Brightness* put a dropdown, two numbers and their inline labels in half a window, and
- * the dropdowns collapsed (Hamilcarbarcas, 2026-08-29: *"the fields are getting squished too much"*).
- * Restoring 1:2 gives the title a third of the row instead of half.
- *
- * A ratio rather than a fixed basis on purpose: `flex: 2` still resolves against content, so a
- * longer label in another language takes the width it needs instead of clipping. */
-.pf1-lighting.preset-editor .form-group.slim > .form-fields {
-  flex: 2;
-}
-
 
 /* The New / Duplicate / Delete cluster beside the preset select. `flex: 0 0 auto` so they keep
  * their size while the select takes the row, and a fixed square so the three read as a group

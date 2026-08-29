@@ -31,6 +31,18 @@
  * our fieldset, and would race our own de-duplication guard against a second render. The markup
  * here is simple enough that a synchronous build is the whole cost of avoiding that.
  *
+ * ## …and one of them is shown as a dropdown
+ *
+ * `config.negative` is a checkbox in core's sheet and a *Type* dropdown in the preset editor, and
+ * the two forms are meant to read as one (Hamilcarbarcas, 2026-08-29). The dropdown wins: it names
+ * both states rather than only the odd one, and the checkbox's label — *Darkness source* — was the
+ * one row where the shared layout scope carried different-looking controls.
+ *
+ * The checkbox is still the field that submits. It moves into a hidden slot exactly as the radii
+ * move into visible ones, and an unnamed `<select>` drives it. Naming the select instead would put
+ * the string `"darkness"` where a boolean belongs, and a second field of that name would make
+ * `FormDataExtended` return an array — the same trap the radii avoid.
+ *
  * ## Light↔darkness swaps by visibility, never by re-render
  *
  * `AmbientLightConfig#_onChangeForm` re-renders exactly `["animation", "advanced"]` when
@@ -171,6 +183,26 @@ const effectChoices = () => [
   { value: "clamp", label: t("LightConfig.Effects.clamp") },
 ];
 
+/**
+ * *Light* or *Darkness* — the two words core's `config.negative` checkbox stands for.
+ *
+ * @remarks
+ * A dropdown rather than the native checkbox (Hamilcarbarcas, 2026-08-29), matching the preset
+ * editor's *Type* row. The two forms show the same controls in the same order, and this was the
+ * one row where they disagreed about how to ask the same question — a checkbox reading *Darkness
+ * source* beside a dropdown reading *Light / Darkness*. The checkbox is still the field that
+ * submits; see the note in {@link wire}.
+ *
+ * Duplicated from `ui/preset-editor.mjs` rather than shared, like `effectChoices` and
+ * `tierChoice` above it, and the strings are duplicated too — `lang/en.json` keeps one section per
+ * form throughout (`Presets.Magical` and `LightConfig.Magical` are already the same word), so a
+ * translator reads each form as a whole rather than following cross-references out of it.
+ */
+const kindChoices = () => [
+  { value: "light", label: t("LightConfig.Kind.light") },
+  { value: "darkness", label: t("LightConfig.Kind.darkness") },
+];
+
 /* -------------------------------------------- */
 /*  Activation range (§10.4.1)                  */
 /* -------------------------------------------- */
@@ -249,15 +281,23 @@ function levelChoices(zeroLabel) {
  * @param {boolean} negative - Is this currently a darkness?
  * @param {?{from: number, to: number}} activation - Tier range, or null if this sheet has no
  *   `darkness.min`/`max` fields to drive (the token sheet does not)
+ * @param {string} prefix - `config` or `light`, the sheet's own field-name prefix. Needed here
+ *   only so the *Type* dropdown can name the checkbox it drives.
  */
-function fieldset(config, negative, activation) {
+function fieldset(config, negative, activation, prefix) {
   const magical = (config.kind ?? "mundane") === "magical";
   const transform = config.transform ?? {};
   const op = transform.op ?? "reduce";
   const emitTier = config.emitTier ?? TIER.NORMAL;
 
   return `
-<fieldset class="${MARKER}">
+<!--
+  \`pf1-lighting-rows\` is the shared layout scope, carried by this fieldset and by the preset
+  editor's window alike — see \`styles/config.css\`. \`MARKER\` stays the identity class: it is
+  what \`inject\` and \`sync\` find this element by, and what marks it as *ours inside somebody
+  else's sheet*. One says where it lives, the other says how a row of it lays out.
+-->
+<fieldset class="${MARKER} pf1-lighting-rows">
   <legend>${esc(t("LightConfig.Legend"))}</legend>
 
   <!--
@@ -290,10 +330,25 @@ function fieldset(config, negative, activation) {
     <p class="hint">${t("LightConfig.PresetHint")}</p>
   </div>
 
-  <div class="form-group" data-slot="negative">
-    <label>${esc(t("LightConfig.Negative"))}</label>
-    <div class="form-fields"></div>
-    <p class="hint">${t("LightConfig.NegativeHint")}</p>
+  <!--
+    **The visible control is a dropdown; the field that submits is still core's checkbox.**
+    \`config.negative\` is a real \`LightData\` path, so the checkbox is moved into the hidden slot
+    below rather than replaced — a \`<select name="config.negative">\` would hand the document the
+    string "darkness", and a second field of that name would make \`FormDataExtended\` return an
+    array. The dropdown carries no name at all and writes the checkbox in \`wire\`.
+
+    Same arrangement as \`ui/scene-config.mjs\`'s light-level row, and for the same reason there:
+    the native control is kept alive and driven, never re-implemented.
+  -->
+  <div class="form-group">
+    <label>${esc(t("LightConfig.Source"))}</label>
+    <div class="form-fields">
+      ${select(null, kindChoices(), negative ? "darkness" : "light", {
+        drives: `${prefix}.negative`,
+      })}
+    </div>
+    <span data-slot="negative" hidden></span>
+    <p class="hint">${t("LightConfig.SourceHint")}</p>
   </div>
 
   <div data-branch="light"${negative ? ' class="pf1-lighting-off"' : ""}>
@@ -305,24 +360,34 @@ function fieldset(config, negative, activation) {
       <p class="hint">${t("LightConfig.MagicalHint")}</p>
     </div>
 
-    <div class="form-group" data-needs="magical">
-      <label>${esc(t("Common.SpellLevel"))}</label>
-      <div class="form-fields">
-        ${select(null, levelChoices("Cantrip"), config.level ?? 0, {
-          drives: `${FLAG}.level`,
-          disabled: !magical,
-        })}
+    <!--
+      **Both are withheld when the light is mundane, not greyed** — mirroring the preset editor
+      (Hamilcarbarcas, 2026-08-29). They were pf1-lighting-dim + disabled, on the argument that
+      "a control that vanishes reads as a bug". That argument does not survive this sheet's own
+      behaviour: switching *Darkness source* already takes an entire branch away, so a control
+      vanishing when it stops applying is the idiom here rather than an exception to it.
+      Mechanically safe because neither carries a name attribute — both drive a hidden input that
+      always submits, so nothing is lost from FormDataExtended by their being gone.
+    -->
+    <div data-needs="magical"${magical ? "" : ' class="pf1-lighting-off"'}>
+      <div class="form-group">
+        <label>${esc(t("Common.SpellLevel"))}</label>
+        <div class="form-fields">
+          ${select(null, levelChoices("Cantrip"), config.level ?? 0, {
+            drives: `${FLAG}.level`,
+          })}
+        </div>
       </div>
-    </div>
 
-    <div class="form-group" data-needs="magical">
-      <label>${t("LightConfig.Daylight")}</label>
-      <div class="form-fields">
-        <input type="checkbox" data-drives="${FLAG}.cancelsDarkness"${
-          config.cancelsDarkness ? " checked" : ""
-        }${magical ? "" : " disabled"}>
+      <div class="form-group">
+        <label>${t("LightConfig.Daylight")}</label>
+        <div class="form-fields">
+          <input type="checkbox" data-drives="${FLAG}.cancelsDarkness"${
+            config.cancelsDarkness ? " checked" : ""
+          }>
+        </div>
+        <p class="hint">${t("LightConfig.DaylightHint")}</p>
       </div>
-      <p class="hint">${t("LightConfig.DaylightHint")}</p>
     </div>
 
     <div class="form-group slim">
@@ -344,10 +409,13 @@ function fieldset(config, negative, activation) {
         <label>${esc(t("LightConfig.Steps"))}</label>
         <input type="number" name="${FLAG}.steps" value="${esc(config.steps ?? 1)}"
                min="0" max="4" step="1">
-        <!-- "Max", not "Maximum" (Hamilcarbarcas, 2026-08-28). Three controls share this row and the
-             long label was taking the width the dropdown needed to show its own value. The two
-             live in lang/en.json as LightConfig.Max and Presets.Maximum, deliberately separate:
-             only this row is cramped. -->
+        <!-- Forced, not left to wrapping: the natural break fell between "Max" and its dropdown,
+             stranding the label on the row above. Same reason as the preset editor's. -->
+        <span class="pf1-lighting-break"></span>
+        <!-- "Max", not "Maximum" (Hamilcarbarcas, 2026-08-28). Three controls shared this row and the
+             long label was taking the width the dropdown needed to show its own value. Kept even
+             though the break now gives it its own line: the two live in lang/en.json as
+             LightConfig.Max and Presets.Maximum and are free to differ. -->
         <label>${esc(t("LightConfig.Max"))}</label>
         ${select(`${FLAG}.cap`, tierChoices(), config.cap ?? emitTier, { numeric: true })}
       </div>
@@ -356,14 +424,6 @@ function fieldset(config, negative, activation) {
   </div>
 
   <div data-branch="darkness"${negative ? "" : ' class="pf1-lighting-off"'}>
-    <div class="form-group slim">
-      <label>${esc(t("Common.Radius"))}</label>
-      <div class="form-fields">
-        <span data-slot="dim-dark"></span>
-      </div>
-      <p class="hint">${t("LightConfig.DarkRadiusHint")}</p>
-    </div>
-
     <div class="form-group">
       <label>${esc(t("Common.SpellLevel"))}</label>
       <div class="form-fields">
@@ -374,6 +434,16 @@ function fieldset(config, negative, activation) {
       <p class="hint">${t("LightConfig.DarkLevelHint")}</p>
     </div>
 
+    <!--
+      **One group, two rows — *Effect* owns the radius and the floor**, mirroring the preset
+      editor. Neither is a decision separate from what the darkness does: the floor is the bottom
+      of the same transform, and a darkness has exactly one radius. Both lose their own hints;
+      the floor's is folded into this group's, where it can also say why the control disappears
+      under *set level to*.
+
+      The radius is still the **relocated native input** — syncRadii and relocate find the slot
+      by [data-slot="dim-dark"], so moving the span in the DOM costs them nothing.
+    -->
     <div class="form-group slim">
       <label>${esc(t("LightConfig.Effect"))}</label>
       <div class="form-fields">
@@ -387,16 +457,17 @@ function fieldset(config, negative, activation) {
             numeric: true,
           })}
         </span>
+
+        <span class="pf1-lighting-break"></span>
+
+        <span data-effect="reduce"${op === "reduce" ? "" : ' class="pf1-lighting-off"'}>
+          <label>${esc(t("LightConfig.Floor"))}</label>
+          ${select(`${FLAG}.floor`, floorChoices(), config.floor ?? TIER.DARK, { numeric: true })}
+        </span>
+        <label>${esc(t("Common.Radius"))}</label>
+        <span data-slot="dim-dark"></span>
       </div>
       <p class="hint">${t("LightConfig.EffectHint")}</p>
-    </div>
-
-    <div class="form-group" data-effect="reduce"${op === "reduce" ? "" : ' class="pf1-lighting-off"'}>
-      <label>${esc(t("LightConfig.Floor"))}</label>
-      <div class="form-fields">
-        ${select(`${FLAG}.floor`, floorChoices(), config.floor ?? TIER.DARK, { numeric: true })}
-      </div>
-      <p class="hint">${t("LightConfig.FloorHint")}</p>
     </div>
   </div>
 ${activation ? activationGroup(activation) : ""}
@@ -497,19 +568,30 @@ function sync(root, prefix, changed) {
   syncActivation(fieldsetEl, prefix, changed);
 
   const negative = root.querySelector(`[name="${prefix}.negative"]`)?.checked === true;
+  // The checkbox is the truth and the dropdown is its face, so the dropdown is written *from* it
+  // rather than the other way about. That is what makes a preset flipping `negative`, or core
+  // re-rendering the sheet, land on the visible control without a second code path.
+  const typeSelect = fieldsetEl.querySelector(`select[data-drives="${prefix}.negative"]`);
+  if (typeSelect) typeSelect.value = negative ? "darkness" : "light";
+
   const lightBranch = fieldsetEl.querySelector('[data-branch="light"]');
   const darkBranch = fieldsetEl.querySelector('[data-branch="darkness"]');
   show(lightBranch, !negative);
   show(darkBranch, negative);
   syncRadii(fieldsetEl, prefix, negative);
 
-  // The emitter half. `level` and `cancelsDarkness` mean nothing on a mundane light, and
-  // disabling rather than hiding says so — a control that vanishes reads as a bug.
+  // The emitter half. `level` and `cancelsDarkness` mean nothing on a mundane light, so they are
+  // **taken away** rather than greyed (2026-08-29, mirroring the preset editor). The old comment
+  // here argued that "a control that vanishes reads as a bug"; the branch switch two lines above
+  // does exactly that with a whole half of the fieldset, so vanishing is this sheet's idiom.
+  //
+  // No `disabled` toggle any more, and none is needed: neither control carries a `name`. Both
+  // drive a hidden input that always submits, so `FormDataExtended` sees the same fields either
+  // way — which is what makes hiding safe here where it would not be for a named field.
   const magical = fieldsetEl.querySelector(`[data-drives="${FLAG}.kind"]`)?.checked === true;
   setHidden(fieldsetEl, `${FLAG}.kind`, magical ? "magical" : "mundane");
   for (const group of fieldsetEl.querySelectorAll('[data-needs="magical"]')) {
-    group.classList.toggle("pf1-lighting-dim", !magical);
-    for (const field of group.querySelectorAll("input, select")) field.disabled = !magical;
+    show(group, magical);
   }
 
   // `&& magical`, not just the checkbox — see the markup's note. This is the one flag the model
@@ -740,6 +822,21 @@ function wire(root, prefix) {
       return;
     }
 
+    // **The *Type* dropdown writes the checkbox and then gets out of the way.** The event is
+    // dispatched from the checkbox rather than the change previewed here, because core decides
+    // whether to re-render the animation and advanced parts by testing `event.target.name`
+    // against `config.negative` (`ambient-light-config.mjs:169`) — a name only the real field
+    // has. Letting it bubble is what makes picking *Darkness* from this dropdown behave exactly
+    // as ticking the box did, and the re-entered event drives `sync` for us.
+    if (target.dataset?.drives === `${prefix}.negative`) {
+      const box = root.querySelector(`[name="${prefix}.negative"]`);
+      if (box) {
+        box.checked = target.value === "darkness";
+        box.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      return;
+    }
+
     // Any governed field flips the preset to Custom, and it stays there — §10.2's one-way sync.
     // The driven controls count: they are the visible face of `kind` and `level`.
     const drives = target.dataset?.drives ?? "";
@@ -799,16 +896,14 @@ function inject(app, element, prefix) {
       ? activationOf(config, numberOr(minInput, 0), numberOr(maxInput, 1))
       : null;
 
-  host.insertAdjacentHTML("afterend", fieldset(config, negative, activation));
+  host.insertAdjacentHTML("afterend", fieldset(config, negative, activation, prefix));
 
   const fieldsetEl = root.querySelector(`.${MARKER}`);
   relocate(root, `${prefix}.bright`, fieldsetEl.querySelector('[data-slot="bright"]'));
   relocate(root, `${prefix}.dim`, fieldsetEl.querySelector('[data-slot="dim"]'));
-  relocate(
-    root,
-    `${prefix}.negative`,
-    fieldsetEl.querySelector('[data-slot="negative"] .form-fields')
-  );
+  // Out of sight, not out of the form: it still submits, still previews, and is still what
+  // everything here reads to decide which branch is showing.
+  relocate(root, `${prefix}.negative`, fieldsetEl.querySelector('[data-slot="negative"]'));
   if (activation) {
     // Both live in one core row, so the second `relocate` re-hides a row already hidden.
     relocate(root, `${prefix}.darkness.min`, fieldsetEl.querySelector('[data-slot="darkness-min"]'));

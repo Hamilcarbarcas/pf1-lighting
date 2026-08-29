@@ -5615,6 +5615,47 @@ opinion about activation and `#harvest` omits the pair. That is what stops every
 from acquiring a range it never had the first time it is saved, and from overwriting one a GM set
 by hand on the light it is applied to. Narrow either end and both start being written.
 
+#### The two forms share one layout scope — 2026-08-29
+
+Everything above landed in `ui/preset-editor.mjs` first and was then mirrored into the light sheet
+(Hamilcarbarcas: *"can we mirror it into the actual light's settings? Hopefully the same css without
+duplicating the code?"*). The mirroring is the point, not the tidiness: the two forms show the same
+controls, and they had already drifted far enough that the editor carried fixes the sheet did not —
+including a real bug, below.
+
+**A third class rather than a merge.** `styles/config.css` now has three scopes:
+
+| Class | On | For |
+| --- | --- | --- |
+| `.pf1-lighting-rows` | both | how a row of controls lays out |
+| `.pf1-lighting-config` | the injected fieldset | living inside somebody else's sheet |
+| `.pf1-lighting.preset-editor` | our own window | that window's own furniture |
+
+The first is new and both roots carry it. The other two keep the separation §10.2.1 originally
+argued for, and are now down to what is genuinely local — the relocated native inputs are only a
+problem on the sheet, the New/Duplicate/Delete cluster only exists in the window. A fix to a row
+lands in both by construction; a fix to either *context* still cannot reach the other.
+
+**The bug the sharing surfaced.** `.form-fields > select` never matched the `transformMax` select
+or the `transformSteps` input, because both sit inside a `span[data-effect]` and `display: contents`
+removes the span's *box*, not its place in the tree. Both scopes had the omission independently. It
+was visible in the editor — *Decrease by* would not share a line with its number — and merely latent
+on the wider sheet. One rule with `> span[data-effect] > …` twins now covers both, which is the
+argument for the shared scope stated as a defect rather than as taste.
+
+**What the sheet gained:** the forced break in *Increase Brightness*, *Effect* owning the radius and
+the floor on a second row, the 2:1 select-to-number ratio, the branch-wrapper gap, and hints that sit
+under their own field. **What it kept:** the relocated native radius inputs, which `syncRadii` finds
+by `[data-slot]` and so did not care that the slot moved.
+
+**Spell Level and Counts as Daylight are hidden here too now**, where they were `pf1-lighting-dim`
+plus `disabled`. The comment defending that read *"a control that vanishes reads as a bug"* — an
+argument this sheet's own branch switch had already contradicted, since toggling *Darkness source*
+takes half the fieldset away. Safe because neither control carries a `name`: both drive a hidden
+input that always submits, so `FormDataExtended` sees the same fields either way. **That is the test
+for whether hiding is available at all** — a *named* field has to stay in the DOM, because a disabled
+or absent one silently drops out of the submitted form.
+
 **What is edited is a working copy.** Nothing reaches the setting until *Save*. Switching between
 presets harvests the visible pane into that copy first, so a half-finished edit survives a look
 at another entry, and closing without saving discards the lot. Both are what a GM assumes without
@@ -5674,6 +5715,21 @@ the second `<fieldset>` in the `basic` section. Hidden:
 the form is bound by `FormDataExtended` exactly as the original was, flows through
 `_onChangeForm` → `_previewChanges` → `preview.updateSource`, and previews live. Two live
 controls for one value would be a bug factory; one control in a different place is not.
+
+**`config.negative` is shown as a *Type* dropdown, added 2026-08-29.** The preset editor asks
+this question with a two-option select (*Light* / *Darkness*) and the sheet asked it with a
+checkbox labelled *Darkness source*; §10.6's shared layout scope exists so the two forms read as
+one, and this was the row where they did not. The dropdown wins because it names both states
+rather than only the odd one.
+
+The checkbox itself is *kept and driven*, not replaced — it moves into a hidden slot exactly as
+the radii move into visible ones, and an unnamed `<select data-drives="config.negative">` writes
+it. Two details make that arrangement necessary rather than merely tidy: a `<select>` carrying
+the name would hand a `BooleanField` the string `"darkness"`, and the change has to be
+*dispatched from the checkbox*, because `_onChangeForm` tests `event.target.name` against
+`config.negative` when deciding to re-render `["animation", "advanced"]` — a name only the real
+field has. Same shape as §10.5's scene row, which drives core's darkness slider from a tier
+dropdown for the same reasons.
 
 `config.priority` stays where it is on Appearance, with a hint added: Foundry's Priority orders
 darkness against darkness and is **not** our spell level (§4.1.1, and §10's earlier note
