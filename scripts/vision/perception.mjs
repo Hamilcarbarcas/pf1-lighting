@@ -34,6 +34,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import { flag } from "../settings-cache.mjs";
 import { evaluate } from "../model/evaluate.mjs";
 import { TIER, TIER_NAME } from "../model/tiers.mjs";
@@ -86,9 +87,7 @@ export function registerSettings() {
       if (value === lastValue) return;
       lastValue = value;
       refresh();
-      ui.notifications.info(
-        `PF1 Lighting | Perception by light level ${value ? "enabled" : "disabled"}.`
-      );
+      ui.notifications.info(t(value ? "Notify.PerceptionOn" : "Notify.PerceptionOff"));
     },
   });
 

@@ -140,11 +140,21 @@ reasonable thing for a magical darkness to look like.
 
 ### Animated darkness
 
-An ordinary darkness has no surface, so an animation chosen in its config has nothing to run
-on and does nothing. **Animated darkness visibility** draws one faintly so the animation shows.
-It tints the area slightly darker than the rules say, which is the price; 0 turns it off, and
-it only ever applies to a darkness that actually has an animation set. A *deeper darkness* is
-unaffected either way — it already draws.
+An ordinary darkness has no surface, so an animation chosen in its config has nothing to run on
+and does nothing. This module draws one faintly so the animation shows. It tints the area
+slightly darker than the rules say, which is the price.
+
+There is no setting, because choosing an animation on the darkness *is* the setting: a darkness
+with none is untouched — no mesh, no cost, no tint — and a *deeper darkness* already draws
+either way. The one reason to want it off globally is cost, since each animated darkness carries
+an extra mesh per lit area it crosses:
+
+```js
+game.pf1Lighting.settings("darknessAnimationStrength", false)
+```
+
+(The key still says *strength* because it was a 0–1 dial before it became a switch; renaming it
+would orphan the value in worlds that have set it.)
 
 One known limit: a creature with **blindsight** sees no animation on a darkness. Its darkness
 overlay is withheld entirely, on the grounds that a creature mapping a room by echo does not
@@ -496,11 +506,16 @@ at goes through it together — terrain, tokens, tiles, and the tint a light cas
 burning inside a magical darkness is grey light rather than a coloured wash on a grey floor, and a
 creature standing in a dark room is not in full colour.
 
-**Greyscale in explored fog**, in Configure Visuals, decides how much of this reaches ground you
-have explored but cannot currently see. At 0 remembered terrain stays in full colour; at 1 it is
-treated exactly like ground in view. It defaults to **0.5** because the boundary is your own vision
-polygon and it moves with you — the two extremes both draw attention to that edge, and the middle
-does not.
+None of it reaches ground you have explored but cannot currently see: **remembered terrain keeps
+its colour.** Memory is not a sense with a light level, and the boundary the greyscale would have
+to fade across is your own vision polygon, which moves with you.
+
+If you would rather fog read as unlit, it is a dial rather than a switch — 1 treats remembered
+ground exactly like ground in view, and anything between fades:
+
+```js
+game.pf1Lighting.settings("greyscaleInFog", 0.5)
+```
 
 ```js
 game.pf1Lighting.render.greyscale()   // is it running, and what the ramp resolved to
@@ -970,6 +985,15 @@ world back on the module's own table, and back to tracking it as the module chan
 
 Two things worth knowing:
 
+- **A darkness has no *Magical* checkbox, and does not need one.** Its **Spell Level** carries the
+  whole distinction: level 0 is mundane — an unlit cellar, dark but see-through — and level 1 or
+  above is a magical darkness, which casts an umbra and can be out-levelled by magical light. The
+  checkbox exists only for light sources, where being magical and having a level are genuinely
+  separate questions.
+- **A preset can carry an activation range, and by default does not.** Leave *Active when scene
+  is* spanning **Bright** to **Dark** and the preset says nothing about it — applying the preset
+  will not disturb a range you set by hand on that light. Narrow either end and it starts being
+  part of what the preset fills in.
 - **Editing a preset does not change lights already placed from it.** A preset fills fields in at
   the moment you choose it and is never read again afterwards.
 - **Deleting one is harmless.** A light placed from a preset that no longer exists reads as
@@ -1022,17 +1046,16 @@ the `pf1-lighting.config` flag if a scene ever needs an exception.
 
 ## Settings
 
-Seven switches and three windows.
+Five switches and three windows.
 
 | | |
 | --- | --- |
-| **Visuals** | Brightness of each tier, the brightness transition width, unseen-ground dimming, greyscale in explored fog, see-in-darkness brightness |
+| **Visuals** | Brightness of each tier, the brightness transition width, unseen-ground dimming, see-in-darkness brightness |
 | **Lighting Presets** | The named light and darkness configurations offered on a light's sheet |
 | **Light Spill** | Whether windows let the daylight in, and how far each brightness carries indoors |
 | Show light level | Your own readout chip |
 | Light level is GM only | Whether players get one at all — on by default |
 | Explain the light level | The *why* line. GM only, whoever the readout is shown to |
-| Animate ordinary darkness | Draws an ordinary darkness faintly so its animation has a surface |
 | Darkness shadows what lies beyond it | Observer-relative light levels — the umbra |
 | GM sees through the selected token | GM only. Also **Alt+O** and a token-control toggle |
 
@@ -1049,6 +1072,30 @@ game.pf1Lighting.settings()                        // every setting, with hidden
 game.pf1Lighting.settings("renderEnabled")         // read one
 game.pf1Lighting.settings("renderEnabled", true)   // write one
 ```
+
+## Translating
+
+Every string the module shows a user lives in `lang/en.json`. Copy it, translate the values, and
+add your file to `languages` in `module.json`:
+
+```json
+{ "lang": "de", "name": "Deutsch", "path": "lang/de.json" }
+```
+
+Two entries are not free-form. `TYPES.RegionBehavior.pf1-lighting.globalIllumination` is the name
+Foundry shows in the *Create Region Behavior* dropdown and the key is fixed by Foundry, not by
+this module — translate the value, never the key. And `PF1LIGHTING.Tier.*` are the five brightness
+levels; they appear in dropdowns, on the readout chip and in half the hints, so whatever you pick
+should read the same in all three.
+
+Strings carrying `{something}` in braces are substitutions — leave the braces and the name inside
+them alone. Some hints contain `<strong>` and `<em>`; those render as markup.
+
+Console output is deliberately not translated, and that is why the file is shorter than the
+settings list implies. `game.pf1Lighting.*` readouts and the tier names the public API hands to
+other modules stay English, so a script that keys off them keeps working whatever language the
+table plays in — and the thirty-odd settings with no menu row are console-only, so their names
+stay in the source rather than asking you to translate text nobody can reach.
 
 ## Not implemented yet
 

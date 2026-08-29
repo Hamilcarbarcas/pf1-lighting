@@ -22,6 +22,7 @@
  */
 
 import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import { isNativeSuppressionDisabled } from "../suppression.mjs";
 import { flag } from "../settings-cache.mjs";
 import * as field from "../model/field.mjs";
@@ -276,9 +277,7 @@ export function rebuild({ force = false } = {}) {
     if (lastField) reset();
     // Only on an explicit call. The hooks fire constantly and would drown the console.
     if (force) {
-      ui.notifications?.warn(
-        "PF1 Lighting | Renderer is disabled — enable 'Render the lighting model' in settings."
-      );
+      ui.notifications?.warn(t("Notify.RendererOff"));
     }
     return null;
   }
@@ -287,9 +286,7 @@ export function rebuild({ force = false } = {}) {
     // Without this, Foundry clips light at darkness boundaries before the model ever sees
     // it, so the cells we render are computed from already-suppressed geometry.
     if (force) {
-      ui.notifications?.warn(
-        "PF1 Lighting | Renderer needs 'Disable native darkness suppression' to also be on."
-      );
+      ui.notifications?.warn(t("Notify.RendererNeedsSuppression"));
     }
   }
 
@@ -714,7 +711,18 @@ export function registerSettings() {
       "the animation, leaving the light level exactly where the rules put it. Applies only to " +
       "a darkness that has an animation set; a deeper darkness already animates.",
     scope: "world",
-    config: true,
+    // **No control surface since 2026-08-29** (Hamilcarbarcas: *"does it really do anything visually
+    // when enabled and no animation is on?"* — it does not). {@link darkeningPlan} tests
+    // `source.data.animation.type` **before** it tests this, so a darkness with no animation
+    // configured already yields `strength: 0, animationOnly: false` and no mesh is built. The
+    // switch is therefore a second way to decline a feature the GM has to opt into per source,
+    // by picking an animation — which is the row §10.6 removed eight others for.
+    //
+    // **Kept as a switch rather than deleted**, because the `animationOnly` path builds a mesh
+    // per animated darkness and clones it per cell (see below), which is real per-frame cost.
+    // That makes it an escape hatch worth having after §9.8's performance pass, reachable from
+    // the console — `game.pf1Lighting.settings("darknessAnimationStrength", false)`.
+    config: false,
     type: Boolean,
     default: true,
     onChange: () => rebuild({ force: true }),

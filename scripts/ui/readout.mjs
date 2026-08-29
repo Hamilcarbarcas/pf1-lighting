@@ -25,8 +25,9 @@
  */
 
 import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import { evaluate } from "../model/evaluate.mjs";
-import { TIER, TIER_NAME } from "../model/tiers.mjs";
+import { TIER, tierLabel } from "../model/tiers.mjs";
 import { viewerTier } from "../vision/perception.mjs";
 
 export const SETTING_ENABLED = "readoutEnabled";
@@ -236,14 +237,17 @@ function evaluateToken(token) {
  */
 function reasonFor(result) {
   if (result.negated?.length) {
-    return `${result.negated.length > 1 ? "darkness effects" : "darkness"} cancelled by daylight`;
+    return t(result.negated.length > 1 ? "Readout.CancelledMany" : "Readout.CancelledOne");
   }
   if (!result.winner) return null;
-  if (!result.applied) return "darkness present, no effect";
+  if (!result.applied) return t("Readout.NoEffect");
   if (result.baselineTier > result.tier) {
-    return `reduced from ${TIER_NAME[result.baselineTier].toLowerCase()}`;
+    // Lower-cased here rather than carrying a second set of tier strings: the chip runs the
+    // sentence on from *reduced from*, and a language where that is wrong wants its own phrasing
+    // for the whole line, which `Readout.ReducedFrom` is free to give it.
+    return t("Readout.ReducedFrom", { tier: tierLabel(result.baselineTier).toLowerCase() });
   }
-  return "suppressed";
+  return t("Readout.Suppressed");
 }
 
 function update() {
@@ -283,7 +287,11 @@ function update() {
   const clamped = seen !== null && seen < result.tier ? seen : null;
   const tierShown = clamped ?? result.tier;
 
-  const reason = detailed() ? (clamped !== null ? "seen through darkness" : reasonFor(result)) : null;
+  const reason = detailed()
+    ? clamped !== null
+      ? t("Readout.SeenThroughDarkness")
+      : reasonFor(result)
+    : null;
 
   element.className = `pf1-lighting-readout tier-${TIER_CLASS[tierShown] ?? "dark"}`;
   element.innerHTML = "";
@@ -297,7 +305,7 @@ function update() {
 
   const tier = document.createElement("span");
   tier.className = "readout-tier";
-  tier.textContent = TIER_NAME[tierShown];
+  tier.textContent = tierLabel(tierShown);
   element.append(tier);
 
   if (reason) {
@@ -329,10 +337,8 @@ function schedule() {
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_ENABLED, {
-    name: "Show light level",
-    hint:
-      "Displays the light level under the cursor, or of a hovered token, as a chip beside the " +
-      "pointer. Alt+L toggles it.",
+    name: "PF1LIGHTING.Setting.readoutEnabled.Name",
+    hint: "PF1LIGHTING.Setting.readoutEnabled.Hint",
     scope: "client",
     config: true,
     type: Boolean,
@@ -341,10 +347,8 @@ export function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_DM_ONLY, {
-    name: "Light level is GM only",
-    hint:
-      "Keeps the readout to the GM. Turn this off to let players see the light level their own " +
-      "tokens are standing in; they each still choose whether to show it.",
+    name: "PF1LIGHTING.Setting.readoutGmOnly.Name",
+    hint: "PF1LIGHTING.Setting.readoutGmOnly.Hint",
     scope: "world",
     config: true,
     type: Boolean,
@@ -358,10 +362,8 @@ export function registerSettings() {
   });
 
   game.settings.register(MODULE_ID, SETTING_DETAIL, {
-    name: "Explain the light level",
-    hint:
-      "Adds why the level is what it is — 'reduced from normal', 'darkness cancelled by " +
-      "daylight'. GM only, whoever the readout is shown to.",
+    name: "PF1LIGHTING.Setting.readoutDetail.Name",
+    hint: "PF1LIGHTING.Setting.readoutDetail.Hint",
     // **World, not client, and the scope is doing two jobs.** It hides the control from players
     // (`applications/settings/config.mjs:67`), and it says what the setting is: whether
     // explanations exist at this table, not whether one GM likes seeing them.
@@ -375,8 +377,8 @@ export function registerSettings() {
 
 export function registerKeybindings() {
   game.keybindings.register(MODULE_ID, "toggleReadout", {
-    name: "Toggle light level readout",
-    hint: "Show or hide the light level chip.",
+    name: "PF1LIGHTING.Keybind.toggleReadout.Name",
+    hint: "PF1LIGHTING.Keybind.toggleReadout.Hint",
     // Alt+L matches `pf1-light-level-tooltip`'s binding. Deliberate — this replaces it,
     // and Foundry will fire both if that module is also active and bound the same way.
     editable: [{ key: "KeyL", modifiers: ["Alt"] }],
@@ -388,7 +390,7 @@ export function registerKeybindings() {
 
       const next = !showing();
       game.settings.set(MODULE_ID, SETTING_ENABLED, next);
-      ui.notifications?.info(`PF1 Lighting | Readout ${next ? "shown" : "hidden"}.`);
+      ui.notifications?.info(t(next ? "Notify.ReadoutShown" : "Notify.ReadoutHidden"));
       return true;
     },
     restricted: false,

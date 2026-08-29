@@ -46,7 +46,8 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { TIER } from "./tiers.mjs";
+import { t } from "../i18n.mjs";
+import { TIER, activationRange } from "./tiers.mjs";
 
 /** The stored value meaning "these numbers came from nowhere in particular". */
 export const CUSTOM = "custom";
@@ -375,7 +376,12 @@ export function newKey(label, existing = {}) {
  * @returns {{value: string, label: string}[]}
  */
 export function presetChoices(negative) {
-  const out = [{ value: CUSTOM, label: "Custom" }];
+  // **`Custom` is translated and the preset labels are not**, and the line between them is
+  // storage. This entry is chrome — it means *not from a preset* and is never written anywhere.
+  // A preset's label is seed data for an editable world setting: translate it and the first GM
+  // to press Save in the editor persists a translation into their world's table, where it stops
+  // following the language. See `BUILT_IN`.
+  const out = [{ value: CUSTOM, label: t("Presets.Custom") }];
   for (const [value, preset] of Object.entries(table())) {
     if (negative !== undefined && preset.negative !== negative) continue;
     out.push({ value, label: preset.label });
@@ -422,6 +428,24 @@ export function applyPreset(name, { prefix = "config", radii = true } = {}) {
       update[`${prefix}.${key}`] = value;
     }
   }
+
+  // **The activation range is stored as two tiers and written as two raw numbers** (§10.4.1).
+  // `activeFrom`/`activeTo` above are only a memo, so the sheet's dropdowns can be restored to
+  // what was chosen; what Foundry actually gates the source on is `darkness.min`/`max`. Deriving
+  // them here rather than storing them means a preset follows the tier table if the GM retunes
+  // how bright each level is.
+  //
+  // **Absence means "always", and is therefore left alone.** A preset that carries no range —
+  // every built-in one — writes neither field, so applying it does not disturb a range the GM
+  // set by hand on that light. The editor expresses *always* by omitting the pair rather than by
+  // storing the full ladder, which would resolve to `{min: 0, max: 1}` and overwrite.
+  const { activeFrom, activeTo } = preset.config ?? {};
+  if (Number.isFinite(activeFrom) && Number.isFinite(activeTo)) {
+    const { min, max } = activationRange(Math.max(activeFrom, activeTo), Math.min(activeFrom, activeTo));
+    update[`${prefix}.darkness.min`] = min;
+    update[`${prefix}.darkness.max`] = max;
+  }
+
   return update;
 }
 

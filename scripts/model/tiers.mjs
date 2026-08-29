@@ -13,6 +13,12 @@ export const TIER = Object.freeze({
   BRIGHT: 4,
 });
 
+/**
+ * **English, and deliberately not translated.** This is the developer surface: every
+ * `game.pf1Lighting` readout prints it, and `api.tierName()` hands it to other modules as the
+ * name of a tier. A consumer keying off `"Supernatural Dark"` must not break because someone
+ * changed their language. {@link tierLabel} is the one to show a user.
+ */
 export const TIER_NAME = Object.freeze({
   [TIER.SUPERNATURAL_DARK]: "Supernatural Dark",
   [TIER.DARK]: "Dark",
@@ -20,6 +26,29 @@ export const TIER_NAME = Object.freeze({
   [TIER.NORMAL]: "Normal",
   [TIER.BRIGHT]: "Bright",
 });
+
+/** `lang/en.json` keys under `PF1LIGHTING.Tier`. Not the display strings — see {@link tierLabel}. */
+const TIER_KEY = Object.freeze({
+  [TIER.SUPERNATURAL_DARK]: "SupernaturalDark",
+  [TIER.DARK]: "Dark",
+  [TIER.DIM]: "Dim",
+  [TIER.NORMAL]: "Normal",
+  [TIER.BRIGHT]: "Bright",
+});
+
+/**
+ * A tier's name as a user should read it.
+ *
+ * @remarks
+ * **Render time only** — `game.i18n` has no translations loaded during `init` (see `i18n.mjs`),
+ * so a module-level `const` built from this would freeze the keys instead of the names. Every
+ * caller is inside `_renderHTML`, a hook, or a notification, which is late enough.
+ *
+ * Falls back to {@link TIER_NAME} for an unrecognised tier rather than returning a raw key,
+ * because the one caller that can be handed one is the readout, mid-drag.
+ */
+export const tierLabel = (tier) =>
+  TIER_KEY[tier] ? game.i18n.localize(`PF1LIGHTING.Tier.${TIER_KEY[tier]}`) : (TIER_NAME[tier] ?? "");
 
 /**
  * Upper bound of each tier's `B` band. Supernatural Dark is pinned at 0 and is not
@@ -317,6 +346,45 @@ const TIE = 1e-9;
  * @param {number} tier - A {@link TIER} value the ambient can hold
  * @returns {{from: number, to: number}} Darkness levels, `from` inclusive and `to` exclusive
  */
+/**
+ * How far below a band's open upper edge to land.
+ *
+ * @remarks
+ * {@link darknessBand} returns `[from, to)` but `Number#between` is **inclusive at both ends**
+ * (`primitives/number.mjs:83`, and `light.mjs:159` calls it with no third argument), so the dark
+ * end has to be closed by hand. It matters at exactly one value per boundary and that value is
+ * reachable: the Normal/Dim edge under the default table is 0.5, which is where a hand-dragged
+ * darkness slider likes to sit.
+ */
+const EDGE = 1e-6;
+
+/**
+ * A tier range → the `darkness.min`/`max` pair Foundry gates a light source on.
+ *
+ * @remarks
+ * **Here rather than in `ui/light-config.mjs`, where it began.** The preset editor needs the same
+ * arithmetic to store an activation range (§10.2.1), and two copies of a rounding rule is how the
+ * sheet and the preset table would come to disagree about which tier a light switches on at.
+ *
+ * The **full ladder is `{min: 0, max: 1}`** — Foundry's own defaults, i.e. always on — because
+ * `darknessBand` opens the brightest tier at 0 and closes the darkest at 1. That is what lets a
+ * preset express *always* by simply not carrying a range.
+ *
+ * @param {number} brightest - The brightest ambient this light is on at
+ * @param {number} darkest - The darkest ambient this light is on at
+ * @returns {{min: number, max: number}}
+ */
+export function activationRange(brightest, darkest) {
+  const bright = darknessBand(brightest);
+  const dark = darknessBand(darkest);
+  return {
+    // Closed at the bright end already — a midpoint belongs to the darker tier, which is the
+    // one we are starting from.
+    min: bright.from,
+    max: dark.to >= 1 ? 1 : dark.to - EDGE,
+  };
+}
+
 export function darknessBand(tier) {
   const level = (t) => table[t] ?? 1;
   const ordered = [...AMBIENT_TIERS].sort((a, b) => level(a) - level(b));

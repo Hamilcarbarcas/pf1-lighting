@@ -35,7 +35,8 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { TIER } from "../model/tiers.mjs";
+import { t } from "../i18n.mjs";
+import { TIER, tierLabel } from "../model/tiers.mjs";
 import {
   BUILT_IN,
   SETTING_TABLE,
@@ -51,37 +52,51 @@ export const MENU_KEY = "presetEditor";
 /*  Choices — the sheet's vocabulary, verbatim   */
 /* -------------------------------------------- */
 
-const TIER_CHOICES = [
-  { value: TIER.DIM, label: "Dim" },
-  { value: TIER.NORMAL, label: "Normal" },
-  { value: TIER.BRIGHT, label: "Bright" },
-];
+/**
+ * **Functions, not constants.** These were module-level arrays, which is evaluated at import —
+ * before `game.i18n` has loaded a single translation (see `i18n.mjs`). A `const` built from
+ * {@link tierLabel} would freeze the keys into the dropdowns for the session. Called from
+ * `_renderHTML`, which is late enough.
+ */
+const tierChoices = () => [TIER.DIM, TIER.NORMAL, TIER.BRIGHT].map(tierChoice);
 
-const FLOOR_CHOICES = [
-  { value: TIER.DARK, label: "Dark" },
-  { value: TIER.SUPERNATURAL_DARK, label: "Supernatural Dark" },
-];
+const floorChoices = () => [TIER.DARK, TIER.SUPERNATURAL_DARK].map(tierChoice);
 
 /** Stops at Dim for `ui/light-config.mjs`'s reason: `clamp` only lowers. */
-const CLAMP_CHOICES = [
-  { value: TIER.SUPERNATURAL_DARK, label: "Supernatural Dark" },
-  { value: TIER.DARK, label: "Dark" },
-  { value: TIER.DIM, label: "Dim" },
+const clampChoices = () => [TIER.SUPERNATURAL_DARK, TIER.DARK, TIER.DIM].map(tierChoice);
+
+/**
+ * Scene light levels a light may be switched on at, brightest first.
+ *
+ * Mirrors `ui/light-config.ACTIVATION_TIERS` and for its reason: the test is against the
+ * *ambient*, and Supernatural Dark is not somewhere ambient light can be.
+ */
+const ACTIVATION_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
+
+const activationChoices = () => ACTIVATION_TIERS.map(tierChoice);
+
+/** A stored tier, or null if it is not one this control could have written. */
+const storedTier = (value) =>
+  Number.isFinite(value) && ACTIVATION_TIERS.includes(value) ? value : null;
+
+const tierChoice = (tier) => ({ value: tier, label: tierLabel(tier) });
+
+const effectChoices = () => [
+  { value: "reduce", label: t("LightConfig.Effects.reduce") },
+  { value: "clamp", label: t("LightConfig.Effects.clamp") },
 ];
 
-const EFFECT_CHOICES = [
-  { value: "reduce", label: "Decrease by" },
-  { value: "clamp", label: "Set level to" },
+const kindChoices = () => [
+  { value: "light", label: t("Presets.Kind.light") },
+  { value: "darkness", label: t("Presets.Kind.darkness") },
 ];
 
-const KIND_CHOICES = [
-  { value: "light", label: "Light" },
-  { value: "darkness", label: "Darkness" },
-];
-
+/** Spell levels, with 0 named for what it means rather than numbered. */
 function levelChoices(zeroLabel) {
-  const out = [{ value: 0, label: zeroLabel }];
-  for (let i = 1; i <= 9; i++) out.push({ value: i, label: `Level ${i}` });
+  const out = [{ value: 0, label: t(`LightConfig.SpellLevel.${zeroLabel}`) }];
+  for (let i = 1; i <= 9; i++) {
+    out.push({ value: i, label: t("LightConfig.SpellLevel.Numbered", { n: i }) });
+  }
   return out;
 }
 
@@ -109,7 +124,7 @@ function select(name, options, value) {
 
 /** A blank entry, so *New* lands on something that already works. */
 const blankPreset = () => ({
-  label: "New preset",
+  label: t("Presets.New"),
   negative: false,
   config: {
     kind: "mundane",
@@ -139,7 +154,7 @@ class PresetEditor extends foundry.applications.api.ApplicationV2 {
     tag: "form",
     classes: ["pf1-lighting", "preset-editor"],
     window: {
-      title: "Lighting Presets",
+      title: "PF1LIGHTING.Presets.Title",
       icon: "fa-solid fa-lightbulb",
       contentClasses: ["standard-form"],
       resizable: true,
@@ -175,32 +190,37 @@ class PresetEditor extends foundry.applications.api.ApplicationV2 {
 
     return `
 <div class="form-group">
-  <label>Preset</label>
+  <label>${esc(t("Common.Preset"))}</label>
   <div class="form-fields">
     ${
       options.length
         ? select("__which", options, this.#current)
-        : `<select name="__which" disabled><option>No presets</option></select>`
+        : `<select name="__which" disabled><option>${esc(t("Presets.None"))}</option></select>`
     }
-    <button type="button" class="icon" data-action="create" data-tooltip="New preset">
-      <i class="fa-solid fa-plus"></i></button>
-    <button type="button" class="icon" data-action="duplicate" data-tooltip="Duplicate"
+    <button type="button" class="icon" data-action="create"
+            data-tooltip="${esc(t("Presets.Create"))}"><i class="fa-solid fa-plus"></i></button>
+    <button type="button" class="icon" data-action="duplicate"
+            data-tooltip="${esc(t("Presets.Duplicate"))}"
             ${preset ? "" : "disabled"}><i class="fa-solid fa-clone"></i></button>
-    <button type="button" class="icon" data-action="remove" data-tooltip="Delete"
+    <button type="button" class="icon" data-action="remove"
+            data-tooltip="${esc(t("Presets.Delete"))}"
             ${preset ? "" : "disabled"}><i class="fa-solid fa-trash"></i></button>
   </div>
-  <p class="hint">Changing a preset here does not alter lights already placed from it — a preset
-    fills fields in at the moment it is chosen and is never read again afterwards.</p>
+  <p class="hint">${t("Presets.Which.Hint")}</p>
 </div>
 
 <hr>
 
-${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add one.</p>`}
+${
+  preset
+    ? this.#pane(preset)
+    : `<p class="notification info">${esc(t("Presets.NoneYet"))}</p>`
+}
 
 <footer class="form-footer">
   <button type="button" data-action="reset">
-    <i class="fa-solid fa-rotate-left"></i> Restore defaults</button>
-  <button type="submit"><i class="fa-solid fa-save"></i> Save</button>
+    <i class="fa-solid fa-rotate-left"></i> ${esc(t("Common.RestoreDefaults"))}</button>
+  <button type="submit"><i class="fa-solid fa-save"></i> ${esc(t("Common.Save"))}</button>
 </footer>`;
   }
 
@@ -218,112 +238,169 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
 
     return `
 <div class="form-group">
-  <label>Name</label>
+  <label>${esc(t("Presets.Name"))}</label>
   <div class="form-fields">
     <input type="text" name="label" value="${esc(preset.label ?? "")}">
   </div>
 </div>
 
 <div class="form-group">
-  <label>Source</label>
+  <label>${esc(t("Presets.Source"))}</label>
   <div class="form-fields">
-    ${select("negative", KIND_CHOICES, negative ? "darkness" : "light")}
+    ${select("negative", kindChoices(), negative ? "darkness" : "light")}
   </div>
-  <p class="hint">A darkness lowers the light level in its area instead of raising it.</p>
-</div>
-
-<div class="form-group">
-  <label>Magical</label>
-  <div class="form-fields">
-    <input type="checkbox" name="magical"${magical ? " checked" : ""}>
-  </div>
-  <p class="hint">Magical light of a higher level than a darkness overrides it. A magical
-    darkness also blocks sight through itself.</p>
+  <p class="hint">${t("Presets.SourceHint")}</p>
 </div>
 
 <div data-branch="light"${negative ? ' class="pf1-lighting-off"' : ""}>
+  <!--
+    **Magical is inside the light branch, and that is the model rather than tidiness** (§10.1).
+    Nothing reads a *suppressor's* \`kind\`: \`breaks()\` and the eligibility preset both test
+    \`emitter.kind\`, and a darkness's umbra comes from \`castsUmbra\`, which is \`level >= 1\`.
+    So for a darkness this checkbox moved nothing, and its hint used to claim otherwise.
+    \`ui/light-config.mjs\` has always had it here; this pane was the one that did not
+    (Hamilcarbarcas, 2026-08-29: *"is the magical checkbox superfluous for darkness sources?"* — it
+    was). On the emitter side the two axes are genuinely independent, which is why it stays.
+  -->
   <div class="form-group">
-    <label>Spell level</label>
+    <label>${esc(t("Presets.Magical"))}</label>
     <div class="form-fields">
-      ${select("level", levelChoices("Level 0 (cantrip)"), config.level ?? 0)}
+      <input type="checkbox" name="magical"${magical ? " checked" : ""}>
     </div>
+    <p class="hint">${t("Presets.MagicalHint")}</p>
   </div>
 
-  <div class="form-group">
-    <label>Counts as <em>daylight</em></label>
-    <div class="form-fields">
-      <input type="checkbox" name="cancelsDarkness"${config.cancelsDarkness ? " checked" : ""}>
+  <!--
+    **Both are withheld entirely when the light is mundane, not merely disabled**
+    (Hamilcarbarcas, 2026-08-29). A mundane light has no spell level — \`breaks()\` and the
+    eligibility preset gate every use of \`level\` on \`kind === "magical"\` — and \`#harvest\`
+    already forces \`cancelsDarkness\` to false for one, so a visible checkbox there is a control
+    whose value is overruled on save. \`ui/light-config.mjs\` greys them instead of hiding them,
+    which is the right call on a sheet whose rows must not reflow under the cursor; a window that
+    re-renders on the toggle anyway can just take them away.
+  -->
+  <div data-needs="magical"${off(!magical)}>
+    <div class="form-group">
+      <label>${esc(t("Common.SpellLevel"))}</label>
+      <div class="form-fields">
+        ${select("level", levelChoices("Cantrip"), config.level ?? 0)}
+      </div>
     </div>
-    <p class="hint">Annihilates with a darkness of its own level or lower.</p>
+
+    <div class="form-group">
+      <label>${t("Presets.Daylight")}</label>
+      <div class="form-fields">
+        <input type="checkbox" name="cancelsDarkness"${config.cancelsDarkness ? " checked" : ""}>
+      </div>
+      <p class="hint">${t("Presets.DaylightHint")}</p>
+    </div>
   </div>
 
   <div class="form-group slim">
-    <label>Brightness</label>
+    <label>${esc(t("Presets.Brightness"))}</label>
     <div class="form-fields">
-      <label>Level</label>
-      ${select("emitTier", TIER_CHOICES, config.emitTier ?? TIER.NORMAL)}
-      <label>Radius</label>
+      <label>${esc(t("Common.Level"))}</label>
+      ${select("emitTier", tierChoices(), config.emitTier ?? TIER.NORMAL)}
+      <label>${esc(t("Common.Radius"))}</label>
       <input type="number" name="bright" value="${esc(light.bright ?? 20)}" min="0" step="any">
     </div>
-    <p class="hint">The level this light provides outright, out to that radius.</p>
+    <p class="hint">${t("Presets.BrightnessHint")}</p>
   </div>
 
   <div class="form-group slim">
-    <label>Increase brightness</label>
+    <label>${esc(t("Presets.Increase"))}</label>
     <div class="form-fields">
-      <label>Radius</label>
+      <label>${esc(t("Common.Radius"))}</label>
       <input type="number" name="dim" value="${esc(light.dim ?? 40)}" min="0" step="any">
-      <label>Steps</label>
+      <label>${esc(t("Presets.Steps"))}</label>
       <input type="number" name="steps" value="${esc(config.steps ?? 1)}" min="0" max="4" step="1">
-      <label>Maximum</label>
-      ${select("cap", TIER_CHOICES, config.cap ?? config.emitTier ?? TIER.NORMAL)}
+      <!-- Forced, not left to wrapping. Three controls do not fit and the natural break fell
+           *between* "Maximum" and its dropdown, stranding the label on the row above. -->
+      <span class="pf1-lighting-break"></span>
+      <label>${esc(t("Presets.Maximum"))}</label>
+      ${select("cap", tierChoices(), config.cap ?? config.emitTier ?? TIER.NORMAL)}
     </div>
-    <p class="hint">Beyond the inner radius the light raises whatever level is already there by
-      that many steps, never past the maximum.</p>
+    <p class="hint">${t("Presets.IncreaseHint")}</p>
   </div>
 </div>
 
 <div data-branch="darkness"${negative ? "" : ' class="pf1-lighting-off"'}>
-  <div class="form-group slim">
-    <label>Radius</label>
-    <div class="form-fields">
-      <input type="number" name="darkRadius" value="${esc(light.dim ?? 20)}" min="0" step="any">
-    </div>
-    <p class="hint">A darkness has one radius.</p>
-  </div>
-
   <div class="form-group">
-    <label>Spell level</label>
+    <label>${esc(t("Common.SpellLevel"))}</label>
     <div class="form-fields">
-      ${select("darkLevel", levelChoices("Mundane / unlit area"), config.level ?? 2)}
+      ${select("darkLevel", levelChoices("Mundane"), config.level ?? 2)}
     </div>
-    <p class="hint">Level 0 darkens without blinding — an unlit cellar, which you can still see
-      out of. Level 1 and above cast an umbra.</p>
+    <p class="hint">${t("Presets.DarkLevelHint")}</p>
   </div>
 
+  <!--
+    **One group, two rows — *Effect* owns the radius and the floor** (Hamilcarbarcas, 2026-08-29).
+    Neither is a decision separate from what the darkness does: the floor is the bottom of the
+    same transform, and a darkness has exactly one radius. Laid out like *Increase Brightness*
+    above — what the control does on the first line, what bounds it on the second.
+
+    The break is a \`flex-basis: 100%\` spacer rather than natural wrapping, for the same reason
+    as up there: left to itself the row breaks wherever it runs out of width, which is usually
+    between a label and the field it names.
+
+    \`Floor\` keeps \`data-effect="reduce"\` — under *set level to* the target **is** the floor
+    (\`#harvest\` writes \`floor: max\` on that branch), so offering a second control for it would
+    be offering one that contradicts itself. Its own hint is folded into the group's.
+  -->
   <div class="form-group slim">
-    <label>Effect</label>
+    <label>${esc(t("Presets.Effect"))}</label>
     <div class="form-fields">
-      ${select("transformOp", EFFECT_CHOICES, op)}
+      ${select("transformOp", effectChoices(), op)}
       <span data-effect="reduce"${off(op !== "reduce")}>
         <input type="number" name="transformSteps" value="${esc(transform.steps ?? 1)}"
                min="1" max="4" step="1">
       </span>
       <span data-effect="clamp"${off(op !== "clamp")}>
-        ${select("transformMax", CLAMP_CHOICES, transform.max ?? TIER.DARK)}
+        ${select("transformMax", clampChoices(), transform.max ?? TIER.DARK)}
       </span>
-    </div>
-    <p class="hint"><em>Set level to</em> never brightens: over ground that is already darker, it
-      leaves it alone.</p>
-  </div>
 
-  <div class="form-group" data-effect="reduce"${off(op !== "reduce")}>
-    <label>Floor</label>
-    <div class="form-fields">
-      ${select("floor", FLOOR_CHOICES, config.floor ?? TIER.DARK)}
+      <span class="pf1-lighting-break"></span>
+
+      <span data-effect="reduce"${off(op !== "reduce")}>
+        <label>${esc(t("Presets.Floor"))}</label>
+        ${select("floor", floorChoices(), config.floor ?? TIER.DARK)}
+      </span>
+      <label>${esc(t("Common.Radius"))}</label>
+      <input type="number" name="darkRadius" value="${esc(light.dim ?? 20)}" min="0" step="any">
     </div>
-    <p class="hint">The darkest this can drive an area.</p>
+    <p class="hint">${t("Presets.EffectHint")}</p>
   </div>
+</div>
+
+${this.#activation(config)}`;
+  }
+
+  /**
+   * The activation range — §10.4.1's control, as a preset can carry it.
+   *
+   * @remarks
+   * **Outside both branches**, because Foundry gates a darkness source on the same field
+   * (`light.mjs:148-159` runs before the source is built), exactly as `ui/light-config.mjs` has it.
+   *
+   * **The full ladder means *always*, and is stored by storing nothing.** `activationRange`
+   * resolves Bright→Dark to `{min: 0, max: 1}`, which is Foundry's own default — so a preset
+   * showing the whole range is a preset with no opinion, and {@link #harvest} omits the pair.
+   * That is what keeps every built-in preset from acquiring a range it never had and overwriting
+   * one a GM set by hand on a light. Narrow it and it starts being written.
+   */
+  #activation(config) {
+    const from = storedTier(config.activeFrom) ?? TIER.BRIGHT;
+    const to = storedTier(config.activeTo) ?? TIER.DARK;
+
+    return `
+<div class="form-group slim">
+  <label>${esc(t("LightConfig.Activation.Label"))}</label>
+  <div class="form-fields">
+    ${select("activeFrom", activationChoices(), from)}
+    <label>${esc(t("LightConfig.Activation.DownTo"))}</label>
+    ${select("activeTo", activationChoices(), to)}
+  </div>
+  <p class="hint">${t("Presets.ActivationHint")}</p>
 </div>`;
   }
 
@@ -359,7 +436,9 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
 
     // Only two fields change what is *shown*. Everything else has already been recorded by the
     // harvest above, and re-rendering for it would rebuild the pane under the GM's cursor.
-    if (name === "negative" || name === "transformOp") this.render();
+    // `magical` joined the list on 2026-08-29, when *Spell Level* and *Counts as Daylight*
+    // started being withheld rather than greyed for a mundane light.
+    if (name === "negative" || name === "transformOp" || name === "magical") this.render();
   };
 
   /** @override */
@@ -388,12 +467,31 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
     const op = value("transformOp")?.value === "clamp" ? "clamp" : "reduce";
     const max = num("transformMax", TIER.DARK);
 
+    // **A darkness's `kind` is derived from its level, not from the checkbox.** The checkbox is
+    // in the light branch now and a hidden branch keeps its DOM, so reading it here would write
+    // whatever the *light* half happened to be left at. Nothing consumes a suppressor's `kind`
+    // (§10.1), so this is only about the flag being coherent to read — and `level >= 1` is
+    // exactly what `castsUmbra` means by magical. Still written rather than omitted, because
+    // `applyPreset` writes the keys it has and an absent one would leave a light's stale value
+    // behind when a darkness preset is chosen over it.
+    const darkKind = num("darkLevel", 2) >= 1 ? "magical" : "mundane";
+
+    // **The full ladder is stored as nothing at all.** Bright→Dark resolves to `{min: 0, max: 1}`
+    // — Foundry's own default — so a preset showing the whole range has no opinion about
+    // activation, and one with no opinion must not write the fields: `applyPreset` would then
+    // reset a range the GM had set by hand on the light it is applied to. Narrowing either end
+    // starts writing both. See `#activation`.
+    const activeFrom = num("activeFrom", TIER.BRIGHT);
+    const activeTo = num("activeTo", TIER.DARK);
+    const gated = !(activeFrom >= TIER.BRIGHT && activeTo <= TIER.DARK);
+    const activation = gated ? { activeFrom, activeTo } : {};
+
     const preset = {
-      label: value("label")?.value?.trim() || "Untitled",
+      label: value("label")?.value?.trim() || t("Presets.Untitled"),
       negative,
       config: negative
         ? {
-            kind,
+            kind: darkKind,
             level: num("darkLevel", 2),
             // Under `clamp` the target **is** the floor: `applyTransform` ignores `floor` on that
             // branch while `resolveTier` applies it separately, so a mismatch would quietly raise
@@ -402,6 +500,7 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
             transform:
               op === "clamp" ? { op, max } : { op, steps: num("transformSteps", 1) },
             floor: op === "clamp" ? max : num("floor", TIER.DARK),
+            ...activation,
           }
         : {
             kind,
@@ -412,6 +511,7 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
             emitTier: num("emitTier", TIER.NORMAL),
             steps: num("steps", 1),
             cap: num("cap", TIER.NORMAL),
+            ...activation,
           },
       // A darkness's two radii are collapsed to their maximum by
       // `PointDarknessSource#_initialize`, so authoring anything but `bright: 0` here would
@@ -454,9 +554,8 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
     if (!this.#current) return;
     const label = this.#working[this.#current]?.label ?? this.#current;
     const ok = await foundry.applications.api.DialogV2.confirm({
-      window: { title: "Delete preset" },
-      content: `<p>Delete <strong>${esc(label)}</strong>?</p>
-        <p>Lights already placed from it keep their settings and will simply read as Custom.</p>`,
+      window: { title: t("Presets.Remove.Title") },
+      content: t("Presets.Remove.Body", { label: esc(label) }),
     });
     if (!ok) return;
     delete this.#working[this.#current];
@@ -466,9 +565,8 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
 
   static async #onReset() {
     const ok = await foundry.applications.api.DialogV2.confirm({
-      window: { title: "Restore default presets" },
-      content: `<p>Discard this world's preset table and go back to the module's own?</p>
-        <p>The world will then track the built-in presets as the module changes them.</p>`,
+      window: { title: t("Presets.Reset.Title") },
+      content: t("Presets.Reset.Body"),
     });
     if (!ok) return;
     await resetTable();
@@ -487,9 +585,7 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
   static async #onSubmit() {
     this.#harvest();
     await setTable(this.#working);
-    ui.notifications.info(
-      `PF1 Lighting | ${Object.keys(this.#working).length} lighting presets saved.`
-    );
+    ui.notifications.info(t("Presets.Saved", { count: Object.keys(this.#working).length }));
   }
 }
 
@@ -499,12 +595,9 @@ ${preset ? this.#pane(preset) : `<p class="notification info">No presets. Add on
 
 export function registerSettings() {
   game.settings.registerMenu(MODULE_ID, MENU_KEY, {
-    name: "Lighting Presets",
-    label: "Edit Presets",
-    hint:
-      "The named light and darkness configurations offered on a light's Lighting Configuration " +
-      "section — torch, darkness, daylight and so on. Add your own, or retune the ones that " +
-      "ship with the module to your table's numbers.",
+    name: "PF1LIGHTING.Menu.presetEditor.Name",
+    label: "PF1LIGHTING.Menu.presetEditor.Label",
+    hint: "PF1LIGHTING.Menu.presetEditor.Hint",
     icon: "fa-solid fa-lightbulb",
     type: PresetEditor,
     restricted: true,

@@ -85,6 +85,7 @@ import { TIER, TIER_NAME } from "../model/tiers.mjs";
 import { castsUmbra } from "../model/contest.mjs";
 import * as field from "../model/field.mjs";
 import { MODULE_ID, VISION_RANK, umbraRank } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import { flag } from "../settings-cache.mjs";
 import { isPerceptionEnabled, visualDarkSightRange } from "./perception.mjs";
 import { stats as edgeStats } from "./umbra-edges.mjs";
@@ -402,10 +403,8 @@ export function isUmbraPerceptionEnabled() {
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_UMBRA, {
-    name: "Darkness shadows what lies beyond it",
-    hint:
-      "Looking through a magical darkness lowers the light level of everything past it to the " +
-      "darkness's own level, so a lit room seen through a darkness spell is as dark as the spell.",
+    name: "PF1LIGHTING.Setting.umbraPerception.Name",
+    hint: "PF1LIGHTING.Setting.umbraPerception.Hint",
     scope: "world",
     config: true,
     type: Boolean,
@@ -677,10 +676,7 @@ export function draw() {
 
   const results = all();
   if (!results.length) {
-    ui.notifications.info(
-      "PF1 Lighting | No umbra — needs perception on, an observer without see-in-darkness, " +
-        "and a magical (level >= 1) darkness source."
-    );
+    ui.notifications.info(t("Notify.NoUmbra"));
     return;
   }
 

@@ -3,5 +3,254 @@
     "RegionBehavior": {
       "pf1-lighting.globalIllumination": "Restrict Global Illumination"
     }
+  },
+  "PF1LIGHTING": {
+    "Tier": {
+      "Bright": "Bright",
+      "Normal": "Normal",
+      "Dim": "Dim",
+      "Dark": "Dark",
+      "SupernaturalDark": "Supernatural Dark"
+    },
+    "Common": {
+      "Save": "Save",
+      "RestoreDefaults": "Restore defaults",
+      "Radius": "Radius",
+      "Level": "Level",
+      "SpellLevel": "Spell Level",
+      "Preset": "Preset",
+      "Ft": "ft",
+      "Px": "px"
+    },
+    "Setting": {
+      "umbraPerception": {
+        "Name": "Darkness shadows what lies beyond it",
+        "Hint": "Looking through a magical darkness lowers the light level of everything past it to the darkness's own level."
+      },
+      "gmObserverMode": {
+        "Name": "GM sees through the selected token",
+        "Hint": "When on, selecting a token as GM shows you what that token perceives. Can also be toggled from the token controls button."
+      },
+      "readoutEnabled": {
+        "Name": "Show light level",
+        "Hint": "Displays the light level under the cursor, or of a hovered token, as a tooltip beside the pointer."
+      },
+      "readoutGmOnly": {
+        "Name": "Light level is GM only",
+        "Hint": "Disables the light level readout for non-GM users."
+      },
+      "readoutDetail": {
+        "Name": "Explain the light level",
+        "Hint": "Adds why the level is what it is — 'reduced from normal', 'darkness cancelled by daylight'. GM only."
+      }
+    },
+    "Menu": {
+      "visualsConfig": {
+        "Name": "Visuals",
+        "Label": "Configure Visuals",
+        "Hint": "How bright each of the five light levels is drawn, and how softly the edges between them fade."
+      },
+      "spillConfig": {
+        "Name": "Light Spill",
+        "Label": "Configure Light Spill",
+        "Hint": "Allows light to pass through doors and windows into regions with adjusted darkness levels."
+      },
+      "presetEditor": {
+        "Name": "Lighting Presets",
+        "Label": "Edit Presets",
+        "Hint": "Preset light and darkness configurations offered on a light's Lighting Configuration section."
+      }
+    },
+    "Keybind": {
+      "toggleReadout": {
+        "Name": "Toggle light level readout",
+        "Hint": "Show or hide the light level tooltip."
+      },
+      "toggleGmObserverMode": {
+        "Name": "Toggle GM observer view",
+        "Hint": "Switch between the god's-eye view and the selected token's point of view."
+      }
+    },
+    "Control": {
+      "SetSceneTier": "Set ambient light to {tier}",
+      "ObserverView": "Observer view (selected token's point of view)."
+    },
+    "Behavior": {
+      "GlobalIllumination": {
+        "Mode": {
+          "Label": "Mode",
+          "Hint": "Sets restriction as a maximum value, minimum value, or static value",
+          "set": "Set to",
+          "atMost": "Maximum",
+          "atLeast": "Minimum"
+        },
+        "Tier": {
+          "Label": "Light level",
+          "Hint": "The ambient level within the region. Light sources, darkness sources, and light spill are all unaffected by this level."
+        }
+      }
+    },
+    "Visuals": {
+      "Title": "Configure Visuals",
+      "Levels": {
+        "Legend": "Darkness levels",
+        "Hint": "Darkness value at each tier of brightness. <strong>0</strong> is maximum brightness and <strong>1</strong> is unlit. Supernatural darkness mirrors the level of dark."
+      },
+      "Transitions": {
+        "Legend": "Transitions and shading"
+      },
+      "TransitionWidth": {
+        "Label": "Brightness transition width",
+        "Hint": "length of brightness transitions in grid squares. 0 makes all light level transitions hard boundaries."
+      },
+      "UnseenDimming": {
+        "Label": "Unseen ground dimming",
+        "Hint": "How far explored ground outside your current vision is darkened."
+      },
+      "DarkSightBrightness": {
+        "Label": "See-in-darkness brightness",
+        "Hint": "Adjusts how bright terrain looks to a creature with see in darkness or true seeing. Foundry lightens this vision type by default. Negative values dim it back towards normal vision."
+      },
+      "Reset": {
+        "Title": "Restore default visuals",
+        "Body": "<p>Put every number in this window back to the module's own values?</p>"
+      },
+      "Saved": "PF1 Lighting | {count} visual setting(s) updated."
+    },
+    "Spill": {
+      "Title": "Configure Light Spill",
+      "Enable": {
+        "Legend": "Light spill",
+        "Label": "Enable light spill",
+        "Hint": "Allows light to pass through open doors and windows into regions with adjusted darkness levels. This light can spread around corners and fill spaces."
+      },
+      "Falloff": {
+        "Legend": "Falloff",
+        "Hint": "How far each brightness tier carries indoors before it drops to the next tier, measured by shortest available path. Brightness begins at the ambient level of the scene, reduced by darkness sources covering the opening.",
+        "Total": "Bright light through a window will reach {bright} + {normal} + {dim} = <strong>{total} ft</strong> in total (updates on save)."
+      },
+      "Accuracy": {
+        "Legend": "Accuracy",
+        "Label": "Grid resolution",
+        "Hint": "How large the cells of the grid the flood fill algorithm uses (in pixels). Recommend using an even divisor of a scene's grid size for better wall alignment. Lower values exponentially increase computation time, but larger values create inaccuracies along walls, and may miss smaller windows and doors."
+      },
+      "Reset": {
+        "Title": "Restore default light spill",
+        "Body": "<p>Reset light spill settings back to the module's own values?</p>"
+      },
+      "Saved": "PF1 Lighting | {count} light spill setting(s) updated."
+    },
+    "Presets": {
+      "Title": "Lighting Presets",
+      "Custom": "Custom",
+      "New": "New preset",
+      "None": "No presets",
+      "NoneYet": "No presets.",
+      "Untitled": "Untitled",
+      "Create": "New preset",
+      "Duplicate": "Duplicate",
+      "Delete": "Delete",
+      "Which": {
+        "Hint": "Changing a preset here does not alter any existing lights."
+      },
+      "Name": "Name",
+      "Source": "Type",
+      "Kind": {
+        "light": "Light",
+        "darkness": "Darkness"
+      },
+      "SourceHint": "Darkness types lower the light level in its area instead of raising it.",
+      "Magical": "Magical",
+      "MagicalHint": "Magical light of a higher level than a darkness overrides it.",
+      "Daylight": "Counts as <em>Daylight</em>",
+      "DaylightHint": "Follows the rules of the <em>daylight</em> spell, cancelling out magical darkness that overlaps its area.",
+      "Brightness": "Brightness",
+      "BrightnessHint": "The level this light provides outright, and its radius.",
+      "Increase": "Increase Brightness",
+      "Steps": "Steps",
+      "Maximum": "Maximum",
+      "IncreaseHint": "How many steps the light level is increased beyond its inner radius, to what maximum value, and how far.",
+      "DarkLevelHint": "Level 0 darkens without shadowing. Level 1 and above casts an umbra that shadows areas viewed through it.",
+      "Effect": "Effect",
+      "EffectHint": "<em>Set level to</em> never brightens: over ground that is already darker, it leaves it alone. <em>Floor</em> is the darkest this can drive an area — under <em>set level to</em> the target is the floor, so it is not offered separately.",
+      "Floor": "Floor",
+      "Remove": {
+        "Title": "Delete preset",
+        "Body": "<p>Delete <strong>{label}</strong>?</p><p>Lights already placed from it keep their settings and will simply read as Custom.</p>"
+      },
+      "Reset": {
+        "Title": "Restore default presets",
+        "Body": "<p>Discard this world's preset table and go back to the module's own?</p><p>The world will then track the built-in presets as the module changes them.</p>"
+      },
+      "Saved": "PF1 Lighting | {count} lighting presets saved.",
+      "ActivationHint": "The light switches off outside this range, tested against the <strong>scene's own</strong> light level. Leave it spanning Bright to Dark and the preset says nothing about activation — applying it will not disturb a range set by hand on the light."
+    },
+    "LightConfig": {
+      "Legend": "Lighting Configuration",
+      "PresetHint": "Fills in the fields below. Changing any of them afterwards sets this back to Custom, and it stays Custom until a preset is chosen again.",
+      "Negative": "Darkness source",
+      "NegativeHint": "A darkness lowers the light level in its area instead of raising it.",
+      "Magical": "Magical",
+      "MagicalHint": "Magical light of a higher level than a darkness overrides it.",
+      "Daylight": "Counts as <em>Daylight</em>",
+      "DaylightHint": "Annihilates with a darkness of its own level or lower — both effects vanish where they overlap.",
+      "Brightness": "Brightness",
+      "BrightnessHint": "The level this light provides outright, out to that radius.",
+      "Increase": "Increase Brightness",
+      "Steps": "Steps",
+      "Max": "Max",
+      "IncreaseHint": "Beyond the inner radius the light raises whatever level is already there by that many steps, never past the maximum. Defaults to the level above, and can be set lower — a bright lamp with a normal-capped halo.",
+      "DarkRadiusHint": "A darkness has one radius. It is the same field as the light's outer radius, moved here.",
+      "DarkLevelHint": "Level 0 darkens without blinding — an unlit cellar, which you can still see out of. Level 1 and above cast an umbra.",
+      "Effect": "Effect",
+      "EffectHint": "<em>Set level to</em> never brightens: over ground that is already darker, it leaves it alone.",
+      "Floor": "Floor",
+      "FloorHint": "The darkest this can drive an area. Only a <em>deeper darkness</em> and its like should reach Supernatural Dark.",
+      "Activation": {
+        "Label": "Active when scene is",
+        "DownTo": "down to",
+        "Hint": "The light switches off outside this range. Tested against the <strong>scene's own</strong> light level, not the level where the light stands — a lamp set to come on in the dark will not notice that it is indoors.",
+        "HandSet": " <strong>This light's stored range was set by hand</strong> and does not line up with these levels; choosing either will replace it."
+      },
+      "Effects": {
+        "reduce": "Decrease by",
+        "clamp": "Set level to"
+      },
+      "SpellLevel": {
+        "Cantrip": "Level 0 (cantrip)",
+        "Mundane": "Mundane",
+        "Numbered": "Level {n}"
+      }
+    },
+    "SceneConfig": {
+      "Label": "Light level",
+      "Hint": "The scene's own light level, before any light or darkness on it. How dark each tier is drawn is set in this module's settings, and scenes follow when it changes.",
+      "Drifted": " <strong>This scene's stored darkness does not match its tier</strong> — saving will bring it into line.",
+      "Locked": " Darkness is locked on this scene, so this cannot be changed."
+    },
+    "Readout": {
+      "CancelledOne": "darkness cancelled by daylight",
+      "CancelledMany": "darkness effects cancelled by daylight",
+      "NoEffect": "darkness present, no effect",
+      "ReducedFrom": "reduced from {tier}",
+      "Suppressed": "suppressed",
+      "SeenThroughDarkness": "seen through darkness"
+    },
+    "Notify": {
+      "ReadoutShown": "PF1 Lighting | Readout shown.",
+      "ReadoutHidden": "PF1 Lighting | Readout hidden.",
+      "ObserverOn": "PF1 Lighting | Seeing through the selected token.",
+      "ObserverOff": "PF1 Lighting | God's-eye view.",
+      "PerceptionOn": "PF1 Lighting | Perception by light level enabled.",
+      "PerceptionOff": "PF1 Lighting | Perception by light level disabled.",
+      "SuppressionOn": "PF1 Lighting | Native darkness suppression disabled.",
+      "SuppressionOff": "PF1 Lighting | Native darkness suppression restored.",
+      "RendererOff": "PF1 Lighting | Renderer is disabled — enable 'Render the lighting model' in settings.",
+      "RendererNeedsSuppression": "PF1 Lighting | Renderer needs 'Disable native darkness suppression' to also be on.",
+      "NothingPainted": "PF1 Lighting | nothing painted yet — the renderer may be off.",
+      "NoUmbra": "PF1 Lighting | No umbra — needs perception on, an observer without see-in-darkness, and a magical (level >= 1) darkness source.",
+      "SceneDarknessLocked": "PF1 Lighting: darkness is locked on {scene}, so its light level cannot be changed.",
+      "ScenesLocked": "PF1 Lighting: {count} scene(s) have darkness locked and were left unchanged."
+    }
   }
 }

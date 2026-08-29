@@ -41,7 +41,8 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { TIER, TIER_NAME } from "../model/tiers.mjs";
+import { t } from "../i18n.mjs";
+import { TIER, TIER_NAME, tierLabel } from "../model/tiers.mjs";
 import { darknessTable, tierFromDarkness } from "../render/levels.mjs";
 
 /** Our own de-dup marker. Per-feature, never a shared utility class. */
@@ -169,9 +170,7 @@ export async function setSceneTier(tier, scene = canvas?.scene) {
   if (!scene) return null;
   if (!SCENE_TIERS.includes(tier)) return null;
   if (scene.environment?.darknessLock) {
-    ui.notifications?.warn(
-      `PF1 Lighting: darkness is locked on ${scene.name}, so its light level cannot be changed.`
-    );
+    ui.notifications?.warn(t("Notify.SceneDarknessLocked", { scene: scene.name }));
     return null;
   }
   // The change hook fires from `updateScene`, not here — see {@link announceTierChange}.
@@ -264,7 +263,10 @@ export function registerSceneControls() {
       lighting.tools[toolId(tier)] = {
         name: toolId(tier),
         order: 2 + i,
-        title: `Set ambient light to ${TIER_NAME[tier]}`,
+        // Formatted rather than handed over as a key: `getSceneControlButtons` fires long after
+        // `init`, so `game.i18n` is loaded, and the tier name has to be interpolated. The
+        // template's own `{{localize}}` passes an already-formatted string straight through.
+        title: t("Control.SetSceneTier", { tier: tierLabel(tier) }),
         icon: TIER_ICONS[tier],
         button: true,
         onChange: () => setSceneTier(tier),
@@ -299,23 +301,20 @@ let applying = false;
 function markup(tier, drifted, locked) {
   const options = SCENE_TIERS.map(
     (value) =>
-      `<option value="${value}"${value === tier ? " selected" : ""}>${esc(TIER_NAME[value])}</option>`
+      `<option value="${value}"${value === tier ? " selected" : ""}>${esc(tierLabel(value))}</option>`
   ).join("");
 
   return `
 <div class="form-group ${MARKER}">
-  <label>Light level</label>
+  <label>${esc(t("SceneConfig.Label"))}</label>
   <div class="form-fields">
     <select data-drives="darkness"${locked ? " disabled" : ""}>${options}</select>
   </div>
   <input type="hidden" name="${FLAG_PATH}" value="${tier}" data-dtype="Number">
   <span data-slot="darkness" hidden></span>
-  <p class="hint">The scene's own light level, before any light or darkness on it. How dark
-    each tier is drawn is set in this module's settings, and scenes follow when it changes.${
-      drifted
-        ? " <strong>This scene's stored darkness does not match its tier</strong> — saving will bring it into line."
-        : ""
-    }${locked ? " Darkness is locked on this scene, so this cannot be changed." : ""}</p>
+  <p class="hint">${t("SceneConfig.Hint")}${drifted ? t("SceneConfig.Drifted") : ""}${
+    locked ? t("SceneConfig.Locked") : ""
+  }</p>
 </div>`;
 }
 
@@ -381,9 +380,7 @@ export function registerHooks() {
         console.error(`${MODULE_ID} | scene light levels re-synced`, report);
       }
       if (report.locked) {
-        ui.notifications?.warn(
-          `PF1 Lighting: ${report.locked} scene(s) have darkness locked and were left unchanged.`
-        );
+        ui.notifications?.warn(t("Notify.ScenesLocked", { count: report.locked }));
       }
     });
   });

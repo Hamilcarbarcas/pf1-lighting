@@ -18,6 +18,7 @@
  */
 
 import { MODULE_ID, VISION_RANK } from "./constants.mjs";
+import { t } from "./i18n.mjs";
 import { flag } from "./settings-cache.mjs";
 
 export const SETTING_DISABLE_NATIVE = "disableNativeSuppression";
@@ -39,6 +40,8 @@ export function isNativeSuppressionDisabled() {
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_DISABLE_NATIVE, {
+    // English, not a key: `config: false` below means Foundry never renders a row for it, and
+    // `game.pf1Lighting.settings()` is the only thing that prints this. See §10.11.
     name: "Disable native darkness suppression",
     hint:
       "Stops Foundry's darkness sources from clipping light sweeps, so the lighting model can see " +
@@ -60,9 +63,7 @@ export function registerSettings() {
       if (value === lastValue) return;
       lastValue = value;
       reinitialiseSources();
-      ui.notifications.info(
-        `PF1 Lighting | Native darkness suppression ${value ? "disabled" : "restored"}.`
-      );
+      ui.notifications.info(t(value ? "Notify.SuppressionOn" : "Notify.SuppressionOff"));
     },
   });
 

@@ -57,8 +57,9 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import { CLIPPER_SCALE, containsPoint } from "../geometry.mjs";
-import { TIER, TIER_NAME } from "./tiers.mjs";
+import { TIER, TIER_NAME, tierLabel } from "./tiers.mjs";
 
 /**
  * The behavior type key.
@@ -91,16 +92,41 @@ export const MODE = Object.freeze({
   AT_LEAST: "atLeast",
 });
 
-const MODE_LABEL = Object.freeze({
+/**
+ * English mode names, for the console.
+ *
+ * @remarks
+ * The same split {@link TIER_NAME} draws: {@link status} prints this, the sheet shows
+ * {@link MODE_LABEL}. A readout is developer output and stays in one language.
+ */
+const MODE_NAME = Object.freeze({
   [MODE.SET]: "Set to",
   [MODE.AT_MOST]: "At most",
   [MODE.AT_LEAST]: "At least",
 });
 
+/**
+ * The two choice tables, as **functions**.
+ *
+ * @remarks
+ * **Not constants, and not localised keys either.** `defineSchema` runs at `init`, where
+ * `game.i18n` still holds no translations (see `i18n.mjs`) — so a table built here would freeze
+ * the keys. And Foundry only localises a choice label when the caller passes `localize: true`,
+ * which `RegionBehaviorConfig` does not.
+ *
+ * A function is the way out that Foundry already supports: `StringField` and `NumberField` both
+ * accept one for `choices` and call it at validate and at render (`fields.mjs` — `if (choices
+ * instanceof Function) choices = choices()`), which is late enough for both.
+ */
+const MODE_LABEL = () => ({
+  [MODE.SET]: t("Behavior.GlobalIllumination.Mode.set"),
+  [MODE.AT_MOST]: t("Behavior.GlobalIllumination.Mode.atMost"),
+  [MODE.AT_LEAST]: t("Behavior.GlobalIllumination.Mode.atLeast"),
+});
+
 /** Tier choices for a select, ascending. */
-const TIER_CHOICES = Object.freeze(
-  Object.fromEntries(Object.values(TIER).map((tier) => [tier, TIER_NAME[tier]])),
-);
+const TIER_CHOICES = () =>
+  Object.fromEntries(Object.values(TIER).map((tier) => [tier, tierLabel(tier)]));
 
 /* -------------------------------------------- */
 /*  The behavior                                */
@@ -119,9 +145,9 @@ const TIER_CHOICES = Object.freeze(
  * firing would tell us anything. What it needs instead is *invalidation*, which is
  * {@link registerHooks} — a different mechanism for a different question.
  *
- * Labels are hardcoded English, like every other user-facing string in this module. §10.6 moves
- * the lot into `lang/en.json` in one pass; splitting it early would leave this file as the one
- * place where a label lives somewhere other than the thing it describes.
+ * A field's `label` and `hint` are handed over as **keys**, which the form-group helper localises
+ * at render — the same contract every setting in the module now uses. `choices` cannot be, and
+ * takes a function instead; see {@link MODE_LABEL}.
  */
 function defineBehavior() {
   const { StringField, NumberField } = foundry.data.fields;
@@ -135,11 +161,8 @@ function defineBehavior() {
           blank: false,
           initial: MODE.AT_MOST,
           choices: MODE_LABEL,
-          label: "Mode",
-          hint:
-            "At most is an unlit interior — dark relative to whatever the sky is doing, so it " +
-            "stays dark when the scene brightens and does not become a light source at night. " +
-            "Set overrides the scene outright.",
+          label: "PF1LIGHTING.Behavior.GlobalIllumination.Mode.Label",
+          hint: "PF1LIGHTING.Behavior.GlobalIllumination.Mode.Hint",
         }),
         tier: new NumberField({
           required: true,
@@ -147,10 +170,8 @@ function defineBehavior() {
           integer: true,
           initial: TIER.DARK,
           choices: TIER_CHOICES,
-          label: "Light level",
-          hint:
-            "The ambient level inside this region. Lights placed here still light it and a " +
-            "darkness still suppresses it; only the base level moves.",
+          label: "PF1LIGHTING.Behavior.GlobalIllumination.Tier.Label",
+          hint: "PF1LIGHTING.Behavior.GlobalIllumination.Tier.Hint",
         }),
       };
     }
@@ -489,7 +510,7 @@ export function status() {
     generation,
     areas: drawn.map((area) => ({
       region: area.region.name,
-      mode: MODE_LABEL[area.mode] ?? area.mode,
+      mode: MODE_NAME[area.mode] ?? area.mode,
       tier: TIER_NAME[area.tier],
       shapes: area.region.polygonTree ? [...area.region.polygonTree].length : 0,
       elevation: { ...area.region.elevation },

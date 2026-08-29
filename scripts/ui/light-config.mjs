@@ -60,8 +60,15 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import { CUSTOM, GOVERNED, presetChoices, table as presetTable } from "../model/presets.mjs";
-import { TIER, TIER_NAME, darknessBand, tierFromDarkness } from "../model/tiers.mjs";
+import {
+  TIER,
+  TIER_NAME,
+  activationRange,
+  tierFromDarkness,
+  tierLabel,
+} from "../model/tiers.mjs";
 import { TABLE_CHANGED_HOOK } from "../render/levels.mjs";
 import * as registry from "../model/registry.mjs";
 import { isWriter } from "./scene-config.mjs";
@@ -137,16 +144,16 @@ function select(name, options, value, { numeric = false, disabled = false, drive
   return `<select ${attrs}>${body}</select>`;
 }
 
-const TIER_CHOICES = [
-  { value: TIER.DIM, label: "Dim" },
-  { value: TIER.NORMAL, label: "Normal" },
-  { value: TIER.BRIGHT, label: "Bright" },
-];
+/**
+ * **Functions, not constants**, for `ui/preset-editor.mjs`'s reason: a module-level array is
+ * built at import, and `game.i18n` holds no translations until after `init` (see `i18n.mjs`).
+ * Every one of these is called from `fieldset`, which runs on sheet render.
+ */
+const tierChoice = (tier) => ({ value: tier, label: tierLabel(tier) });
 
-const FLOOR_CHOICES = [
-  { value: TIER.DARK, label: "Dark" },
-  { value: TIER.SUPERNATURAL_DARK, label: "Supernatural Dark" },
-];
+const tierChoices = () => [TIER.DIM, TIER.NORMAL, TIER.BRIGHT].map(tierChoice);
+
+const floorChoices = () => [TIER.DARK, TIER.SUPERNATURAL_DARK].map(tierChoice);
 
 /**
  * Targets a *darkness* may be set to.
@@ -156,16 +163,12 @@ const FLOOR_CHOICES = [
  * a darkness that does nothing on all but the brightest ground — a control whose most likely
  * setting is a no-op.
  */
-const CLAMP_CHOICES = [
-  { value: TIER.SUPERNATURAL_DARK, label: "Supernatural Dark" },
-  { value: TIER.DARK, label: "Dark" },
-  { value: TIER.DIM, label: "Dim" },
-];
+const clampChoices = () => [TIER.SUPERNATURAL_DARK, TIER.DARK, TIER.DIM].map(tierChoice);
 
 /** `set` and `decrease` are `clamp` and `reduce`; the labels are the GM-facing names. */
-const EFFECT_CHOICES = [
-  { value: "reduce", label: "Decrease by" },
-  { value: "clamp", label: "Set level to" },
+const effectChoices = () => [
+  { value: "reduce", label: t("LightConfig.Effects.reduce") },
+  { value: "clamp", label: t("LightConfig.Effects.clamp") },
 ];
 
 /* -------------------------------------------- */
@@ -180,22 +183,7 @@ const EFFECT_CHOICES = [
  */
 const ACTIVATION_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
 
-const ACTIVATION_CHOICES = ACTIVATION_TIERS.map((value) => ({
-  value,
-  label: TIER_NAME[value],
-}));
-
-/**
- * How far below a band's open upper edge to land.
- *
- * @remarks
- * `darknessBand` returns `[from, to)` but `Number#between` is **inclusive at both ends**
- * (`primitives/number.mjs:83`, and `light.mjs:159` calls it with no third argument), so the
- * dark end has to be closed by hand. It matters at exactly one value per boundary and that
- * value is reachable: the Normal/Dim edge under the default table is 0.5, which is where a
- * hand-dragged darkness slider likes to sit.
- */
-const EDGE = 1e-6;
+const activationChoices = () => ACTIVATION_TIERS.map(tierChoice);
 
 /** Float comparison for "the stored number is still the one we would write". */
 const NEAR = 1e-6;
@@ -203,19 +191,12 @@ const NEAR = 1e-6;
 /**
  * A tier range → the `darkness.min`/`max` pair Foundry gates the source on.
  *
- * @param {number} brightest - The brightest ambient this light is on at
- * @param {number} darkest - The darkest ambient this light is on at
+ * @remarks
+ * **Moved to `model/tiers.mjs` on 2026-08-29** and kept here under its old name, because the
+ * preset editor needs the same arithmetic and two copies of a rounding rule is how the sheet and
+ * the preset table would come to disagree about which tier a light switches on at.
  */
-function rangeFor(brightest, darkest) {
-  const bright = darknessBand(brightest);
-  const dark = darknessBand(darkest);
-  return {
-    // Closed at the bright end already — a midpoint belongs to the darker tier, which is the
-    // one we are starting from.
-    min: bright.from,
-    max: dark.to >= 1 ? 1 : dark.to - EDGE,
-  };
-}
+const rangeFor = activationRange;
 
 /** A stored tier, or null if it is not one this control can have written. */
 const storedTier = (value) =>
@@ -254,8 +235,10 @@ function activationOf(config, minValue, maxValue) {
 
 /** Spell levels, with 0 named for what it means rather than numbered. */
 function levelChoices(zeroLabel) {
-  const out = [{ value: 0, label: zeroLabel }];
-  for (let i = 1; i <= 9; i++) out.push({ value: i, label: `Level ${i}` });
+  const out = [{ value: 0, label: t(`LightConfig.SpellLevel.${zeroLabel}`) }];
+  for (let i = 1; i <= 9; i++) {
+    out.push({ value: i, label: t("LightConfig.SpellLevel.Numbered", { n: i }) });
+  }
   return out;
 }
 
@@ -275,7 +258,7 @@ function fieldset(config, negative, activation) {
 
   return `
 <fieldset class="${MARKER}">
-  <legend>Lighting Configuration</legend>
+  <legend>${esc(t("LightConfig.Legend"))}</legend>
 
   <!--
     **The two values with no control of their own.** \`kind\` is a string the model reads and a
@@ -300,33 +283,32 @@ function fieldset(config, negative, activation) {
          value="${magical && config.cancelsDarkness ? "true" : "false"}">
 
   <div class="form-group">
-    <label>Preset</label>
+    <label>${esc(t("Common.Preset"))}</label>
     <div class="form-fields">
       ${select(`${FLAG}.preset`, presetChoices(), config.preset ?? CUSTOM)}
     </div>
-    <p class="hint">Fills in the fields below. Changing any of them afterwards sets this back to
-      Custom, and it stays Custom until a preset is chosen again.</p>
+    <p class="hint">${t("LightConfig.PresetHint")}</p>
   </div>
 
   <div class="form-group" data-slot="negative">
-    <label>Darkness source</label>
+    <label>${esc(t("LightConfig.Negative"))}</label>
     <div class="form-fields"></div>
-    <p class="hint">A darkness lowers the light level in its area instead of raising it.</p>
+    <p class="hint">${t("LightConfig.NegativeHint")}</p>
   </div>
 
   <div data-branch="light"${negative ? ' class="pf1-lighting-off"' : ""}>
     <div class="form-group">
-      <label>Magical</label>
+      <label>${esc(t("LightConfig.Magical"))}</label>
       <div class="form-fields">
         <input type="checkbox" data-drives="${FLAG}.kind"${magical ? " checked" : ""}>
       </div>
-      <p class="hint">Magical light of a higher level than a darkness overrides it.</p>
+      <p class="hint">${t("LightConfig.MagicalHint")}</p>
     </div>
 
     <div class="form-group" data-needs="magical">
-      <label>Spell level</label>
+      <label>${esc(t("Common.SpellLevel"))}</label>
       <div class="form-fields">
-        ${select(null, levelChoices("Level 0 (cantrip)"), config.level ?? 0, {
+        ${select(null, levelChoices("Cantrip"), config.level ?? 0, {
           drives: `${FLAG}.level`,
           disabled: !magical,
         })}
@@ -334,92 +316,87 @@ function fieldset(config, negative, activation) {
     </div>
 
     <div class="form-group" data-needs="magical">
-      <label>Counts as <em>daylight</em></label>
+      <label>${t("LightConfig.Daylight")}</label>
       <div class="form-fields">
         <input type="checkbox" data-drives="${FLAG}.cancelsDarkness"${
           config.cancelsDarkness ? " checked" : ""
         }${magical ? "" : " disabled"}>
       </div>
-      <p class="hint">Annihilates with a darkness of its own level or lower — both effects
-        vanish where they overlap.</p>
+      <p class="hint">${t("LightConfig.DaylightHint")}</p>
     </div>
 
     <div class="form-group slim">
-      <label>Brightness</label>
+      <label>${esc(t("LightConfig.Brightness"))}</label>
       <div class="form-fields">
-        <label>Level</label>
-        ${select(`${FLAG}.emitTier`, TIER_CHOICES, emitTier, { numeric: true })}
-        <label>Radius</label>
+        <label>${esc(t("Common.Level"))}</label>
+        ${select(`${FLAG}.emitTier`, tierChoices(), emitTier, { numeric: true })}
+        <label>${esc(t("Common.Radius"))}</label>
         <span data-slot="bright"></span>
       </div>
-      <p class="hint">The level this light provides outright, out to that radius.</p>
+      <p class="hint">${t("LightConfig.BrightnessHint")}</p>
     </div>
 
     <div class="form-group slim">
-      <label>Increase brightness</label>
+      <label>${esc(t("LightConfig.Increase"))}</label>
       <div class="form-fields">
-        <label>Radius</label>
+        <label>${esc(t("Common.Radius"))}</label>
         <span data-slot="dim"></span>
-        <label>Steps</label>
+        <label>${esc(t("LightConfig.Steps"))}</label>
         <input type="number" name="${FLAG}.steps" value="${esc(config.steps ?? 1)}"
                min="0" max="4" step="1">
         <!-- "Max", not "Maximum" (Hamilcarbarcas, 2026-08-28). Three controls share this row and the
-             long label was taking the width the dropdown needed to show its own value. -->
-        <label>Max</label>
-        ${select(`${FLAG}.cap`, TIER_CHOICES, config.cap ?? emitTier, { numeric: true })}
+             long label was taking the width the dropdown needed to show its own value. The two
+             live in lang/en.json as LightConfig.Max and Presets.Maximum, deliberately separate:
+             only this row is cramped. -->
+        <label>${esc(t("LightConfig.Max"))}</label>
+        ${select(`${FLAG}.cap`, tierChoices(), config.cap ?? emitTier, { numeric: true })}
       </div>
-      <p class="hint">Beyond the inner radius the light raises whatever level is already there
-        by that many steps, never past the maximum. Defaults to the level above, and can be set
-        lower — a bright lamp with a normal-capped halo.</p>
+      <p class="hint">${t("LightConfig.IncreaseHint")}</p>
     </div>
   </div>
 
   <div data-branch="darkness"${negative ? "" : ' class="pf1-lighting-off"'}>
     <div class="form-group slim">
-      <label>Radius</label>
+      <label>${esc(t("Common.Radius"))}</label>
       <div class="form-fields">
         <span data-slot="dim-dark"></span>
       </div>
-      <p class="hint">A darkness has one radius. It is the same field as the light's outer
-        radius, moved here.</p>
+      <p class="hint">${t("LightConfig.DarkRadiusHint")}</p>
     </div>
 
     <div class="form-group">
-      <label>Spell level</label>
+      <label>${esc(t("Common.SpellLevel"))}</label>
       <div class="form-fields">
-        ${select(null, levelChoices("Mundane / unlit area"), config.level ?? 2, {
+        ${select(null, levelChoices("Mundane"), config.level ?? 2, {
           drives: `${FLAG}.level`,
         })}
       </div>
-      <p class="hint">Level 0 darkens without blinding — an unlit cellar, which you can still
-        see out of. Level 1 and above cast an umbra.</p>
+      <p class="hint">${t("LightConfig.DarkLevelHint")}</p>
     </div>
 
     <div class="form-group slim">
-      <label>Effect</label>
+      <label>${esc(t("LightConfig.Effect"))}</label>
       <div class="form-fields">
-        ${select(`${FLAG}.transform.op`, EFFECT_CHOICES, op)}
+        ${select(`${FLAG}.transform.op`, effectChoices(), op)}
         <span data-effect="reduce"${op === "reduce" ? "" : ' class="pf1-lighting-off"'}>
           <input type="number" name="${FLAG}.transform.steps"
                  value="${esc(transform.steps ?? 1)}" min="1" max="4" step="1">
         </span>
         <span data-effect="clamp"${op === "clamp" ? "" : ' class="pf1-lighting-off"'}>
-          ${select(`${FLAG}.transform.max`, CLAMP_CHOICES, transform.max ?? TIER.DARK, {
+          ${select(`${FLAG}.transform.max`, clampChoices(), transform.max ?? TIER.DARK, {
             numeric: true,
           })}
         </span>
       </div>
-      <p class="hint"><em>Set level to</em> never brightens: over ground that is already darker,
-        it leaves it alone.</p>
+      <p class="hint">${t("LightConfig.EffectHint")}</p>
     </div>
 
     <div class="form-group" data-effect="reduce"${op === "reduce" ? "" : ' class="pf1-lighting-off"'}>
-      <label>Floor</label>
+      <label>${esc(t("LightConfig.Floor"))}</label>
       <div class="form-fields">
-        ${select(`${FLAG}.floor`, FLOOR_CHOICES, config.floor ?? TIER.DARK, { numeric: true })}
+        ${select(`${FLAG}.floor`, floorChoices(), config.floor ?? TIER.DARK, { numeric: true })}
       </div>
-      <p class="hint">The darkest this can drive an area. Only a <em>deeper darkness</em> and
-        its like should reach Supernatural Dark.</p>
+      <p class="hint">${t("LightConfig.FloorHint")}</p>
     </div>
   </div>
 ${activation ? activationGroup(activation) : ""}
@@ -445,27 +422,22 @@ function activationGroup({ from, to, stored, exact }) {
   const off = stored ? "" : " disabled";
   return `
   <div class="form-group slim">
-    <label>Active when scene is</label>
+    <label>${esc(t("LightConfig.Activation.Label"))}</label>
     <div class="form-fields">
-      ${select(null, ACTIVATION_CHOICES, from, { drives: `${FLAG}.activeFrom` })}
-      <label>down to</label>
-      ${select(null, ACTIVATION_CHOICES, to, { drives: `${FLAG}.activeTo` })}
+      ${select(null, activationChoices(), from, { drives: `${FLAG}.activeFrom` })}
+      <label>${esc(t("LightConfig.Activation.DownTo"))}</label>
+      ${select(null, activationChoices(), to, { drives: `${FLAG}.activeTo` })}
     </div>
     <span data-slot="darkness-min" hidden></span>
     <span data-slot="darkness-max" hidden></span>
     <input type="hidden" name="${FLAG}.activeFrom" value="${from}" data-dtype="Number"${off}>
     <input type="hidden" name="${FLAG}.activeTo" value="${to}" data-dtype="Number"${off}>
-    <p class="hint">The light switches off outside this range. Tested against the
-      <strong>scene's own</strong> light level, not the level where the light stands — a lamp
-      set to come on in the dark will not notice that it is indoors.${
-        // Only for a light this control has never owned. A *stored* range that has drifted is
-        // snapped by the first `sync`, so saying it was set by hand would be describing a state
-        // the sheet has already corrected.
-        stored || exact
-          ? ""
-          : " <strong>This light's stored range was set by hand</strong> and does not line up with"
-            + " these levels; choosing either will replace it."
-      }</p>
+    <p class="hint">${t("LightConfig.Activation.Hint")}${
+      // Only for a light this control has never owned. A *stored* range that has drifted is
+      // snapped by the first `sync`, so saying it was set by hand would be describing a state
+      // the sheet has already corrected.
+      stored || exact ? "" : t("LightConfig.Activation.HandSet")
+    }</p>
   </div>`;
 }
 

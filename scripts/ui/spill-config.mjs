@@ -19,7 +19,8 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { TIER } from "../model/tiers.mjs";
+import { t } from "../i18n.mjs";
+import { TIER, tierLabel } from "../model/tiers.mjs";
 import { SETTING_ENABLED, SETTING_RADIUS } from "../model/spill.mjs";
 import { SETTING_CELL } from "../model/geodesic.mjs";
 
@@ -40,11 +41,7 @@ export const MENU_KEY = "spillConfig";
  * have to reason about. There is no Dark row because there is nothing below Dim to spill —
  * `globalLightCutoff` is the Dim threshold and global illumination erases beneath it.
  */
-const CAPS = [
-  { tier: TIER.BRIGHT, label: "Bright" },
-  { tier: TIER.NORMAL, label: "Normal" },
-  { tier: TIER.DIM, label: "Dim" },
-];
+const CAPS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM];
 
 const esc = (value) =>
   String(value ?? "").replace(
@@ -73,7 +70,7 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
     tag: "form",
     classes: ["pf1-lighting", "spill-config"],
     window: {
-      title: "Configure Light Spill",
+      title: "PF1LIGHTING.Spill.Title",
       icon: "fa-solid fa-door-open",
       contentClasses: ["standard-form"],
       resizable: true,
@@ -91,72 +88,63 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
   /** @override */
   async _renderHTML() {
     const caps = CAPS.map(
-      ({ tier, label }) => `
+      (tier) => `
       <div class="form-group slim">
-        <label>${label}</label>
+        <label>${esc(tierLabel(tier))}</label>
         <div class="form-fields">
           ${number(SETTING_RADIUS[tier], read(SETTING_RADIUS[tier]), { min: 0, max: 200, step: 5 })}
-          <span class="units">ft</span>
+          <span class="units">${esc(t("Common.Ft"))}</span>
         </div>
       </div>`
     ).join("");
 
     const enabled = read(SETTING_ENABLED, true) === true;
 
+    const bright = Number(read(SETTING_RADIUS[TIER.BRIGHT], 40));
+    const normal = Number(read(SETTING_RADIUS[TIER.NORMAL], 20));
+    const dim = Number(read(SETTING_RADIUS[TIER.DIM], 10));
+
     return `
 <fieldset>
-  <legend>Light spill</legend>
+  <legend>${esc(t("Spill.Enable.Legend"))}</legend>
   <div class="form-group">
-    <label>Enable light spill</label>
+    <label>${esc(t("Spill.Enable.Label"))}</label>
     <div class="form-fields">
       <input type="checkbox" name="${esc(SETTING_ENABLED)}" ${enabled ? "checked" : ""}>
     </div>
-    <p class="hint">Lets outdoor light in through windows and open doors on the border of an
-      interior region, falling off in bands. A window is any wall that does not block light;
-      an open door counts while it is open. Needs <em>Model global illumination</em> on, or the
-      model will move and the map will not.</p>
+    <p class="hint">${t("Spill.Enable.Hint")}</p>
   </div>
 </fieldset>
 
 <fieldset>
-  <legend>Falloff</legend>
-  <p class="hint">How far each brightness carries indoors before it drops to the next one down,
-    measured <strong>along the floor</strong> — so light that has to turn a corner spends its
-    distance getting there. A window starts at whatever it is like <strong>outside</strong>, and a
-    <em>darkness</em> over the window starts it lower, so the same window reaches less far while
-    the spell is on it. The steps run down to dim and stop; there is nothing below dim to spill.</p>
+  <legend>${esc(t("Spill.Falloff.Legend"))}</legend>
+  <p class="hint">${t("Spill.Falloff.Hint")}</p>
   ${caps}
-  <p class="hint">Bright light through a window therefore reaches
-    ${read(SETTING_RADIUS[TIER.BRIGHT], 40)} + ${read(SETTING_RADIUS[TIER.NORMAL], 20)} +
-    ${read(SETTING_RADIUS[TIER.DIM], 10)} =
-    <strong>${
-      Number(read(SETTING_RADIUS[TIER.BRIGHT], 40)) +
-      Number(read(SETTING_RADIUS[TIER.NORMAL], 20)) +
-      Number(read(SETTING_RADIUS[TIER.DIM], 10))
-    } ft</strong> in total.</p>
+  <p class="hint">${t("Spill.Falloff.Total", {
+    bright,
+    normal,
+    dim,
+    total: bright + normal + dim,
+  })}</p>
 </fieldset>
 
 <fieldset>
-  <legend>Accuracy</legend>
+  <legend>${esc(t("Spill.Accuracy.Legend"))}</legend>
   <div class="form-group">
-    <label>Grid resolution</label>
+    <label>${esc(t("Spill.Accuracy.Label"))}</label>
     <div class="form-fields">
       <range-picker name="${esc(SETTING_CELL)}" value="${esc(read(SETTING_CELL, 25))}"
         min="5" max="100" step="5"></range-picker>
-      <span class="units">px</span>
+      <span class="units">${esc(t("Common.Px"))}</span>
     </div>
-    <p class="hint">How finely the spill is worked out, in pixels — a quarter of a grid square by
-      default. Smaller places the edges between brightnesses more precisely, and costs about five
-      times as much for each halving. The symptom of too coarse is a brightness edge that does not
-      quite follow the wall it should be running along; walls themselves stay exact at any
-      setting.</p>
+    <p class="hint">${t("Spill.Accuracy.Hint")}</p>
   </div>
 </fieldset>
 
 <footer class="form-footer">
   <button type="button" data-action="reset">
-    <i class="fa-solid fa-rotate-left"></i> Restore defaults</button>
-  <button type="submit"><i class="fa-solid fa-save"></i> Save</button>
+    <i class="fa-solid fa-rotate-left"></i> ${esc(t("Common.RestoreDefaults"))}</button>
+  <button type="submit"><i class="fa-solid fa-save"></i> ${esc(t("Common.Save"))}</button>
 </footer>`;
   }
 
@@ -176,7 +164,7 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
       // *Restore defaults* buttons that disagree about what they reset, and a number that appears
       // to be a spill property when it governs every boundary in the module. It lives in
       // *Configure Visuals* alone now.
-      ...CAPS.map(({ tier }) => SETTING_RADIUS[tier]),
+      ...CAPS.map((tier) => SETTING_RADIUS[tier]),
       // §3.4.1. An accuracy knob rather than a model number, but it belongs on this form and not in
       // *Configure Visuals*: too coarse a grid closes a doorway, which changes what a creature can
       // see. That is the line this window is on the far side of.
@@ -208,13 +196,13 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
       changed++;
     }
 
-    if (changed) ui.notifications.info(`PF1 Lighting | ${changed} light spill setting(s) updated.`);
+    if (changed) ui.notifications.info(t("Spill.Saved", { count: changed }));
   }
 
   static async #onReset() {
     const ok = await foundry.applications.api.DialogV2.confirm({
-      window: { title: "Restore default light spill" },
-      content: `<p>Put every light-spill setting back to the module's own values?</p>`,
+      window: { title: t("Spill.Reset.Title") },
+      content: t("Spill.Reset.Body"),
     });
     if (!ok) return;
 
@@ -232,11 +220,9 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
 
 export function registerSettings() {
   game.settings.registerMenu(MODULE_ID, MENU_KEY, {
-    name: "Light Spill",
-    label: "Configure Light Spill",
-    hint:
-      "How far outdoor light reaches in through a window or an open door, and how quickly it " +
-      "falls off. Unlike Visuals, these change what creatures can see.",
+    name: "PF1LIGHTING.Menu.spillConfig.Name",
+    label: "PF1LIGHTING.Menu.spillConfig.Label",
+    hint: "PF1LIGHTING.Menu.spillConfig.Hint",
     icon: "fa-solid fa-door-open",
     type: SpillConfig,
     restricted: true,

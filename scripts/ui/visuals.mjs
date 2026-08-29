@@ -17,24 +17,25 @@
  * heading they need one.
  *
  * The rest are the one **brightness transition width** every boundary in the module now fades over
- * (§6.4.3/§6.4.4), how far unseen ground is dimmed, how far greyscale reaches into fog (§6.2.11),
- * and the see-in-darkness offset — the rest of the same question, with nowhere better to be.
+ * (§6.4.3/§6.4.4), how far unseen ground is dimmed, and the see-in-darkness offset — the rest of
+ * the same question, with nowhere better to be.
  *
  * Deliberately **counted nowhere**. An earlier version of this file said "the eight numbers" in
  * four places and was wrong in all four within a month; the list below is the only census.
  *
- * Four rows that used to be here are gone. *Ground edge softening* and *Band softening* blurred
+ * Five rows that used to be here are gone. *Ground edge softening* and *Band softening* blurred
  * individual meshes, which cannot produce a gradient at all — one width now covers every boundary
  * and one blur of the composited field delivers it. *Light* and *Darkness edge softening* still
  * work and still have settings; they are source-mesh tuning rather than brightness, and too niche
- * for a row.
+ * for a row. *Greyscale in explored fog* went on 2026-08-29 when its default became 0 — a slider
+ * whose whole range is a departure from the shipped answer is a console setting, not a row.
  *
  * ## The settings are not owned here
  *
  * Each key stays registered in the module that reads it, with its own `onChange`. This window
  * reads and writes them by
  * key and nothing else — `render/levels.mjs`, `render/transition.mjs`,
- * `render/darkness-mask.mjs`, `render/greyscale.mjs`, `vision/blindness.mjs`. §10.6's reason: a
+ * `render/darkness-mask.mjs`, `vision/blindness.mjs`. §10.6's reason: a
  * menu that owns its settings is a second
  * dependency graph to keep in step with the first, and the `onChange` work here is real (the
  * tier table re-solves the light weights and repaints every scene set to a tier).
@@ -44,12 +45,12 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { TIER } from "../model/tiers.mjs";
+import { t } from "../i18n.mjs";
+import { TIER, tierLabel } from "../model/tiers.mjs";
 import { TIER_SETTINGS } from "../render/levels.mjs";
 import { SETTING_DARK_SIGHT_BRIGHTNESS } from "../vision/blindness.mjs";
 import { SETTING_WIDTH } from "../render/transition.mjs";
 import { SETTING_UNSEEN_DIMMING } from "../render/darkness-mask.mjs";
-import { SETTING_FOG_GREY } from "../render/greyscale.mjs";
 
 export const MENU_KEY = "visualsConfig";
 
@@ -62,12 +63,7 @@ export const MENU_KEY = "visualsConfig";
  * from Bright down makes a wrong entry visible as a value out of order rather than as a number
  * they have to reason about.
  */
-const LADDER = [
-  { tier: TIER.BRIGHT, label: "Bright" },
-  { tier: TIER.NORMAL, label: "Normal" },
-  { tier: TIER.DIM, label: "Dim" },
-  { tier: TIER.DARK, label: "Dark" },
-];
+const LADDER = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
 
 /**
  * The sliders.
@@ -80,51 +76,9 @@ const LADDER = [
  * and their console access; they lost their rows.
  */
 const SLIDERS = [
-  {
-    key: SETTING_WIDTH,
-    label: "Brightness transition width",
-    hint:
-      "How far one brightness fades into the next, in grid squares — and it is the same distance " +
-      "everywhere it happens: a region's edge, the rim of a darkness, a light's two zones, the " +
-      "edge of what you can see, and a window's spill. 0 makes every brightness boundary hard.",
-    min: 0,
-    max: 4,
-    step: 0.05,
-  },
-  {
-    key: SETTING_UNSEEN_DIMMING,
-    label: "Unseen ground dimming",
-    hint:
-      "How far explored ground outside your current vision is taken toward black, on top of " +
-      "already being drawn at Dark. Foundry hard-codes this at 0.5, which stacks heavily on dark " +
-      "terrain. Ground you have never visited stays solid black either way.",
-    min: 0,
-    max: 1,
-    step: 0.05,
-  },
-  {
-    key: SETTING_FOG_GREY,
-    label: "Greyscale in explored fog",
-    hint:
-      "Seeing in black and white greys the dark parts of what you can see. This is how much of " +
-      "that reaches explored ground you cannot currently see: 0 leaves remembered terrain in " +
-      "full colour, 1 treats it exactly like ground in view. The boundary is your own vision " +
-      "polygon, so it moves with you — the middle of the range exists to keep that edge quiet.",
-    min: 0,
-    max: 1,
-    step: 0.05,
-  },
-  {
-    key: SETTING_DARK_SIGHT_BRIGHTNESS,
-    label: "See-in-darkness brightness",
-    hint:
-      "Adjusts how bright terrain looks to a creature with see in darkness or true seeing. " +
-      "Foundry cannot reveal an area without also lightening it, so their view reads brighter " +
-      "than the scene's own lighting. Negative values dim it back; 0 leaves it alone.",
-    min: -1,
-    max: 1,
-    step: 0.05,
-  },
+  { key: SETTING_WIDTH, text: "TransitionWidth", min: 0, max: 4, step: 0.05 },
+  { key: SETTING_UNSEEN_DIMMING, text: "UnseenDimming", min: 0, max: 1, step: 0.05 },
+  { key: SETTING_DARK_SIGHT_BRIGHTNESS, text: "DarkSightBrightness", min: -1, max: 1, step: 0.05 },
 ];
 
 /* -------------------------------------------- */
@@ -169,7 +123,8 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
     tag: "form",
     classes: ["pf1-lighting", "visuals-config"],
     window: {
-      title: "Configure Visuals",
+      // A key: `ApplicationV2#title` runs it through `game.i18n.localize`.
+      title: "PF1LIGHTING.Visuals.Title",
       icon: "fa-solid fa-sliders",
       contentClasses: ["standard-form"],
       resizable: true,
@@ -187,9 +142,9 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
   /** @override */
   async _renderHTML() {
     const rungs = LADDER.map(
-      ({ tier, label }) => `
+      (tier) => `
       <div class="form-group slim">
-        <label>${label}</label>
+        <label>${esc(tierLabel(tier))}</label>
         <div class="form-fields">
           ${slider(TIER_SETTINGS[tier], read(TIER_SETTINGS[tier]), {
             min: 0,
@@ -201,11 +156,11 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
     ).join("");
 
     const sliders = SLIDERS.map(
-      ({ key, label, hint, min, max, step }) => `
+      ({ key: setting, text, min, max, step }) => `
       <div class="form-group">
-        <label>${label}</label>
-        <div class="form-fields">${slider(key, read(key), { min, max, step })}</div>
-        <p class="hint">${hint}</p>
+        <label>${esc(t(`Visuals.${text}.Label`))}</label>
+        <div class="form-fields">${slider(setting, read(setting), { min, max, step })}</div>
+        <p class="hint">${t(`Visuals.${text}.Hint`)}</p>
       </div>`
     ).join("");
 
@@ -222,25 +177,21 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
     return `
 <div style="overflow-y: auto; overflow-x: hidden; max-height: calc(100vh - 260px); padding-right: 4px;">
 <fieldset>
-  <legend>Brightness levels</legend>
-  <p class="hint">How dark the ground at each tier is drawn, from <strong>0</strong> (full
-    daylight) to <strong>1</strong> (unlit). They should ascend as the tiers get darker, and the
-    gaps between them are what makes one tier readable against the next. Supernatural Dark is
-    drawn at the same level as Dark; the two are told apart by the darkness source's own
-    overlay.</p>
+  <legend>${esc(t("Visuals.Levels.Legend"))}</legend>
+  <p class="hint">${t("Visuals.Levels.Hint")}</p>
   ${rungs}
 </fieldset>
 
 <fieldset>
-  <legend>Transitions and shading</legend>
+  <legend>${esc(t("Visuals.Transitions.Legend"))}</legend>
   ${sliders}
 </fieldset>
 </div>
 
 <footer class="form-footer">
   <button type="button" data-action="reset">
-    <i class="fa-solid fa-rotate-left"></i> Restore defaults</button>
-  <button type="submit"><i class="fa-solid fa-save"></i> Save</button>
+    <i class="fa-solid fa-rotate-left"></i> ${esc(t("Common.RestoreDefaults"))}</button>
+  <button type="submit"><i class="fa-solid fa-save"></i> ${esc(t("Common.Save"))}</button>
 </footer>`;
   }
 
@@ -253,7 +204,7 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
 
   /** Every key this window edits, in one list. */
   static get #keys() {
-    return [...LADDER.map(({ tier }) => TIER_SETTINGS[tier]), ...SLIDERS.map((s) => s.key)];
+    return [...LADDER.map((tier) => TIER_SETTINGS[tier]), ...SLIDERS.map((s) => s.key)];
   }
 
   /**
@@ -276,16 +227,13 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
       changed++;
     }
 
-    if (changed) ui.notifications.info(`PF1 Lighting | ${changed} visual setting(s) updated.`);
+    if (changed) ui.notifications.info(t("Visuals.Saved", { count: changed }));
   }
 
   static async #onReset() {
     const ok = await foundry.applications.api.DialogV2.confirm({
-      window: { title: "Restore default visuals" },
-      content:
-        `<p>Put every number in this window back to the module's own values?</p>` +
-        `<p>Nothing about what creatures can see will change — these only affect how the ` +
-        `model is drawn.</p>`,
+      window: { title: t("Visuals.Reset.Title") },
+      content: t("Visuals.Reset.Body"),
     });
     if (!ok) return;
 
@@ -305,11 +253,9 @@ class VisualsConfig extends foundry.applications.api.ApplicationV2 {
 
 export function registerSettings() {
   game.settings.registerMenu(MODULE_ID, MENU_KEY, {
-    name: "Visuals",
-    label: "Configure Visuals",
-    hint:
-      "How bright each of the five light levels is drawn, and how softly the edges between them " +
-      "fade. Appearance only — none of it changes what a creature can see.",
+    name: "PF1LIGHTING.Menu.visualsConfig.Name",
+    label: "PF1LIGHTING.Menu.visualsConfig.Label",
+    hint: "PF1LIGHTING.Menu.visualsConfig.Hint",
     icon: "fa-solid fa-sliders",
     type: VisualsConfig,
     restricted: true,

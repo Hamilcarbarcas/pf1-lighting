@@ -28,6 +28,7 @@
  */
 
 import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 
 export const SETTING_GM_OBSERVER = "gmObserverMode";
 
@@ -89,10 +90,8 @@ export function refreshVision() {
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_GM_OBSERVER, {
-    name: "GM sees through the selected token",
-    hint:
-      "When on, selecting a token as GM shows you what that token perceives. When off, you keep the " +
-      "god's-eye view even with a token selected. Per-client, and toggleable from the token controls.",
+    name: "PF1LIGHTING.Setting.gmObserverMode.Name",
+    hint: "PF1LIGHTING.Setting.gmObserverMode.Hint",
     // **Client-scoped and GM-only, which Foundry has no single answer for.** The value has to be
     // per-client — two GMs must be able to disagree about their own view, and §5.1's whole point
     // is that changing your own view must never write to the scene — but a player has no use for
@@ -122,16 +121,14 @@ export function registerHooks() {
 
 export function registerKeybindings() {
   game.keybindings.register(MODULE_ID, "toggleGmObserverMode", {
-    name: "Toggle GM observer view",
-    hint: "Switch between the god's-eye view and the selected token's point of view.",
+    name: "PF1LIGHTING.Keybind.toggleGmObserverMode.Name",
+    hint: "PF1LIGHTING.Keybind.toggleGmObserverMode.Hint",
     editable: [{ key: "KeyO", modifiers: ["Alt"] }],
     restricted: true,
     onDown: () => {
       toggleGmObserverMode().then((active) => {
         ui.controls?.render();
-        ui.notifications.info(
-          `PF1 Lighting | ${active ? "Seeing through the selected token." : "God's-eye view."}`
-        );
+        ui.notifications.info(t(active ? "Notify.ObserverOn" : "Notify.ObserverOff"));
       });
       return true;
     },
@@ -155,7 +152,8 @@ export function registerSceneControls() {
     tokens.tools.pf1LightingObserver = {
       name: "pf1LightingObserver",
       order: 90,
-      title: "Observer view (selected token's point of view)",
+      // A key rather than a string: `scene-controls-tools.hbs:5` renders it through `{{localize}}`.
+      title: "PF1LIGHTING.Control.ObserverView",
       icon: "fa-solid fa-eye",
       toggle: true,
       active: isGmObserverMode(),

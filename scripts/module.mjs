@@ -315,7 +315,11 @@ Hooks.once("ready", () => {
         const report = {};
         for (const setting of all) {
           report[setting.key] = {
-            name: setting.name,
+            // **Localised here, and it has to be.** `setting.name` is a *key* since §10.11 —
+            // Foundry resolves it when it renders a settings row, and 32 of the 38 settings
+            // below are `config: false` and never get one. This readout is their only interface,
+            // so without this the console prints `PF1LIGHTING.Setting.renderEnabled.Name`.
+            name: game.i18n.localize(setting.name),
             scope: setting.scope,
             hidden: setting.config !== true,
             value: game.settings.get(MODULE_ID, setting.key),

@@ -16,6 +16,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { t } from "../i18n.mjs";
 import {
   CLIPPER_SCALE,
   difference,
@@ -309,7 +310,7 @@ function resolvedPartition(cells, ramps) {
 function drawLevels({ log = false } = {}) {
   const cells = tierPaint.lastCells();
   if (!cells) {
-    if (log) ui.notifications?.warn("PF1 Lighting | nothing painted yet — the renderer may be off.");
+    if (log) ui.notifications?.warn(t("Notify.NothingPainted"));
     return null;
   }
 

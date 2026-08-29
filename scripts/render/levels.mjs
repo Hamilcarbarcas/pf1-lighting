@@ -383,6 +383,9 @@ export function registerSettings() {
 
   for (const tier of [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK]) {
     game.settings.register(MODULE_ID, TIER_SETTINGS[tier], {
+      // English rather than a translation key: `config: false` below, so the only thing that
+      // prints this is `game.pf1Lighting.settings()`. The *Configure visuals* window has its
+      // own translated label for each rung and does not read this. §10.11.
       name: `Brightness of ${label[tier]}`,
       // **No hint, deliberately.** Four settings that differ only in one word do not want four
       // near-identical paragraphs; the *Configure visuals* window carries one hint above the

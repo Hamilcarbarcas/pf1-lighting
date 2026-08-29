@@ -2941,8 +2941,10 @@ the light is; amplification is a different effect wearing the same shader.
 
 Excluding fog inverts the semantics on screen: ground you *can* see goes grey, ground you *cannot*
 returns to colour, with your vision polygon as a moving hard-edged boundary between them. A real
-risk of looking worse than the muddiness it fixes, which is why `greyscaleInFog` is a 0..1 slider
-defaulting to **0.5** rather than a switch. The argument on the other side is genuine: the tier field
+risk of looking worse than the muddiness it fixes, which is why `greyscaleInFog` is a 0..1 dial
+rather than a switch. **It defaults to 0 since 2026-08-29** — see Appendix C; the hedge at 0.5
+was itself a moving edge, so it bought nothing the extreme did not. The argument on the other
+side is genuine: the tier field
 is painted scene-wide and already shows through fog as a documented leak, and colouring the fog
 removes one channel of it.
 
@@ -5253,6 +5255,132 @@ inflated ~80× and ~20× by warm-up. Use `spike.bench` / `spike.compare`; do not
 a timing loop and do not trust one call. This is the fourth time the same mistake has
 produced a wrong number on this module.
 
+### 9.8 Measured — the token-drag profile, 2026-08-28
+
+The module was functionally and aesthetically complete and *chugged* whenever a token moved.
+Hamilcarbarcas, 2026-08-28: *"FPS does tank when a token moves at all, and the stutter seems worse than
+FPS indicates."* Both halves turned out to be true and to have different causes.
+
+**Method.** A ticker-based recorder over a real drag, reporting per-frame deltas, the
+`PAINTED_HOOK` payload, and a wrapped `game.settings.get` counter — plus DevTools bottom-up for
+attribution and `console.timeStamp` markers to find rare frames in a long recording. Everything
+below is from a six-token drag on a live scene, not a synthetic one.
+
+| Finding | Cost, before | After |
+| --- | --- | --- |
+| `game.settings.get` on the detection path | 723,202 reads/drag, ~61 ms per visibility refresh | 19,024 reads/drag |
+| `stack` ramps rebuilt every pass | 6.05 ms of a 7.4 ms repaint | 0.08 ms |
+| `Entry#contains` ring test per emitter per point | `Polygon.contains` 1.4% self | off the profile |
+| umbra base sweep | one full sweep per observer per move | none |
+| `shadowRegions` per-observer fold | 5,440 of 7,316 Clipper ops per drag | 2 ops per repaint |
+| repaint median | 7.4 ms | 1.3 ms (2.3 ms with six observers) |
+| frame p95 | 81.4 ms | 41.6 ms |
+
+**Three conclusions that reordered the work**, each of which contradicted a prior assumption:
+
+1. **§8.3's regional invalidation is not worth doing.** A drag with a torch recomputed the field
+   125 times; one without recomputed it once. Frame times were statistically identical
+   (median 19.1 vs 20.8, p95 91.5 vs 78.2). Source construction — §9.5's "dominant cost" — did not
+   register at all, and `renderer.rebuild` ran **zero** times across every later measured drag.
+2. **The renderer was never the problem; the *paint* was**, and most of what it did each pass was
+   observer-independent work it had already done. `fieldStable` was true on 173 of 173 repaints in
+   one drag.
+3. **Most of the remaining frame belongs to core.** `_compute` (ClockwiseSweepPolygon) at 16.3%,
+   quadtree `getObjects` at 16.3%, plus `Token._onAnimationUpdate` re-initialising every moving
+   token's vision source **every animation frame** — 2,313 `refreshLighting+refreshVision`
+   perception updates in ten seconds. That last one is gated by the core setting
+   `core.visionAnimation`, which is the single largest lever available and is not ours.
+
+**Third-party findings, recorded because they will recur.** FXMaster's `isEnabled()` is two
+uncached settings reads called from its `refreshToken` listener — 447 ms per ten seconds of
+dragging, fixed locally and upstreamed. Wall Height wraps `_testEdgeInclusion` and calls
+`getSceneSettings()` per edge per sweep, 2.7%. An unidentified `foundry.utils.debounce` on
+`refreshToken` costs a further ~190 ms. Our own five `refreshToken` listeners total 47 ms of the
+292 ms all listeners cost, and are all `requestAnimationFrame`-coalesced.
+
+### 9.8.1 `game.settings.get` is O(n) over the world's settings
+
+The largest single finding, and it is not specific to this module.
+
+`ClientSettings#get` for a **world**-scoped setting resolves through `WorldSettings#getSetting`,
+which is `this.find(s => (s.key === key) && (s.user === user))` — a linear scan over every Setting
+document in the world, allocating a template string and a closure per call
+(`client/documents/collections/world-settings.mjs:35`). A **client**-scoped setting is worse: it
+constructs a fresh `Setting` DataModel on every call (`client/helpers/client-settings.mjs:221`).
+
+**Measured at 14.7 µs per call.** Amortise over a large batch to measure it; a per-call
+`performance.now()` bench reports a median of 0 and a mean that is mostly timer overhead — the
+same method warning §9.7 already carries.
+
+That is irrelevant at the rate a settings read is designed for and ruinous at ours.
+`isPerceptionEnabled()` is two reads and is called from every detection-mode `_testPoint`, with the
+patched `testInsideLight` calling it again — **~4,150 reads and ~61 ms per visibility refresh**,
+larger than the entire render pass.
+
+`settings-cache.mjs` is the answer: a read-through cache invalidated wholesale on `updateSetting`,
+`createSetting` and `clientSettingChanged`, which between them catch every route a setting can be
+written by — including a GM's toggle reaching a player, since world writes go through
+`Setting#update`/`Setting.create`. Two rules it carries: **booleans and numbers only** (an
+object-valued setting handed out by reference would be corrupted by a mutating caller), and **never
+cache a throw** (reads happen during `init` before registration, and caching the fallback pins the
+wrong value for the session).
+
+### 9.9 The umbra base sweep is a rectangle
+
+`umbraFor` builds its base with `edgeOptions.wall = false` and `priority: VISION_RANK.PIERCING`,
+which outranks every darkness rank — so `_determineEdgeTypes` admits **no edge at all**, and
+`ClockwiseSweepPolygon` walks `_identifyEdges` → the edge quadtree → `_executeSweep` → the vertex
+sort in order to return the boundary box it started from. Measured: four points, and the area of the
+scene rect.
+
+It is in the stack of a measured 570 ms stall —
+`_testPoint → perceives → perceivedTier → clampAt → regionsFor → umbraFor → create → _compute` —
+because `regionsFor` misses whenever an observer's `los` is replaced, which for a moving token is
+every vision refresh, so the rebuild lands *inside a detection test*.
+
+The fast path asks core for the answer rather than reconstructing it: `initialize()` computes
+`_defineBoundingBox` and does **not** sweep, `compute()` is what calls `_compute`
+(`source-polygon.mjs:76-80`). Two things it must not get wrong:
+
+- **The bounding box is the answer plus a pixel.** `_defineBoundingBox` ends `.ceil().pad(1)` so it
+  always contains the origin, while the sweep follows the *boundary edges* — the unpadded rect.
+  Returning the box gave a polygon one pixel proud on every side (31,206,004 against 31,183,600),
+  a hairline of umbra around the map edge and exactly the class of seam §6.4 spent a week removing.
+  Which rect the boundary uses is core's decision, read from `useInnerBounds`.
+- **360° only.** A limited-angle source carries a cone in `boundaryShapes` and its swept result is
+  that cone, not the box, so it falls back to the sweep.
+
+`umbra.stats()` reports `baseDirect` / `baseSweeps`; a non-zero `baseSweeps` means either a
+limited-angle observer (ordinary) or something blocking a sweep that by construction cannot be
+blocked (a correctness question).
+
+### 9.10 The unseen-ground clamp has a closed form
+
+§4.3.1 made "everything this observer cannot see" a clamp region, and §5.3's union semantics make
+the multi-observer answer an intersection of complements. Written one observer at a time that is a
+`difference` per observer to build each complement, a `union` per observer to collect it, and an
+`intersection` to fold them — 6 + 6 + 5 = **17 Clipper ops per repaint** for six observers.
+
+A Clipper trace attributed **5,440 of 7,316 `Clipper.Execute` calls in one drag** to exactly those
+three lines. Every op allocates an `IntPoint` per vertex, which is the allocation feeding the Major
+GC behind the stalls.
+
+De Morgan does it in two:
+
+```
+∩ₒ (rect \ losₒ)  ≡  rect \ (∪ₒ losₒ)
+```
+
+Exact, not an approximation, and it never leaves Clipper path space — so it also drops the
+`fromClipperPaths` → `toClipperPath` round trip the general path pays. It applies whenever **no
+observer has umbra**, which is every scene with no magical darkness on it; the per-observer fold is
+untouched and still runs otherwise. `paint.stats().shadowPath` reports which branch ran.
+
+Parity was checked case by case, because the fast path returns early and a divergence would be
+silent: `hideUnseen` off, an observer with no `los`, and an observer whose `los` covers the whole
+rect all yield `[]` on both paths. That last is §5.3 itself — a point one creature can see is lit
+for everyone, so a single all-seeing observer clamps nothing anywhere.
+
 ---
 
 ## 10. Configuration surfaces
@@ -5416,6 +5544,76 @@ rendering every entry down one page means rendering both halves of each — twel
 most inapplicable. The window edits one preset, chosen from a select, with the same branch
 switching and the *same labels* the light sheet uses. Deliberately the same: the editor and the
 sheet must not develop two vocabularies for one model.
+
+> **The two had drifted, and it was this window that was wrong — corrected 2026-08-29.** *Magical*
+> sat **outside** both branches here, so it rendered for a darkness preset, with a hint claiming
+> *"a magical darkness also blocks sight through itself."* §10.1 had already ruled that a
+> suppressor's `kind` is never read — `breaks()` and the eligibility preset both test
+> `emitter.kind`, and the umbra comes from `castsUmbra`, which is `level >= 1 && blocksPath !==
+> false`. So the checkbox moved nothing and the hint described what *level* does.
+> `ui/light-config.mjs` had it inside `data-branch="light"` from the start; this pane never
+> caught up. Found by Hamilcarbarcas asking the right question of the form rather than the code:
+> *"Both claim to toggle the umbra. Is the magical checkbox superfluous for darkness sources?"*
+>
+> `#harvest` now derives a darkness's `kind` from its level rather than from the checkbox, which
+> is in a hidden branch and would otherwise contribute whatever the light half was left at. It is
+> still *written*, because `applyPreset` writes the keys it has and omitting one would leave a
+> light's stale `kind` behind when a darkness preset is applied over it.
+
+**Radius and Floor belong to *Effect*, not beside it — 2026-08-29.** Neither is a decision
+separate from what the darkness does: the floor is the bottom of the same transform, and a
+darkness has exactly one radius. One `.form-group` with two rows, laid out like *Increase
+Brightness* — what the control does on the first line, what bounds it on the second. Both lose
+their own hints; *"a darkness has one radius"* is answered by there being one box, and the floor's
+is folded into the group's, where it can also say why the control disappears under *set level to*.
+
+**The row break is explicit, and the flex ratio is 2:1.** Two things learned laying this out, both
+generalisable:
+
+- **Natural wrapping breaks in the wrong place.** A `.form-fields` that runs out of width divides
+  wherever it happens to, which is usually between an inline `<label>` and the field it names —
+  *Maximum* stranded on one line with its dropdown on the next. A zero-height `flex-basis: 100%`
+  spacer says where the row divides instead.
+- **`display: contents` does not make a child a child, for CSS.** It removes the span's box, not
+  its place in the DOM, so `.form-fields > select` never matched the `transformMax` select or the
+  `transformSteps` input — both sit inside a `span[data-effect]`. They were silently falling back
+  to `flex: 0 1 auto` and sizing themselves, which is why *Decrease by* and its number would not
+  share a line. Every rule for these rows now carries a `> span[data-effect] > …` twin. **The same
+  omission is still present in `.pf1-lighting-config`**, where it is masked by that sheet being
+  wider; it is a latent instance of the same bug.
+
+A dropdown gets `flex: 2` against a number box's `flex: 1`, because they do not carry comparable
+content — one has to show *Supernatural Dark*, the other one or two digits.
+
+**A branch wrapper is not a form-group's parent for spacing — 2026-08-29.** `.standard-form` puts
+`gap: 1rem` between its children, and `div[data-branch]` *is* one of those children, so the groups
+inside it were not and stacked flush. Every hint sat nearer the next control's label than its own
+field, which reads as a caption for the wrong thing. The wrappers are declared as flex columns
+with the same gap, and `.hint` loses its top margin so the group's own row-gap is what separates
+it from the field it describes. Reported as a spacing preference; it was a missing rule.
+
+**Spell Level and Counts as Daylight are withheld for a mundane light, not greyed.** A mundane
+light has no spell level — every use of `level` is gated on `kind === "magical"` — and `#harvest`
+already forces `cancelsDarkness` false for one, so the checkbox was a control whose value is
+overruled on save. `ui/light-config.mjs` greys them instead, which is right for a sheet whose rows
+must not reflow under the cursor; a window that re-renders on the toggle anyway can take them
+away. `magical` joined `negative` and `transformOp` as a re-render trigger.
+
+#### The activation range in a preset — 2026-08-29
+
+§10.4.1's control, added to the editor. Two decisions.
+
+**`activationRange` moved to `model/tiers.mjs`.** It was private to `ui/light-config.mjs`; the
+editor needs the same arithmetic, and two copies of a rounding rule is how the sheet and the
+preset table come to disagree about which tier a light switches on at. `EDGE` went with it.
+
+**The full ladder means *always*, and is stored by storing nothing.** `activeFrom`/`activeTo` are
+only a memo — what Foundry gates on is `darkness.min`/`max`, which `applyPreset` now derives, so a
+preset follows the tier table if the GM retunes how bright each level is. Bright→Dark resolves to
+`{min: 0, max: 1}`, which is Foundry's own default, so a preset spanning the whole range has no
+opinion about activation and `#harvest` omits the pair. That is what stops every built-in preset
+from acquiring a range it never had the first time it is saved, and from overwriting one a GM set
+by hand on the light it is applied to. Narrow either end and both start being written.
 
 **What is edited is a working copy.** Nothing reaches the setting until *Save*. Switching between
 presets harvests the visible pane into that copy first, so a half-finished edit survives a look
@@ -6298,6 +6496,10 @@ Foundry reload**, not an F5, for step 1 and step 5.
 > **`lang/en.json` arrived early, 2026-08-26**, carrying exactly one string: the region
 > behaviour's type name, which §10.7 explains cannot be anything but a translation key. Step 5
 > inherits the file rather than creating it.
+>
+> **And was filled out on 2026-08-28** — every user-facing string in the module, plus
+> `scripts/i18n.mjs`. See §10.11, which is where the ordering rule that shapes it is written
+> down. `module.json` needed no change: `languages` was already declared.
 
 
 
@@ -6378,6 +6580,100 @@ out when it lands.
 A new submenu and new `.mjs` files need only an F5 — `esmodules` names `scripts/module.mjs`
 alone and `languages` is already declared. A relaunch is required only if this grows a
 stylesheet or a `documentTypes` entry, and it needs neither.
+
+### 10.11 Localisation — BUILT 2026-08-28
+
+`lang/en.json` went from one string to every string a user can actually see. `scripts/i18n.mjs`
+holds `t()` and the reasoning; this section is the decisions.
+
+#### `game.i18n` does not exist at `init`, and that decides the whole design
+
+`Game#initialize` calls the `init` hook and *then* awaits `i18n.initialize()`. Every
+`registerSettings` function in this module runs inside that hook, so a `localize` call from one
+returns the key it was handed, verbatim — deterministically, not as a race. The settings list
+would read `PF1LIGHTING.Setting.renderEnabled.Name`.
+
+Foundry's answer is that **registration takes keys and Foundry localises them at render**, and it
+does so in every place this module registers something:
+
+| Registered | Localised by |
+| --- | --- |
+| a setting's `name` / `hint` | `applications/settings/config.mjs:116-117` |
+| a menu's `name` / `label` / `hint` | `templates/settings/config-category.hbs:4,10,14` |
+| a keybinding's `name` / `hint` | `applications/sidebar/apps/controls-config.mjs:154` |
+| a scene control tool's `title` | `templates/ui/scene-controls-tools.hbs:5` |
+| an `ApplicationV2`'s `window.title` | `ApplicationV2#title` |
+| a `DataField`'s `label` / `hint` | the form-group helper |
+
+Those sites hold a literal `"PF1LIGHTING.…"` string, matching how the other pf1- modules do it —
+which is what keeps a key greppable from its JSON entry to its one consumer. Everything else —
+window markup, dialogs, notifications, the readout chip — runs after `ready` and calls `t()`.
+
+Two things that look like they could take keys and cannot:
+
+- **A `DataField`'s `choices`.** Foundry localises a choice label only when the caller passes
+  `localize: true`, which `RegionBehaviorConfig` does not. `choices` accepts a **function**,
+  evaluated at validate and at render, which is late enough. `model/areas.mjs`.
+- **Module-level choice arrays.** `TIER_CHOICES` and friends in `ui/light-config.mjs` and
+  `ui/preset-editor.mjs` were `const`s built at *import*, which is earlier still. All are
+  functions now, called from the render path.
+
+#### Only five settings are in the file, and that is the whole rule applied twice
+
+**33 of the 38 settings are `config: false`.** §10.6 took their rows out of the menu on the
+grounds that they were development bisection aids rather than play features, and §10.6.1/§10.10
+moved the appearance and spill numbers into windows that carry their own labels. So the only
+thing that ever prints those 33 names is `game.pf1Lighting.settings()` — the console.
+
+The first pass keyed all 38 anyway, which contradicted the console rule stated two paragraphs
+below and asked a translator for long paragraphs no user can reach (Hamilcarbarcas, 2026-08-28:
+*"if they're only accessed via console, I don't think that rises to the level of needing to be in
+the lang file"*). Correct. Their `name` and `hint` are plain English at the registration site;
+only the five with a rendered row are keyed:
+
+`umbraPerception`, `gmObserverMode`, `readoutEnabled`, `readoutGmOnly`, `readoutDetail` — plus
+the three menus and two keybindings.
+
+> **`darknessAnimationStrength` was the sixth and lost its row on 2026-08-29**, on the audit that
+> the lang file invited (Hamilcarbarcas: *"does it really do anything visually when enabled and no
+> animation is on?"*). It does not: {@link darkeningPlan} tests `source.data.animation.type`
+> **before** it tests the setting, so a darkness with no animation already yields no mesh. The
+> switch was a second way to decline a feature that is opt-in per source — the GM opts in by
+> choosing an animation — which is precisely §10.6's criterion. Kept as a hidden switch rather
+> than deleted, because the `animationOnly` path costs a mesh per animated darkness per lit area
+> it crosses, and that is worth an escape hatch after §9.8.
+
+Three things fell out of that which the keyed version had made worse:
+
+- `Brightness of ${label[tier]}` and `Spill band width — ${label}` keep their template literals.
+  Keys would have needed `format`, which cannot run at `init`, so the first pass spent seven
+  `lang/en.json` entries avoiding it.
+- `edgeSoftness`'s hint interpolates `FOUNDRY_EDGE_OFFSET / 100` again. As a key it had to state
+  `0.08` literally, which was the one number in the module that could then go stale silently.
+- The six duplicated hints — `transitionWidth` and friends had a `Setting.*` entry *and* a
+  `Visuals.*`/`Spill.*` one — are down to one translated string each. The window's is translated;
+  the console's is English in source.
+
+#### `TIER_NAME` stays English — the console is not a user surface
+
+`TIER_NAME` is what `api.tierName()` hands another module and what every `game.pf1Lighting`
+readout prints. A consumer keying off `"Supernatural Dark"` must not break because a GM changed
+their language, and a `console.error` diagnostic is developer output. `tierLabel(tier)` is the
+translated one, and every UI call site uses it. `model/areas.mjs` draws the same line twice: its
+sheet reads `MODE_LABEL()`, its `status()` readout reads `MODE_NAME`.
+
+The debug overlays keep their English too — `ui/cell-overlay.mjs`'s per-tier legend is keyed into
+a `counts` object that is printed, not read. Toasts are the exception and are all translated:
+`ui.notifications` is UI whatever provoked it.
+
+#### What this costs, and what it does not
+
+Nothing at runtime on the hot path. Every `t()` is on a render or a hook, never in the paint pass
+or a detection-mode test — the settings cache exists because *that* is where per-frame lookups
+hurt (§9.8.1), and no translation lookup is anywhere near it.
+
+`lang/en.json` **contents** need only an F5 (Appendix B.5); `languages` is already declared in
+`module.json`, so adding a second language file is the only thing here that would need a relaunch.
 
 ---
 
@@ -7091,9 +7387,12 @@ tokens greying with the ground, and `clampRamps` no longer collaring its own hol
 
 Two things it changed that nobody has had a reason to look at yet, and neither is a suspicion:
 
-- **`greyscaleInFog`** sits at 0.5 and has only been seen there. 0 is the literal ask (remembered
-  terrain in full colour) and 1 is what Foundry did. The concern that made it a dial rather than a
-  switch is in §6.2.11 and still stands: the boundary is the vision polygon, and it moves.
+- ~~**`greyscaleInFog`** sits at 0.5 and has only been seen there.~~ **Settled 2026-08-29: the
+  default is 0 and the row is gone.** 0 was always the literal ask — remembered terrain in full
+  colour — and 0.5 was a hedge against the moving boundary that §6.2.11 worried about. But 0.5 is
+  *also* a moving edge, only fainter, and it greys terrain the viewer is remembering rather than
+  seeing, which is the wrong claim to make. 0 declines the question instead of splitting it. The
+  dial survives on the console because the shader branch is already written and free.
 - **`regionalGreyscale: false`** is now a *third* state rather than "off". It detaches the pass but
   cannot un-zero the vision mode, so the picture goes to no greyscale at all rather than back to
   Foundry's. Only an F5 restores core's behaviour. Fine, and written down because a world that

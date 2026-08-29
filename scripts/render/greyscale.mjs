@@ -97,6 +97,20 @@ export const SETTING_REGIONAL_GREY = "regionalGreyscale";
 export const SETTING_FOG_GREY = "greyscaleInFog";
 
 /**
+ * **0 since 2026-08-29** — remembered terrain keeps its colour.
+ *
+ * @remarks
+ * It shipped at 0.5 as a compromise: the boundary this fades across is the viewer's own vision
+ * polygon, so at 1 the greyscale edge sweeps the map as they walk. But 0.5 is *also* a moving
+ * edge, only a fainter one, and it greys terrain the viewer is remembering rather than seeing —
+ * which is the wrong claim. Memory is not a sense with a light level. 0 declines the question.
+ *
+ * The dial stays because the shader branch is already written and free (`fogGrey < 1.0`), and
+ * because a table that wants fog to read as unlit can still ask for it.
+ */
+const FOG_GREY_DEFAULT = 0;
+
+/**
  * How grey each vision mode's eyes are, captured **before** {@link neutralise} zeroes it.
  *
  * @remarks
@@ -126,9 +140,9 @@ export function isEnabled() {
 export function fogGrey() {
   try {
     const value = game.settings.get(MODULE_ID, SETTING_FOG_GREY);
-    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.5;
+    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : FOG_GREY_DEFAULT;
   } catch {
-    return 0.5;
+    return FOG_GREY_DEFAULT;
   }
 }
 
@@ -162,10 +176,14 @@ export function registerSettings() {
       "leaves remembered terrain in full colour; 1 treats it exactly like ground in view. The " +
       "middle exists because the boundary is your vision polygon, which moves with you.",
     scope: "world",
+    // **No control surface since 2026-08-29.** It had a row in *Configure Visuals* and came out
+    // with `darknessAnimationStrength`: the default is now 0, which is *off*, so the row was a
+    // slider whose whole range is a deliberate departure from the shipped answer. Console only —
+    // `game.pf1Lighting.settings("greyscaleInFog", 0.5)`.
     config: false,
     type: Number,
     range: { min: 0, max: 1, step: 0.05 },
-    default: 0.5,
+    default: FOG_GREY_DEFAULT,
     // Read live in the filter's `apply`, so nothing has to be rebuilt.
     onChange: () => {},
   });
@@ -315,7 +333,10 @@ function buildFilterClass() {
       strength: 0,
       colourLevel: 2 / 3,
       darkLevel: 1,
-      fogGrey: 0.5,
+      // Overwritten from {@link fogGrey} on the first `apply`; this is only what the filter
+      // holds between construction and that call. Tracks {@link FOG_GREY_DEFAULT} so the two
+      // cannot disagree during that window.
+      fogGrey: FOG_GREY_DEFAULT,
     };
 
     static fragmentShader = `

@@ -91,6 +91,13 @@ let lastStats = null;
  * @type {object|null}
  */
 let lastPaintedField = null;
+/**
+ * Which branch {@link shadowRegions} took last — `"unseen"` for the two-op closed form,
+ * `"general"` for the per-observer fold. See {@link unseenOnly}.
+ *
+ * @type {"unseen"|"general"|null}
+ */
+let lastShadowPath = null;
 /** The cells handed to the painter last time, for `ui/cell-overlay.levels`. @type {object[]|null} */
 let lastCellList = null;
 /** The composited ramps from the same pass — lights, halos and clamps. @type {object[]} */
@@ -260,6 +267,74 @@ function unseenRegionFor(source) {
 }
 
 /**
+ * The unseen-ground clamp for every observer at once, in two Clipper ops. DESIGN.md §9.10.
+ *
+ * @remarks
+ * **The whole pass collapses when nothing casts umbra**, which is every scene with no magical
+ * darkness on it — the common case, and the one this module spends most of its life in.
+ *
+ * With only `unseen` regions in play, {@link shadowRegions}'s general form is asking for
+ *
+ * ```
+ * ∩ₒ (rect \ losₒ)
+ * ```
+ *
+ * one observer at a time: a `difference` per observer to build each complement, a `union` per
+ * observer to collect it, and an `intersection` to fold them together. Six observers is
+ * 6 + 6 + 5 = **17 Clipper ops**, per repaint, and core re-initialises vision every animation
+ * frame — so a token drag ran it hundreds of times. A Clipper trace of one drag (2026-08-28)
+ * attributed **5,440 of 7,316 `Clipper.Execute` calls** to exactly these three lines, and every op
+ * allocates an `IntPoint` per vertex, which is what feeds the Major GC behind the stalls.
+ *
+ * De Morgan does it in two:
+ *
+ * ```
+ * ∩ₒ (rect \ losₒ)  ≡  rect \ (∪ₒ losₒ)
+ * ```
+ *
+ * — one `union` over every observer's `los`, one `difference` from the scene rect. Exact, not an
+ * approximation, and it drops the polygon round trip as well: the general path converts each
+ * complement to `PIXI.Polygon` in {@link unseenRegionFor} and straight back to Clipper paths in
+ * the union below, where this never leaves path space.
+ *
+ * **Parity with the general path, case by case**, because this returns early and a divergence
+ * would be silent:
+ *
+ * | Case | General path | Here |
+ * | --- | --- | --- |
+ * | `hideUnseen` off | `unseenRegionFor` → null → no regions → `[]` | `[]` |
+ * | an observer with no `los` | same, `[]` | `[]` |
+ * | an observer whose `los` covers the rect | its complement is empty → `[]` | `∪` covers the rect, so the difference is empty → `[]` |
+ *
+ * That third row is §5.3's rule and the reason the identity is the right one: a point one creature
+ * can see is **lit** for everyone, so a single all-seeing observer clamps nothing anywhere.
+ *
+ * @param {PointVisionSource[]} sources
+ * @returns {{clamp: number, paths: object[][]}[]}
+ */
+function unseenOnly(sources) {
+  if (!hideUnseen()) return [];
+
+  const rect = canvas?.dimensions?.sceneRect;
+  if (!rect) return [];
+
+  const seen = [];
+  for (const source of sources) {
+    // An observer with no line of sight sees nowhere, and the general path answers `[]` for it
+    // (its `unseenRegionFor` is null, so `perObserver` has an empty entry). Match that.
+    if (!source?.los) return [];
+    const path = toClipperPath(source.los, CLIPPER_SCALE);
+    if (path.length < 3) return [];
+    seen.push(path);
+  }
+  if (!seen.length) return [];
+
+  const rectPath = [toClipperPath(rect.toPolygon(), CLIPPER_SCALE)];
+  const paths = difference(rectPath, union(seen));
+  return paths.length ? [{ clamp: TIER.DARK, paths }] : [];
+}
+
+/**
  * Cumulative shadow regions, darkest tier first.
  *
  * @returns {{clamp: number, paths: object[][]}[]} Each entry is *"everywhere clamped to this
@@ -272,8 +347,20 @@ function shadowRegions() {
   // God's eye. No observer, no path, no umbra — §5.4.
   if (!sources.length) return [];
 
-  const perObserver = sources.map((source) => {
-    const regions = umbra.regionsFor(source);
+  // Resolved once and reused below: `regionsFor` is cached, but calling it twice would make the
+  // fast path's guard and the general path's input two separate reads of the same thing.
+  const umbrae = sources.map((source) => umbra.regionsFor(source));
+
+  // **Nothing casts umbra, so there is only one clamp and it has a closed form.** See
+  // {@link unseenOnly} — 17 Clipper ops become 2 on the scenes that carry no magical darkness.
+  if (umbrae.every((regions) => !regions.length)) {
+    lastShadowPath = "unseen";
+    return unseenOnly(sources);
+  }
+  lastShadowPath = "general";
+
+  const perObserver = sources.map((source, i) => {
+    const regions = umbrae[i];
     const unseen = unseenRegionFor(source);
     return unseen ? [...regions, unseen] : regions;
   });
@@ -668,6 +755,9 @@ export function repaint({ force = false } = {}) {
     // instead — see the note at `cut`. It is only meaningful with `softClamps` turned off.
     split,
     softClamps: softClamps(),
+    // §9.10. `"general"` on a scene with no magical darkness would mean the closed form is being
+    // skipped, which is the difference between 2 Clipper ops per repaint and 17.
+    shadowPath: lastShadowPath,
     ops,
     ms: +(performance.now() - t0).toFixed(2),
     // **`fieldStable: true` means every `ground`, `lights` and `halos` millisecond below was

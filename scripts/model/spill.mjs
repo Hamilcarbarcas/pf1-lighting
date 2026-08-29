@@ -724,6 +724,8 @@ export function schedule({ geometry = false } = {}) {
 export function registerSettings() {
   const numeric = (key, name, hint, dflt, range) =>
     game.settings.register(MODULE_ID, key, {
+      // English, not keys: every setting here is `config: false` and edited in *Configure Light
+      // Spill*, which carries its own translated labels. §10.11.
       name,
       hint,
       scope: "world",

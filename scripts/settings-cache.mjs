@@ -1,5 +1,5 @@
 /**
- * A read-through cache over `game.settings.get`. DESIGN.md §9.8.
+ * A read-through cache over `game.settings.get`. DESIGN.md §9.8.1.
  *
  * ## Why this exists — measured 2026-08-28
  *

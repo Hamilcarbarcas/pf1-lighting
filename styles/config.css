@@ -113,7 +113,11 @@
   display: contents;
 }
 
-.pf1-lighting.preset-editor .form-fields > label {
+/* The nested selector for the same reason as the `select`/`input` pairs below: *Floor* rides
+ * inside a `span[data-effect]` so it can be withheld under *set level to*, and `display: contents`
+ * does not make it a direct child for matching purposes. */
+.pf1-lighting.preset-editor .form-fields > label,
+.pf1-lighting.preset-editor .form-fields > span[data-effect] > label {
   flex: 0 0 auto;
   align-self: center;
   margin: 0 0.25rem 0 0;
@@ -121,14 +125,83 @@
   white-space: nowrap;
 }
 
-.pf1-lighting.preset-editor .form-fields > input[type="number"] {
-  flex: 1 1 4rem;
-  min-width: 3.5rem;
+/* **A dropdown gets twice the growth of a number box** (Hamilcarbarcas, 2026-08-29). They were
+ * competing on equal terms, and they do not carry equal content: a select has to show
+ * *Supernatural Dark*, a number box has to show one or two digits. On the *Brightness* and
+ * *Effect* rows that meant the select shrinking to a sliver, or the row wrapping to make room
+ * for width the number never needed.
+ *
+ * **The second selector in each pair is load-bearing, and its absence was a live bug.**
+ * `display: contents` removes a span's *box*, not its place in the DOM — CSS still matches the
+ * tree — so `.form-fields > select` never reached the `transformMax` select or the
+ * `transformSteps` input, both of which sit inside a `span[data-effect]`. They were falling back
+ * to `flex: 0 1 auto` and sizing themselves, which is why *Decrease by* and its number would not
+ * share a line. The same omission is still present in `.pf1-lighting-config` above; it is
+ * harmless there only because that sheet is wider. */
+.pf1-lighting.preset-editor .form-fields > select,
+.pf1-lighting.preset-editor .form-fields > span[data-effect] > select {
+  flex: 2 1 6rem;
+  min-width: 5rem;
 }
 
-.pf1-lighting.preset-editor .hint {
-  margin: 0.25rem 0 0;
+.pf1-lighting.preset-editor .form-fields > input[type="number"],
+.pf1-lighting.preset-editor .form-fields > span[data-effect] > input[type="number"] {
+  flex: 1 1 3rem;
+  min-width: 2.5rem;
 }
+
+/* A forced line break inside a wrapping `.form-fields`. Zero-height so it costs no vertical
+ * space, `flex-basis: 100%` so everything after it starts a new row.
+ *
+ * Natural wrapping is not good enough for these rows: it breaks wherever the width runs out,
+ * which lands between an inline `<label>` and the field it names — *Maximum* on one line and its
+ * dropdown on the next. The break says where the row divides instead of leaving it to the
+ * window's current width. */
+.pf1-lighting.preset-editor .form-fields > .pf1-lighting-break {
+  flex: 0 0 100%;
+  height: 0;
+  margin: 0;
+}
+
+/* **The branch wrappers have to be flex columns, and this was a layout bug rather than a
+ * preference.** `.standard-form` puts `gap: 1rem` between its children — but `div[data-branch]`
+ * *is* one of those children, so the form-groups inside it are not, and they stacked flush with
+ * no gap at all. That is why the rows above the branches looked right and everything inside them
+ * did not (Hamilcarbarcas, 2026-08-29: *"Type has good spacing, but then... the space between the
+ * tooltip and the next section below it is too small"*). Re-declaring the column here gives the
+ * groups inside a branch the same rhythm as the ones outside it.
+ *
+ * **`:not(.pf1-lighting-off)` is load-bearing**, for the reason the `display: contents` rule
+ * above records: this selector and the hide rule have equal specificity, so without the
+ * exclusion whichever came last would win and a hidden branch could stay on screen. */
+.pf1-lighting.preset-editor [data-branch]:not(.pf1-lighting-off),
+.pf1-lighting.preset-editor [data-needs]:not(.pf1-lighting-off) {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* **A hint belongs to the field above it, not to the section below.** It had `0.25rem` on top of
+ * the form-group's own `0.5rem` row-gap, and nothing beneath — so it sat nearer the next control's
+ * label than its own field, which reads as a caption for the wrong thing. Zero above leaves the
+ * row-gap alone to separate them, and the 1rem between groups then does the rest. */
+.pf1-lighting.preset-editor .hint {
+  margin: 0;
+}
+
+/* **Half the row back from the title.** Core gives a `.form-group`'s label `flex: 1` and its
+ * other children `flex: 2`, then `.form-group.slim .form-fields` overrides that back to `flex: 1`
+ * — so a slim row splits 50/50. That is fine for one control and wrong for four: *Brightness* and
+ * *Increase Brightness* put a dropdown, two numbers and their inline labels in half a window, and
+ * the dropdowns collapsed (Hamilcarbarcas, 2026-08-29: *"the fields are getting squished too much"*).
+ * Restoring 1:2 gives the title a third of the row instead of half.
+ *
+ * A ratio rather than a fixed basis on purpose: `flex: 2` still resolves against content, so a
+ * longer label in another language takes the width it needs instead of clipping. */
+.pf1-lighting.preset-editor .form-group.slim > .form-fields {
+  flex: 2;
+}
+
 
 /* The New / Duplicate / Delete cluster beside the preset select. `flex: 0 0 auto` so they keep
  * their size while the select takes the row, and a fixed square so the three read as a group
