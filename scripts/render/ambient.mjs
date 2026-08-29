@@ -58,6 +58,7 @@ import {
   restoreLightWeights,
 } from "./levels.mjs";
 import * as field from "../model/field.mjs";
+import { flag } from "../settings-cache.mjs";
 
 /**
  * Is §7.0 step 6 drawing lights into the texture?
@@ -68,11 +69,7 @@ import * as field from "../model/field.mjs";
  * `render/paint.mjs` follows for the renderer's own switch.
  */
 function lightsInTexture() {
-  try {
-    return game.settings.get(MODULE_ID, "lightsInTexture") === true;
-  } catch {
-    return false;
-  }
+  return flag("lightsInTexture");
 }
 
 export const SETTING_AMBIENT = "ambientTakeover";
@@ -90,11 +87,8 @@ const PATCH_MARK = "pf1LightingAmbientPatched";
  * much worse thing to debug, and one toggle turns it back into a one-minute bisection.
  */
 export function isEnabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_AMBIENT) === true;
-  } catch {
-    return false;
-  }
+  // Cached — `paint.active()` and `light-ramps.isEnabled()` both reach it every pass.
+  return flag(SETTING_AMBIENT);
 }
 
 export function registerSettings() {
@@ -106,7 +100,7 @@ export function registerSettings() {
       "including under true seeing and god's eye. Quantises ambient brightness to the five " +
       "tiers. Requires the renderer.",
     scope: "world",
-    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
     // Reachable from the console — see `game.pf1Lighting.settings`.
     config: false,
@@ -192,7 +186,7 @@ export function applyMixin() {
       if (!u.globalLightThresholds) return;
 
       // **Under §7.0 step 6 it contributes nothing at all**, and this is the second half of
-      // Patrick's report that dark regions still tracked the scene's slider (2026-08-27).
+      // Hamilcarbarcas's report that dark regions still tracked the scene's slider (2026-08-27).
       //
       // Narrowing the upper bound stops global light painting where the model says *darker than
       // Dim*, which was the whole point while the ground's brightness still came from light

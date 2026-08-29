@@ -2,7 +2,7 @@
  * **The geodesic spill probe.** DESIGN.md §3.4.1.
  *
  * Draws `model/geodesic.mjs`'s distance field straight onto the canvas, one rectangle per cell,
- * before any of it is wired into `model/spill.mjs`. Patrick, 2026-08-27: *"Go ahead and build the
+ * before any of it is wired into `model/spill.mjs`. Hamilcarbarcas, 2026-08-27: *"Go ahead and build the
  * rasteriser and let's resolve these uncertainties."*
  *
  * It exists for the reason `ui/cell-overlay.mjs` exists — geometry is the one thing a console
@@ -50,7 +50,7 @@ const BLOCKED_COLOUR = 0xff3355;
  * Speed at 90° off the window's normal. **1 means no cone at all.**
  *
  * @remarks
- * Patrick, 2026-08-27, after looking at both: *"let's leave graze out this time around (so set to
+ * Hamilcarbarcas, 2026-08-27, after looking at both: *"let's leave graze out this time around (so set to
  * 1)"*. So the shipped falloff is pure geodesic distance, and `spillAngle` has no consumer.
  *
  * The mechanism is kept rather than deleted, and it is worth being clear about why that is not
@@ -93,7 +93,7 @@ const read = (key, fallback) => {
  * Band widths per tier, in feet.
  *
  * @remarks
- * **Reading `spillRadius*` under §3.4.1's meaning rather than §3.4's** (Patrick, 2026-08-27:
+ * **Reading `spillRadius*` under §3.4.1's meaning rather than §3.4's** (Hamilcarbarcas, 2026-08-27:
  * *"rather than a straight band width, the value of each brightness can tell you how large the band
  * of that brightness is"*). The same three stored numbers; what changes is that 40 now means
  * *bright light carries forty feet before it reads as normal* instead of *a bright spill's cone is

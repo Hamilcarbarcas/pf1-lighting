@@ -52,7 +52,7 @@ import { levelAtDistance, width } from "./transition.mjs";
  * Minkowski offset in scene pixels; negative erodes.
  *
  * @remarks
- * **`jtMiter`, not `jtRound`, and the difference is visible** (Patrick, 2026-08-27: *"curved
+ * **`jtMiter`, not `jtRound`, and the difference is visible** (Hamilcarbarcas, 2026-08-27: *"curved
  * transitions are quite ugly, and jitter as perspective changes"*).
  *
  * A round join replaces every vertex with an arc, so a room's corner comes back as a quarter
@@ -107,7 +107,7 @@ function levelAtPoint(point, cells) {
  *
  * @remarks
  * **Two rings give a straight ramp, and at any width worth seeing that is what it looks like**
- * (Patrick, 2026-08-27, at three squares: *"the transitions work, but not well, especially along
+ * (Hamilcarbarcas, 2026-08-27, at three squares: *"the transitions work, but not well, especially along
  * rounded surfaces"*). Two rings put every vertex at one of two distances, so the rasteriser has
  * nothing to interpolate but a line between them — no S-curve, and, worse, the interpolation runs
  * along the *chords* of a polygonalised circle rather than along its radius, so the band scallops

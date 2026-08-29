@@ -1,7 +1,7 @@
 /**
  * **Geodesic distance on a grid** — the quantity §3.4 has been approximating. DESIGN.md §3.4.1.
  *
- * Patrick, 2026-08-27: *"the current implementation of determining the regions to brighten and by
+ * Hamilcarbarcas, 2026-08-27: *"the current implementation of determining the regions to brighten and by
  * how much are pretty broken right now, so I want to explore alternative means."*
  *
  * ## What was actually wrong
@@ -96,7 +96,7 @@ export const SETTING_CELL = "spillCellSize";
  *
  * @remarks
  * 25 px is a quarter of a standard grid square — 1.25 ft at 5 ft/square — so a 10 ft band is eight
- * cells across and a 5 ft doorway is four. Patrick, 2026-08-27: *"Let's start with 25 pixel cells
+ * cells across and a 5 ft doorway is four. Hamilcarbarcas, 2026-08-27: *"Let's start with 25 pixel cells
  * and see how it looks."*
  *
  * **What this costs is contour precision, not floor.** Walls are cut links rather than blocked cells
@@ -263,7 +263,7 @@ function walkCells(grid, ax, ay, bx, by, visit) {
  * Cut every cell-to-cell link a segment crosses.
  *
  * @remarks
- * **Links, not cells — and this replaced blocked cells on 2026-08-27.** Patrick: *"my only concern
+ * **Links, not cells — and this replaced blocked cells on 2026-08-27.** Hamilcarbarcas: *"my only concern
  * for this is the cells marked as walls leaving black strips where the walls are… is there a way to
  * fill them from their neighbouring cells (and be smart enough to not pull from the neighbour on the
  * wrong side of the wall)?"*
@@ -676,7 +676,7 @@ export function march({ grid, links, seeds, speed = null, maxDistance = Infinity
  * The falloff ladder: how far each brightness carries before it steps down.
  *
  * @remarks
- * **Per-tier band widths, not one width and a per-tier radius** (Patrick, 2026-08-27: *"rather than
+ * **Per-tier band widths, not one width and a per-tier radius** (Hamilcarbarcas, 2026-08-27: *"rather than
  * a straight band width, the value of each brightness can tell you how large the band of that
  * brightness is"*). It is not messy; it is a cumulative sum, and it is the better reading of the
  * three numbers `spillRadius*` already hold.
@@ -694,7 +694,7 @@ export function march({ grid, links, seeds, speed = null, maxDistance = Infinity
  *
  * > **The contour step is still to come.** This maps a distance to a tier; turning the field back
  * > into polygons for `areas` is marching squares at each `until` boundary, and it is deliberately
- * > not written until the field itself has been looked at. Patrick, 2026-08-27: the lighting
+ * > not written until the field itself has been looked at. Hamilcarbarcas, 2026-08-27: the lighting
  * > decision stays with the levels overlay, so spill supplies geometry and nothing else.
  *
  * @param {number} spillTier
@@ -722,7 +722,7 @@ export function ladder(spillTier, floorTier, widthsFeet) {
  *
  * @remarks
  * This is the step that hands the field back to the rest of the module as ordinary geometry
- * (Patrick, 2026-08-27: *"draw polygons out of those coloured fields, add them to the underlying
+ * (Hamilcarbarcas, 2026-08-27: *"draw polygons out of those coloured fields, add them to the underlying
  * brightness model, and call it a day"*). Everything downstream then reads spill the way it already
  * reads a drawn region — no new plumbing, and the levels overlay keeps making every lighting call.
  *
@@ -1075,7 +1075,7 @@ export function fill({ a, b, normal, steps, region = null, halfAngle = null, gra
  * A whole room in one march, seeded from every one of its windows at once.
  *
  * @remarks
- * **The shipped entry point; {@link fill} is the single-aperture probe.** Patrick, 2026-08-27:
+ * **The shipped entry point; {@link fill} is the single-aperture probe.** Hamilcarbarcas, 2026-08-27:
  * *"one march per room sounds like the smart choice."*
  *
  * The grid is the union of every aperture's bounding box grown by the ladder's reach, so a room with

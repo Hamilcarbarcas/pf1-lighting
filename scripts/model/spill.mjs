@@ -9,7 +9,7 @@
  *
  * **Ambient areas with computed polygons.** Not emitters — see §3.4 for why the original
  * `SpillEmitter` framing was retired. Each band is an `AT_LEAST` area at its own tier, folded by
- * `areas.ambientTierAt` beside the drawn ones, which is what makes Patrick's requirement — that
+ * `areas.ambientTierAt` beside the drawn ones, which is what makes Hamilcarbarcas's requirement — that
  * spill be treated identically to global illumination by every other facet of the module — true
  * by construction rather than by resemblance:
  *
@@ -162,7 +162,7 @@ export function spillAreas() {
  * the whole back half of this file — `rampFor`, `ringDistances`, `groupWithDistances` — and it
  * existed to reconstruct distances that §3.4.1's field simply has.
  *
- * It is not being rebuilt on the new field yet, because it may not be needed (Patrick, 2026-08-27:
+ * It is not being rebuilt on the new field yet, because it may not be needed (Hamilcarbarcas, 2026-08-27:
  * *"draw polygons out of those coloured fields, add them to the underlying brightness model, and
  * call it a day"*). The bands are much wider under per-tier widths — 40 / 20 / 10 ft rather than
  * 40 + 10 + 10 — so each boundary may read correctly on §6.4.4's blur alone, which is the treatment
@@ -328,7 +328,7 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
   // sky is darker than the room, no window on the scene qualifies.
   if (tierPlus === tierMinus) return reject("sameAmbient");
 
-  // **The ambients must be separated by *this* edge, not merely differ across it** (Patrick,
+  // **The ambients must be separated by *this* edge, not merely differ across it** (Hamilcarbarcas,
   // 2026-08-28: *"exterior walls of an interior space that intersect with a wall outside cause light
   // to leak in… just moving those outer walls away from the room cleared the brightness bug"*).
   //
@@ -401,7 +401,7 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
  * Band width per tier, in feet.
  *
  * @remarks
- * **The three stored numbers, read as widths rather than as radii** (Patrick, 2026-08-27: *"rather
+ * **The three stored numbers, read as widths rather than as radii** (Hamilcarbarcas, 2026-08-27: *"rather
  * than a straight band width, the value of each brightness can tell you how large the band of that
  * brightness is"*). 40 now means *bright light carries forty feet before it reads as normal*, and
  * the total reach is whatever the ladder sums to — 70 ft from Bright, 30 from Normal, 10 from Dim.
@@ -420,7 +420,7 @@ function widthsFeet() {
  * Group this scene's windows by the room they spill into.
  *
  * @remarks
- * **One march per room, not per window** (Patrick, 2026-08-27: *"one march per room sounds like the
+ * **One march per room, not per window** (Hamilcarbarcas, 2026-08-27: *"one march per room sounds like the
  * smart choice"*), and the reason is correctness before cost. Two windows lighting one room from
  * separate fills land on separately-snapped grids, so their contours can disagree by a fraction of a
  * cell along a shared boundary — and thin disagreeing polygons folding together is precisely the
@@ -685,7 +685,7 @@ function unwatchDarkness() {
  * Coalesce to one rebuild per frame.
  *
  * @remarks
- * **The walls-layer suppression is deliberately not here** (Patrick, 2026-08-26: *"let's disable
+ * **The walls-layer suppression is deliberately not here** (Hamilcarbarcas, 2026-08-26: *"let's disable
  * the rebuild suppress when editing walls — I want to see what kind of latency this actually
  * creates"*). Wall editing is the worst case by construction: every change bumps the geometry
  * epoch and re-marches every room on the scene. If it turns out to need a brake, the brake is one
@@ -747,7 +747,7 @@ export function registerSettings() {
   });
 
   // **Three numbers, and they are the whole falloff since §3.4.1.** *Spill cone angle* and *Band
-  // width* were registered here and are gone (Patrick, 2026-08-28: *"Am I correct assuming band
+  // width* were registered here and are gone (Hamilcarbarcas, 2026-08-28: *"Am I correct assuming band
   // width is an outdated knob?"* — correct, and the angle with it). The angle described the wedge
   // the old construction clipped against, and there is no wedge; band width described a uniform
   // step, and each tier now carries its own. Neither had a consumer left, and a live setting that
@@ -790,7 +790,7 @@ export function registerHooks() {
     if ("environment" in changed || "darkness" in changed || "grid" in changed) tiers();
   });
 
-  // **`updateScene` is not enough on its own, and this was the sticky-brightness bug** (Patrick,
+  // **`updateScene` is not enough on its own, and this was the sticky-brightness bug** (Hamilcarbarcas,
   // 2026-08-28: *"some areas are getting sticky brightness readings — when the scene brightness is
   // turned down from bright, they remain bright until the scene is set to dark"*).
   //

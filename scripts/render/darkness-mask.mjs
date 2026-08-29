@@ -72,7 +72,7 @@
  *
  * This changes core behaviour for **every** darkness source, including other modules'. The
  * argument for doing it anyway is consistency: darkness starts behaving the way light already
- * does. Patrick's call, 2026-08-27, with that stated.
+ * does. Hamilcarbarcas's call, 2026-08-27, with that stated.
  *
  * It follows observer mode for free, because `canvas.masks.vision` is whatever the current
  * viewer's mask is — so with *GM sees through the selected token* on, darkness outside that
@@ -331,7 +331,7 @@ export function applyPatch() {
  * ## The fix
  *
  * Read the **scene's own** darkness level instead of the texture. Unseen ground then renders at
- * the scene's ambient, which is both the stock behaviour and what Patrick named as correct
+ * the scene's ambient, which is both the stock behaviour and what Hamilcarbarcas named as correct
  * (2026-08-27): *"areas with no vision have their brightness still determined by ambient level,
  * so those areas behind walls and whatnot being brighter is normal."*
  *
@@ -343,7 +343,7 @@ export function applyPatch() {
  * ## The consequence, accepted
  *
  * §10.7's ambient regions stop showing through fog too — an unlit cellar reads at scene
- * brightness in unexplored area. Patrick's call, 2026-08-27. Separating them would mean a second
+ * brightness in unexplored area. Hamilcarbarcas's call, 2026-08-27. Separating them would mean a second
  * darkness-level texture holding only the static half, which is a great deal of machinery to
  * reveal architecture the map already shows.
  */
@@ -430,7 +430,7 @@ export function applyFilterPatch() {
         // `-1` is not a darkness level; it is the sentinel the shader reads as "use the texture",
         // which is what makes the setting a live toggle rather than a redraw.
         //
-        // **The model's Dark, not the scene's darkness** (Patrick, 2026-08-27: *"a dark cell as
+        // **The model's Dark, not the scene's darkness** (Hamilcarbarcas, 2026-08-27: *"a dark cell as
         // identified by our model should be the exact same pixel coloration regardless of
         // illumination settings"*). This line used to read `canvas.environment.darknessLevel`,
         // which made every unseen fragment on the map — most of a player's view — render at
@@ -448,7 +448,7 @@ export function applyFilterPatch() {
         // its unseen fragments with `canvas.colors.background` (`effects.mjs:239`) — which is
         // `mix(darkness, daylight, 1 − sceneDarkness)`. So every pixel a viewer cannot see had a
         // grey *added* to it in proportion to the scene's global-illumination slider. Third of the
-        // three leaks behind Patrick's report, and the only one that is core's rather than ours.
+        // three leaks behind Hamilcarbarcas's report, and the only one that is core's rather than ours.
         //
         // Black is not a tuning choice, it is the identity for an additive layer: no coloured
         // light reaches ground you cannot see. Assigned per frame because `refreshLighting`

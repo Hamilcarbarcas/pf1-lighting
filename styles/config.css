@@ -58,7 +58,7 @@
 
 /* A `<select>` in a flex row will shrink below its own content unless told not to, and the
  * *Increase brightness* row puts three controls on one line — so the *Max* dropdown collapsed to a
- * sliver too narrow to read (Patrick, 2026-08-28: *"the maximum dropdown is too small to see what
+ * sliver too narrow to read (Hamilcarbarcas, 2026-08-28: *"the maximum dropdown is too small to see what
  * it says"*). A real basis plus a floor is the fix. The row had the width to spend; nothing was
  * competing for it except the defaults. */
 .pf1-lighting-config .form-fields > select {

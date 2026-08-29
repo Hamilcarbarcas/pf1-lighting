@@ -1,7 +1,7 @@
 /**
  * **Greyscale, taken over.** DESIGN.md §6.2.11.
  *
- * Patrick, 2026-08-27: *"Rather than hacking together a bunch of rules, I want to do more like what
+ * Hamilcarbarcas, 2026-08-27: *"Rather than hacking together a bunch of rules, I want to do more like what
  * we did with lighting and create one centralized implementation that disables existing routes and
  * implements its own singular application according to our rules."*
  *

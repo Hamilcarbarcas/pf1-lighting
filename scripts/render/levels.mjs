@@ -53,7 +53,7 @@ export {
  * the distance to climb. The middle two levels are relative; they are not *evenly* relative, and
  * a rung of our ladder is not a rung of Foundry's.
  *
- * Patrick reported it as *"with global illumination set to Dim, Normal and Dim are almost
+ * Hamilcarbarcas reported it as *"with global illumination set to Dim, Normal and Dim are almost
  * indistinguishable"* — with the two tiers set to 0.9 and 0.1, which is nearly the whole range.
  * And, decisively, **every other ambient behaved**. That is the shape of the bug written out:
  *
@@ -286,7 +286,7 @@ export function restoreLightWeights() {
  * One setting per tier, holding the darkness level that tier paints at.
  *
  * @remarks
- * §10.5's world-default half, brought forward on request (Patrick, 2026-08-25). Until now the
+ * §10.5's world-default half, brought forward on request (Hamilcarbarcas, 2026-08-25). Until now the
  * table was retunable only from the console (`render.levels("even")`) and persisted nowhere, so
  * a value settled by looking at a real map had to be re-entered every session.
  *
@@ -386,7 +386,7 @@ export function registerSettings() {
       name: `Brightness of ${label[tier]}`,
       // **No hint, deliberately.** Four settings that differ only in one word do not want four
       // near-identical paragraphs; the *Configure visuals* window carries one hint above the
-      // group, which is where the rule about them descending actually belongs (Patrick,
+      // group, which is where the rule about them descending actually belongs (Hamilcarbarcas,
       // 2026-08-26).
       scope: "world",
       // **Edited in the *Configure visuals* window, not the flat list** (§10.6, 2026-08-26).

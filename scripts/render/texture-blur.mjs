@@ -1,7 +1,7 @@
 /**
  * Softening the brightness field by **blurring the field**. DESIGN.md §6.4.4.
  *
- * Patrick, 2026-08-27: *"is this the best way to resolve these gradients? All we really need is a
+ * Hamilcarbarcas, 2026-08-27: *"is this the best way to resolve these gradients? All we really need is a
  * decent blurring between the two edges of brightness — perhaps there's a simpler way?"*
  *
  * Probably yes, and the reason the module did not already do it is that an earlier finding was
@@ -56,6 +56,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { flag } from "../settings-cache.mjs";
 import { width } from "./transition.mjs";
 import * as wallMask from "./wall-mask.mjs";
 
@@ -73,11 +74,12 @@ const MARK = "pf1LightingFieldBlur";
  * that strength to `blur / passes` — so with the default quality of 4 and a wide blur the "Gaussian"
  * is a comb, and a step edge convolved with a comb is a staircase.
  *
- * Patrick, 2026-08-28, measuring the field directly: the transect across a boundary changed value
+ * Hamilcarbarcas, 2026-08-28, measuring the field directly: the transect across a boundary changed value
  * every **8 screen pixels** and its first differences traced a clean bell —
  * `0.015 0.028 0.051 0.078 0.106 0.126 0.126 0.109 0.078 0.051 0.028 0.012`. The derivative of a
- * blurred step *is* the kernel, so that bell is the fifteen taps themselves, one per terrace. At his
- * zoom `blur ≈ 32` and `32 / 4 = 8`: the arithmetic and the measurement agree to the pixel.
+ * blurred step *is* the kernel, so that bell is the fifteen taps themselves, one per terrace. At the
+ * zoom it was measured at `blur ≈ 32`, and `32 / 4 = 8`: the arithmetic and the measurement agree to
+ * the pixel.
  *
  * It reads as banding on straight boundaries and not on curved ones for the reason any regular
  * sampling artefact does — along a straight edge every terrace lines up into a stripe the eye can
@@ -127,22 +129,16 @@ let lastStrength = null;
  * end.
  */
 export function isEnabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_BLUR) === true;
-  } catch {
-    return false;
-  }
+  // Cached — `light-ramps.cacheKey` and `rampFor` both ask once per light cell per pass, and
+  // `halo.halosFrom` asks on every repaint. See `settings-cache.mjs`.
+  return flag(SETTING_BLUR);
 }
 
 /**
  * Keep the field hard where a light-blocking wall runs? DESIGN.md §6.4.7.
  */
 export function sharpWalls() {
-  try {
-    return isEnabled() && game.settings.get(MODULE_ID, SETTING_SHARP_WALLS) === true;
-  } catch {
-    return false;
-  }
+  return isEnabled() && flag(SETTING_SHARP_WALLS);
 }
 
 /* -------------------------------------------- */

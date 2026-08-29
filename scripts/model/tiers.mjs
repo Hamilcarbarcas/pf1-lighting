@@ -194,7 +194,7 @@ export const TIER_TO_DARKNESS = Object.freeze({
   [TIER.BRIGHT]: 0,
   [TIER.NORMAL]: 1 / 3,
   [TIER.DIM]: 2 / 3,
-  // **Dark and Supernatural Dark share a level, deliberately** (Patrick, 2026-08-23). Dark
+  // **Dark and Supernatural Dark share a level, deliberately** (Hamilcarbarcas, 2026-08-23). Dark
   // means no light, and `ambientDarkness` is what no light looks like — there is nothing below
   // it to reserve. Supernatural Dark is told apart by the darkness source's own overlay.
   [TIER.DARK]: 1,

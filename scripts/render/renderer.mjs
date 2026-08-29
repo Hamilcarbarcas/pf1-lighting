@@ -23,6 +23,7 @@
 
 import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
 import { isNativeSuppressionDisabled } from "../suppression.mjs";
+import { flag } from "../settings-cache.mjs";
 import * as field from "../model/field.mjs";
 import {
   emitters as allEmitters,
@@ -42,6 +43,20 @@ import * as pool from "./pool.mjs";
 export { SETTING_RENDER };
 
 /**
+ * Announced after every rebuild that actually did work, with {@link stats}' payload.
+ *
+ * @remarks
+ * The mirror of `render/paint.PAINTED_HOOK`, added 2026-08-28 for the same reason it exists there:
+ * a profiler needs to see the cost *per occurrence*, and sampling `stats()` from a ticker cannot —
+ * it builds a fresh object every call, so there is no identity to compare and no way to tell a
+ * rebuild that ran from one that bailed on the field compare.
+ *
+ * A hook rather than a callback because the listener is external by nature. Fired only on a real
+ * rebuild, so a quiet frame stays free.
+ */
+export const REBUILT_HOOK = `${MODULE_ID}.rebuilt`;
+
+/**
  * Draw band overlaps, or only *model* them.
  *
  * @remarks
@@ -50,7 +65,7 @@ export { SETTING_RENDER };
  * Normal whatever this says. What it controls is whether the renderer *shows* it, by cloning
  * the participating emitters at a raised level.
  *
- * Off by default (Patrick, 2026-08-24): the overlaps read oddly, and a light level you can
+ * Off by default (Hamilcarbarcas, 2026-08-24): the overlaps read oddly, and a light level you can
  * query but cannot see is a normal state of affairs for this module — it is what the whole
  * §4.8 perception layer is built on. Separating the two costs one branch.
  */
@@ -59,13 +74,7 @@ export const SETTING_SHOW_STACKS = "showStackedOverlaps";
 /** Draw an ordinary *darkness* that has an animation, for the animation alone. See {@link darkeningPlan}. */
 export const SETTING_DARKNESS_ANIMATION = "darknessAnimationStrength";
 
-const showStacks = () => {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_SHOW_STACKS) === true;
-  } catch {
-    return false;
-  }
-};
+const showStacks = () => flag(SETTING_SHOW_STACKS);
 
 let lastField = null;
 let lastStats = null;
@@ -93,13 +102,7 @@ function schedule() {
   });
 }
 
-const active = () => {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_RENDER) === true;
-  } catch {
-    return false;
-  }
-};
+const active = () => flag(SETTING_RENDER);
 
 
 /** Polygon area, for picking which piece of a split cell the real source keeps. */
@@ -169,13 +172,7 @@ function darkeningPlan(ambientTier, targetTier, source) {
   return { strength: 0, animationOnly: true };
 }
 
-const animateDarkness = () => {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_DARKNESS_ANIMATION) === true;
-  } catch {
-    return false;
-  }
-};
+const animateDarkness = () => flag(SETTING_DARKNESS_ANIMATION);
 
 
 /**
@@ -244,7 +241,7 @@ function levelsFor(emission, base) {
 function withheld(zones, base) {
   if (!lightRamps.isEnabled()) return zones;
   void base;
-  // **`tiers: undefined`, and that is the whole of the fix** (Patrick, 2026-08-27, who found it by
+  // **`tiers: undefined`, and that is the whole of the fix** (Hamilcarbarcas, 2026-08-27, who found it by
   // bisecting the layers: hiding the light illumination meshes removed a hard line the brightness
   // field did not contain).
   //
@@ -369,7 +366,7 @@ export function rebuild({ force = false } = {}) {
         elevation: source.elevation ?? 0,
         emission: emitter.emission,
         // **The three the clone was missing, and each showed as its own artefact**
-        // (Patrick, 2026-08-25: a seam on the light, and the far side of the annulus brighter).
+        // (Hamilcarbarcas, 2026-08-25: a seam on the light, and the far side of the annulus brighter).
         //
         // Without `level`/`bandLevel` the clone painted at Foundry's stock lighting levels
         // instead of §3.2.1's corrected ones, so the cloned piece read a rung brighter than the
@@ -414,7 +411,7 @@ export function rebuild({ force = false } = {}) {
   // **Clearing the clip is not enough, and on its own it is the opposite of the fix.** A null
   // clip means *unclipped*, so a light that should be contributing nothing rendered its **full
   // circle** — which is how a torch inside a *darkness* went on lighting the ground beyond the
-  // bubble (Patrick, 2026-08-25). The clip is cleared so no stale polygon lingers, and the mesh
+  // bubble (Hamilcarbarcas, 2026-08-25). The clip is cleared so no stale polygon lingers, and the mesh
   // is then withheld, which is the only thing that actually stops a source drawing.
   //
   // `allEmitters` here is the **full** list on purpose: an emitter that has just been put
@@ -476,7 +473,7 @@ export function rebuild({ force = false } = {}) {
   // One clone per emitter, not one per region: a single clone would only match wherever that
   // light happened to be the strongest of them.
   // **Superseded by `render/light-ramps.stackRampFor` once the lights are in the texture**
-  // (Patrick, 2026-08-27: *"I want those areas to be incorporated into `render.texture` and
+  // (Hamilcarbarcas, 2026-08-27: *"I want those areas to be incorporated into `render.texture` and
   // rendered that way rather than illuminated individually."*).
   //
   // The clones below draw on the **illumination** layer with a constant tier colour, which is the
@@ -588,7 +585,7 @@ export function rebuild({ force = false } = {}) {
       // earlier version filled unconditionally and set only the strength, so every piece of a
       // split `dark` cell but the largest rendered at full darkness. A darkness enclosing
       // another darkness is an annulus, an annulus is always split, and so it always showed the
-      // cut (Patrick, 2026-08-25).
+      // cut (Hamilcarbarcas, 2026-08-25).
       if (!(clonePlan.animationOnly || clonePlan.strength > 0)) continue;
 
       darkClones++;
@@ -634,7 +631,9 @@ export function rebuild({ force = false } = {}) {
   // this function, which re-initialises sources, which allocates fresh unclipped
   // polygons, which changes the field signature, which recomputes the field, which
   // rebuilds — forever. Re-initialising directly stays inside the tick.
+  const tBuild = performance.now();
   for (const source of restage) source.initialize();
+  const tRestage = performance.now();
   // `initialize` reallocates every one of those sources' `shape`, and shapes *are* the field's
   // signature — so without this the field recomputes next frame purely because we re-meshed,
   // restages again, and the two chase each other at frame rate on an idle scene. See
@@ -663,8 +662,17 @@ export function rebuild({ force = false } = {}) {
     // takeover on means the field produced neither, which is a model question, not a paint one.
     painted,
     blanked,
+    // **The §9.5 line: how much of a rebuild is `source.initialize()`.** Source construction was
+    // measured as the dominant cost in the whole module, and `restaged` is the count that predicts
+    // it — a rebuild whose `restageMs` dwarfs `buildMs` is paying for re-meshing rather than for
+    // any of the boolean algebra above. Split out 2026-08-28, when fixing the paint pass exposed
+    // this as the next thing in the way.
+    restaged: restage.size,
+    restageMs: +(tRestage - tBuild).toFixed(2),
+    buildMs: +(tBuild - t0).toFixed(2),
     pool: pool.stats(),
   };
+  Hooks.callAll(REBUILT_HOOK, lastStats);
   return lastStats;
 }
 
@@ -719,7 +727,7 @@ export function registerSettings() {
       "controls only whether that is drawn. The level is computed either way, so the readout, " +
       "what creatures can see, and every other rule still use it.",
     scope: "world",
-    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
     // Reachable from the console — see `game.pf1Lighting.settings`.
     config: false,
@@ -739,7 +747,7 @@ export function registerSettings() {
       "boundaries, five brightness tiers, darkness-spell semantics. Requires 'Disable native " +
       "darkness suppression' to also be on.",
     scope: "world",
-    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
     // Reachable from the console — see `game.pf1Lighting.settings`.
     config: false,

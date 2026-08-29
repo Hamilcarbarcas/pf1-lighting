@@ -697,7 +697,7 @@ let wallsPatched = false;
  *
  * @remarks
  * **A core oversight, not one of ours** — but this module leans on darkness sources harder than
- * core does, so it surfaces here. Reported by Patrick 2026-08-26: darkness was being blocked by
+ * core does, so it surfaces here. Reported by Hamilcarbarcas 2026-08-26: darkness was being blocked by
  * windows and by **open doors**.
  *
  * `ClockwiseSweepPolygon#_testEdgeInclusion` decides whether an edge blocks by indexing the edge

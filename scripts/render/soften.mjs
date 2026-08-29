@@ -82,7 +82,7 @@ export const edgeOffset = () => -Math.abs(read(SETTING_EDGE_SOFTNESS, 0.3)) * 10
  * **`_padding` is a fixed number of pixels, so the fade gets proportionally tighter the bigger
  * the darkness is.** Core's default is `0.5 × grid` — 50px on a 100px grid — which on a 20 ft
  * disc is a fifth of the radius and reads soft, and on a 60 ft disc is a twenty-fourth and
- * reads as a hard circle. That is exactly the report (Patrick, 2026-08-23: umbras smoothed out
+ * reads as a hard circle. That is exactly the report (Hamilcarbarcas, 2026-08-23: umbras smoothed out
  * but the darkness discs themselves stayed sharp).
  *
  * Safe to raise, and worth saying why, because it looks like it should widen the spell. It does
@@ -137,7 +137,7 @@ export function registerSettings() {
     config: false,
     type: Number,
     range: { min: 0.05, max: 1, step: 0.05 },
-    // **0.05 since 2026-08-27**, down from 0.3 (Patrick: *"too niche to take up settings space"*).
+    // **0.05 since 2026-08-27**, down from 0.3 (Hamilcarbarcas: *"too niche to take up settings space"*).
     // The larger value existed because §6.4 found a clipped light abutting one of our regions read
     // as a hard step — a *brightness* complaint, and brightness has not come from this mesh since
     // §7.0 step 6. What is left is the colour wash's edge, which wants the tightest feather the

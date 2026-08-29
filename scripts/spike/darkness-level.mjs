@@ -11,7 +11,7 @@
  * that **every** lighting and vision shader samples per fragment
  * (`base-lighting.mjs` `COMPUTE_ILLUMINATION`). Because the *vision* shaders sample it too, a
  * region written there keeps its brightness through a vision source's paint — which is the one
- * property Patrick's requirement needs and no light fill has.
+ * property Hamilcarbarcas's requirement needs and no light fill has.
  *
  * ## What this spike answers, and what it does not
  *

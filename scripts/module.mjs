@@ -18,6 +18,7 @@ import * as spillConfig from "./ui/spill-config.mjs";
 import * as tiers from "./model/tiers.mjs";
 import { stack as stackEmitters } from "./model/contest.mjs";
 import * as suppression from "./suppression.mjs";
+import * as settingsCache from "./settings-cache.mjs";
 import * as perception from "./vision/perception.mjs";
 import * as detection from "./vision/detection.mjs";
 import * as blindness from "./vision/blindness.mjs";
@@ -66,6 +67,12 @@ Hooks.once("init", () => {
   // Timing is the substance, not tidiness: an API published in `ready` races every consumer's own
   // `ready` on module load order, so whether it exists would depend on alphabetical luck.
   publicApi.publish();
+
+  // **First, and before any `registerSettings` call.** Every module setting read on a hot path goes
+  // through this cache, and its invalidation hooks have to be listening before anything can write a
+  // setting. Registering a setting does not itself write one, so nothing is missed by being here
+  // rather than earlier. See `settings-cache.mjs` for the 14.7 µs measurement that motivated it.
+  settingsCache.registerHooks();
 
   // **Before anything reads a tier.** Registers the region behaviour's data model and icon; its
   // *label* is deliberately not set here and comes from `lang/en.json` — see
@@ -298,7 +305,7 @@ Hooks.once("ready", () => {
     //   game.pf1Lighting.settings("renderEnabled", true)         // write one
     //
     // §10.6 removed the menu rows for eight switches on the grounds that they were development
-    // bisection aids rather than play features (Patrick, 2026-08-26). *Removed the rows*, not
+    // bisection aids rather than play features (Hamilcarbarcas, 2026-08-26). *Removed the rows*, not
     // the switches — and a switch reachable only by remembering its exact key is a switch that
     // is gone in practice. `hidden: true` marks the ones this is the only route to.
     settings: (key, value) => {
@@ -407,6 +414,14 @@ Hooks.once("ready", () => {
       ladder: geodesic.ladder,
       cellSize: geodesic.cellSize,
     },
+
+    // The read-through cache over `game.settings.get`. `hitRate` well below 1, or `invalidations`
+    // climbing while nobody is touching settings, is the failure worth being able to see — either
+    // turns the cache into pure overhead and neither shows up in a timing.
+    //
+    //   game.pf1Lighting.settingsCache()            // hit rate, keys held, invalidations
+    //   game.pf1Lighting.settingsCache.invalidate() // drop it; the next read re-fetches
+    settingsCache: Object.assign(settingsCache.stats, { invalidate: settingsCache.invalidate }),
 
     // Whole-scene cell decomposition — the renderer's input (DESIGN.md §6.1)
     field: {

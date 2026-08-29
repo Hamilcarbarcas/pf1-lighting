@@ -13,7 +13,7 @@
  * > Expose a question only this module can answer, or an answer only this module can assemble
  * > cheaply. Everything else stays core's.
  *
- * Patrick's rule, and it decides most of the surface. Distance, wall collisions, ownership and
+ * Hamilcarbarcas's rule, and it decides most of the surface. Distance, wall collisions, ownership and
  * the raw `scene.environment.darknessLevel` are all core's and are absent. What is here is the
  * tier ladder (§3.1), the observer-relative answer (§4.3, §4.8), and the *assembly* — one call
  * that returns what a stealth check needs instead of nine.
@@ -100,7 +100,7 @@ function pointOf(subject) {
  * How a subject that occupies more than a point resolves to one tier. DESIGN.md §11.3.
  *
  * @remarks
- * **`center` is the shared rule, and sharing it is the point** (Patrick, 2026-08-28: *"we should
+ * **`center` is the shared rule, and sharing it is the point** (Hamilcarbarcas, 2026-08-28: *"we should
  * determine a grid cell's light the same way we determine a token's light"*). A token and the
  * cell it stands in therefore agree by construction rather than by coincidence, and the answer
  * matches what the readout has always reported.
@@ -582,7 +582,7 @@ export function sceneTier(scene = canvas?.scene) {
  * Set the scene's light level. GM only, and **refused on a darkness-locked scene**.
  *
  * @remarks
- * The lock is core's own control and it already means exactly this — Patrick, 2026-08-28:
+ * The lock is core's own control and it already means exactly this — Hamilcarbarcas, 2026-08-28:
  * *"There's already a darkness level lock in scene config. Can we use this for preventing the
  * api from changing scene brightness?"* It does, and has since §10.5.2:
  * `Scene#_preUpdate` silently *deletes* `environment.darknessLevel` from an update when the lock

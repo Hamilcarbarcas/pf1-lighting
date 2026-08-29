@@ -25,7 +25,7 @@
  *
  * {@link BUILT_IN} is what ships. {@link table} is what the sheet reads, and it is a world
  * setting the GM edits through `ui/preset-editor.mjs` — so the numbers below stopped being
- * placeholders-pending-Patrick's-own the moment there was somewhere to type them.
+ * placeholders-pending-Hamilcarbarcas's-own the moment there was somewhere to type them.
  *
  * **The setting stores the whole table, not a diff against the built-ins**, and it is empty
  * until the editor is saved. Both halves of that matter:

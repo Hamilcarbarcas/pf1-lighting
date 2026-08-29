@@ -5,7 +5,7 @@
  *
  * The obvious construction is to treat an umbra as a suppressor region: inject it into
  * `field()`, let the renderer cut the lights and fill at the clamp tier. That is accurate and
- * it is the wrong layer, for a reason Patrick put better than the design doc had
+ * it is the wrong layer, for a reason Hamilcarbarcas put better than the design doc had
  * (2026-08-23) — wall line-of-sight is smooth during motion, so what is Foundry doing that we
  * would not be?
  *

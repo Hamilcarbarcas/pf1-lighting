@@ -3,7 +3,7 @@
  *
  * ## Why a light cannot hold a fixed brightness while a light source draws it
  *
- * §6.2.9 made a light's *zone colours* absolute and Patrick reported it still was not right. It
+ * §6.2.9 made a light's *zone colours* absolute and Hamilcarbarcas reported it still was not right. It
  * was not, and the reason is one line further down the same shader. `FALLOFF` and `FRAGMENT_END`
  * (`base-lighting.mjs:347`, `illumination-lighting.mjs:13`):
  *
@@ -58,6 +58,7 @@ import {
   intersection,
   toClipperPath,
 } from "../geometry.mjs";
+import { flag } from "../settings-cache.mjs";
 import { TIER, darknessTable, stepTier } from "../model/tiers.mjs";
 import { LIGHT_SORT } from "./darkness-shaders.mjs";
 import * as fieldBlur from "./texture-blur.mjs";
@@ -81,14 +82,9 @@ export const SETTING_LIGHT_TEXTURE = "lightsInTexture";
 const RADIAL_STEPS = 16;
 
 export function isEnabled() {
-  try {
-    return (
-      game.settings.get(MODULE_ID, SETTING_LIGHT_TEXTURE) === true &&
-      game.settings.get(MODULE_ID, "ambientTakeover") === true
-    );
-  } catch {
-    return false;
-  }
+  // Cached. See `settings-cache.mjs` — `game.settings.get` is a linear scan of every Setting
+  // document in the world, and this file reaches settings once per cell per pass.
+  return flag(SETTING_LIGHT_TEXTURE) && flag("ambientTakeover");
 }
 
 /**
@@ -102,12 +98,8 @@ export function isEnabled() {
  * machinery than the duplication costs, so the string is repeated and both ends say so.
  */
 function stacksEnabled() {
-  try {
-    // Owner: `SETTING_SHOW_STACKS` in `render/renderer.mjs`.
-    return game.settings.get(MODULE_ID, "showStackedOverlaps") === true;
-  } catch {
-    return false;
-  }
+  // Owner: `SETTING_SHOW_STACKS` in `render/renderer.mjs`. Cached — asked once per `stack` cell.
+  return flag("showStackedOverlaps");
 }
 
 export function registerSettings() {
@@ -195,7 +187,7 @@ function zonesFor(source, emission, base) {
  * The light's boundary pulled in to an absolute radius, clamped per spoke.
  *
  * @remarks
- * **Absolute radii, not a fraction of each spoke** (Patrick, 2026-08-27: *"odd behavior when the
+ * **Absolute radii, not a fraction of each spoke** (Hamilcarbarcas, 2026-08-27: *"odd behavior when the
  * gradient occurs over a wall"*). Scaling every boundary vertex by the same factor is the obvious
  * construction and it puts the ring boundaries in the wrong place: on a wall-cut sweep, a spoke
  * that stops short at a wall and one that runs the full radius get their `m`th sample at very
@@ -265,7 +257,7 @@ function emitStar(points, origin, out, levelAt, step) {
  * it is allowed to cost `RADIAL_STEPS` boolean ops.
  *
  * **The rings are annuli and must be triangulated as annuli.** This is where a light overlapping a
- * *darkness* lost its gradient entirely and came back as concentric hard steps (Patrick,
+ * *darkness* lost its gradient entirely and came back as concentric hard steps (Hamilcarbarcas,
  * 2026-08-27, who located it by moving the light off the darkness and watching the gradient
  * return). `difference` hands back an outer ring *and* its inner boundary as a separately-wound
  * path; earcutting each on its own — with no hole indices — turns the hole into a **solid disc**,
@@ -430,7 +422,7 @@ export function rampFor(cell, base) {
 
   // §6.4.4 — with the field blur doing the softening, a light does not need a ramp of its own.
   // **Two flat zones and let the blur find both boundaries.** That is not merely cheaper; it is
-  // what removes the faceting (Patrick, 2026-08-27: *"with bigger light sources the polygons start
+  // what removes the faceting (Hamilcarbarcas, 2026-08-27: *"with bigger light sources the polygons start
   // to show"*). The radial grid subdivides by `radius / RADIAL_STEPS`, so a band's thickness grows
   // with the light — and between two rings the level interpolates along the **chords** of a
   // polygonalised circle rather than along its radius, which turns the iso-level contours into a
@@ -469,7 +461,7 @@ export function rampFor(cell, base) {
     //     result = max(A, min(A + Σsteps, max(caps)))
     //
     // and a blend equation that takes the brightest of two inputs can never produce a result
-    // brighter than either. Patrick, 2026-08-27: *"overlapping lights can create an area of
+    // brighter than either. Hamilcarbarcas, 2026-08-27: *"overlapping lights can create an area of
     // brighter light... they provide +1 to the light level, to the maximum of normal, so 2 dim
     // overlaps should be rendered to normal."* Two Dim bands sum to +2 capped at Normal; this
     // draws them as Dim.
@@ -500,7 +492,7 @@ export function rampFor(cell, base) {
     // **For `ui/cell-overlay.levels` and nothing else.** A light is a brightness region since
     // §7.0 step 6, so an overlay that shows the ground and not the lights is showing half the map
     // — which is exactly what it did, and what sent this round of diagnosis at the geometry
-    // instead of at the tool (Patrick, 2026-08-27).
+    // instead of at the tool (Hamilcarbarcas, 2026-08-27).
     debug: {
       x: origin.x,
       y: origin.y,
@@ -607,7 +599,7 @@ function offsetPaths(paths, delta) {
  * A band overlap, as a region in the brightness field. §3.2.1's `Σn` half.
  *
  * @remarks
- * Patrick, 2026-08-27: *"I want those areas to be incorporated into `render.texture` and rendered
+ * Hamilcarbarcas, 2026-08-27: *"I want those areas to be incorporated into `render.texture` and rendered
  * that way rather than illuminated individually."*
  *
  * ## Why the flat fill is right now, having been wrong before
@@ -736,7 +728,58 @@ function stackRampFor(cell, base, index) {
       bandTier: cell.tier,
       stack: true,
     },
+    // **Every other ramp producer returns this and this one did not**, so `gradient.stats()`
+    // summed `undefined` into its triangle count and reported `triangles: NaN` on any scene with a
+    // band overlap. Found while profiling, 2026-08-28.
+    triangles: out.indices.length / 3,
   };
+}
+
+/* -------------------------------------------- */
+/*  Stack cache — measured 2026-08-28           */
+/* -------------------------------------------- */
+
+/**
+ * @type {WeakMap<PIXI.Polygon, {key: string, ramp: object|null}>}
+ *
+ * Band-overlap ramps, keyed on the cell's own polygon.
+ *
+ * @remarks
+ * **This file used to say an overlap could not be cached, and the reason was right about the wrong
+ * clock.** The note at {@link rampsFrom} argued that *"the region's shape changes whenever either
+ * light moves, which is precisely when the cache would have to be invalidated anyway"* — true, and
+ * it does not follow that the ramp must be rebuilt every **pass**. `paint.repaint` reruns whenever
+ * any observer's `los` is replaced, which during a walk is several times a second, and the field is
+ * unchanged on almost all of them.
+ *
+ * Measured on Hamilcarbarcas's scene: 173 repaints in one drag, **173 of them with the field object
+ * identical**, and 117 stack cells rebuilt on every one — 6.05 ms of a 7.4 ms pass, against 0.83 ms
+ * for the two stages that genuinely depend on the point of view. It was the whole cost of the pass
+ * and it was recomputing an answer it already had.
+ *
+ * **Keyed on the polygon object, not on an index**, which is what makes this safe where the id
+ * scheme was not. `rampsFrom`'s own comment explains the hazard: a light's cache id is
+ * `${sourceId}.${index}`, so if stack cells consumed values from that counter, an overlap appearing
+ * or vanishing would shift every id and miss the whole scene on exactly the frame a token walks two
+ * torches together. A `WeakMap` on the polygon has no ordinal at all — a cell either is the same
+ * geometry object as last pass or it is not — and entries for cells the field has dropped are
+ * collected with the polygons themselves, so there is no eviction pass either.
+ *
+ * When either light *does* move, `field.compute` allocates fresh polygons and every key misses,
+ * which is the correct and unavoidable rebuild the original note was describing.
+ */
+let stackCache = new WeakMap();
+
+/** Everything a stack ramp's geometry and levels depend on, beyond the polygon it is keyed on. */
+function stackCacheKey(cell, base) {
+  return [
+    base,
+    cell.tier,
+    cell.holes?.length ?? 0,
+    objectId(darknessTable()),
+    width(),
+    fieldBlur.isEnabled(),
+  ].join("|");
 }
 
 /**
@@ -761,10 +804,9 @@ export function rampsFrom(cells, sceneTier) {
   stackRamps = 0;
 
   for (const cell of cells) {
-    // **Band overlaps, in the same field as everything else** (§3.2.1's `Σn`). Keyed by index
-    // rather than by source id — an overlap belongs to no single light — so it is rebuilt each
-    // pass rather than cached. That is the honest cost: the region's *shape* changes whenever
-    // either light moves, which is precisely when the cache would have to be invalidated anyway.
+    // **Band overlaps, in the same field as everything else** (§3.2.1's `Σn`), and **cached on
+    // their own polygon** since 2026-08-28 — see {@link stackCache} for the measurement that
+    // reversed the "rebuilt each pass" note this comment used to carry.
     if (cell.kind === "stack") {
       stackCells++;
       if (!stacksEnabled()) {
@@ -774,11 +816,33 @@ export function rampsFrom(cells, sceneTier) {
         reject("showStackedOverlaps is off");
         continue;
       }
-      // **Its own counter, and this is not tidiness.** A light's cache id is
-      // `${sourceId}.${index}`, so letting stack cells consume values from `index` would shift
-      // every light's id the moment an overlap appeared or vanished — a whole-scene cache miss
-      // on the frame a token walks two torches together, which is the worst possible frame for it.
-      const ramp = stackRampFor(cell, cell.base ?? sceneTier, stackIndex++);
+
+      const base = cell.base ?? sceneTier;
+      // **The polygon is the key, so `stackIndex` is only an id.** It still advances on every
+      // stack cell, hit or miss, so a reused ramp keeps the same `id` it had last pass as long as
+      // the cell list is unchanged — which is exactly when the cache hits. Nothing reads a stack
+      // ramp's id (`gradient.remap` only matches spill), so a shift on a genuine rebuild is
+      // harmless; it is kept stable because a churning id is a diagnostic nuisance, not a bug.
+      const key = stackCacheKey(cell, base);
+      const hit = cell.polygon ? stackCache.get(cell.polygon) : null;
+      if (hit?.key === key) {
+        // **Its own counters, not `builds`/`reuses`.** Those are the light cache's, and it was a
+        // 98% hit rate against a 6 ms pass that proved the cost was *here* rather than there —
+        // pooling the two would have hidden exactly the signal that found this.
+        stackReuses++;
+        stackIndex++;
+        if (hit.ramp) {
+          stackRamps++;
+          out.push(hit.ramp);
+        }
+        continue;
+      }
+
+      stackBuilds++;
+      const ramp = stackRampFor(cell, base, stackIndex++);
+      // `null` is cached like the light path caches it: "this overlap is no brighter than its
+      // ground" is the common answer on a lit map and is worth not recomputing.
+      if (cell.polygon) stackCache.set(cell.polygon, { key, ramp });
       if (ramp) {
         stackRamps++;
         out.push(ramp);
@@ -817,6 +881,9 @@ export function rampsFrom(cells, sceneTier) {
 /** Band-overlap cells seen in the last pass, and how many became ramps. */
 let stackCells = 0;
 let stackRamps = 0;
+/** Cumulative, like `builds`/`reuses`, and deliberately not pooled with them. */
+let stackBuilds = 0;
+let stackReuses = 0;
 
 /** Debug counters — `builds` staying flat during a token drag is the cache doing its job. */
 export function stats() {
@@ -831,6 +898,11 @@ export function stats() {
     // in any world whose settings form has ever been saved.
     stackCells,
     stacks: stackRamps,
+    // **`stackBuilds` staying flat during a token drag is the 2026-08-28 fix doing its job**, and
+    // it is the counter to read if the paint's `stage.lights` climbs again. A build per cell per
+    // pass is the state that cost 6.05 ms of a 7.4 ms repaint.
+    stackBuilds,
+    stackReuses,
     stacksEnabled: stacksEnabled(),
     radialSteps: RADIAL_STEPS,
     // **The line to read when `lights` is 0.** Empty with a cache full of entries means every one
@@ -841,4 +913,7 @@ export function stats() {
 
 export function invalidate() {
   cache.clear();
+  // A `WeakMap` has no `clear`, so dropping the map is the only way — and it is the cheaper one
+  // anyway, since the old entries go with their polygons.
+  stackCache = new WeakMap();
 }

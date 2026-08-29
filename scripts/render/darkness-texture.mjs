@@ -196,7 +196,7 @@ function syncFilter(entry) {
  * Soften the **reveal** boundary — the last hard edge on the map. DESIGN.md §6.4.5.
  *
  * @remarks
- * Patrick, 2026-08-27, with the two halves of the diagnosis in two sentences: *"it doesn't seem to
+ * Hamilcarbarcas, 2026-08-27, with the two halves of the diagnosis in two sentences: *"it doesn't seem to
  * be applying to borders between a light and dark source when the darkness is overriding the
  * light"*, and then *"only has this effect when the global illumination is brighter than dim"*.
  *
@@ -292,7 +292,7 @@ function cellPaths(cell) {
  * and neither covers it fully — so the composite there is partly the container's clear colour,
  * which is `canvas.environment.darknessLevel`. On a lit map that clear is much *brighter* than
  * either neighbour, and it shows through as a bright ring around every darkness inside a shadow.
- * Patrick reported exactly that, and the tell was that the rings appeared on ground that was
+ * Hamilcarbarcas reported exactly that, and the tell was that the rings appeared on ground that was
  * uniformly dark on both sides — a feather cannot brighten a boundary between two equal values,
  * so whatever was showing through had to be coming from underneath.
  *

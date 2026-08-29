@@ -13,7 +13,7 @@
  * a **ladder** — the rule that matters is that they descend and that the gaps between them stay
  * wide enough to read, which is a fact about the four together and cannot be stated in any one
  * of their hints. As four rows in a list they carried four near-identical paragraphs saying so
- * (Patrick, 2026-08-26: *"do away with individual hints — just one hint"*). As a group under one
+ * (Hamilcarbarcas, 2026-08-26: *"do away with individual hints — just one hint"*). As a group under one
  * heading they need one.
  *
  * The rest are the one **brightness transition width** every boundary in the module now fades over
@@ -74,7 +74,7 @@ const LADDER = [
  *
  * @remarks
  * *Light edge softening* and *Darkness edge softening* were here and came out in §10.6.2's audit
- * (Patrick, 2026-08-27: *"too niche to take up settings space"*). Both tune a **source's** mesh
+ * (Hamilcarbarcas, 2026-08-27: *"too niche to take up settings space"*). Both tune a **source's** mesh
  * edge — a much smaller and rarer thing than the brightness boundaries this window is otherwise
  * about, and since §7.0 step 6 the light one governs only a colour wash. They keep their settings
  * and their console access; they lost their rows.

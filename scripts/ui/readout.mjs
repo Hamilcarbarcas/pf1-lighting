@@ -36,7 +36,7 @@ export const SETTING_DETAIL = "readoutDetail";
  * Whether the readout is the GM's alone.
  *
  * @remarks
- * **World scope, and defaulting on** (Patrick, 2026-08-26). Foundry hides a world-scoped setting
+ * **World scope, and defaulting on** (Hamilcarbarcas, 2026-08-26). Foundry hides a world-scoped setting
  * from non-GM clients outright (`applications/settings/config.mjs:67`), so the scope does the
  * "GM only" half of the job for free — and defaulting it on is what makes the readout off for
  * players without a second per-user default, which a client setting registered at `init` could
@@ -67,7 +67,7 @@ let frame = null;
  *
  * @remarks
  * The chip used to follow the cursor across sheets, dialogs and the sidebar, reporting the light
- * level at whatever canvas position happened to be underneath (Patrick, 2026-08-26). It is a
+ * level at whatever canvas position happened to be underneath (Hamilcarbarcas, 2026-08-26). It is a
  * readout *of the scene* and has no business being drawn over a character sheet.
  *
  * Answered from the `mousemove` target rather than by hit-testing rectangles, which is what
@@ -90,7 +90,7 @@ const gmOnly = () => {
  *
  * @remarks
  * **Kept separate from {@link showing}, and the first version's failure to is instructive**
- * (Patrick, 2026-08-26: *"the hotkey just keeps toggling it on and never toggles off"*). One
+ * (Hamilcarbarcas, 2026-08-26: *"the hotkey just keeps toggling it on and never toggles off"*). One
  * function answering both questions returns `false` for a player under the GM-only switch
  * however their own preference is stored — so `!enabled()` is permanently `true` and the
  * keybinding writes `true` every press. A toggle needs to read *the thing it writes*, and that
@@ -402,7 +402,7 @@ export function registerKeybindings() {
  * @remarks
  * `SETTING_ENABLED` is client-scoped — it is a personal preference and has to be — so Foundry's
  * own "hide world settings from players" rule does not reach it, and a player under the GM-only
- * switch was left with a control that did nothing (Patrick, 2026-08-26). Re-run whenever the
+ * switch was left with a control that did nothing (Hamilcarbarcas, 2026-08-26). Re-run whenever the
  * GM's switch changes, not only at `ready`, since it can change while a player is looking at it.
  */
 function syncVisibility() {

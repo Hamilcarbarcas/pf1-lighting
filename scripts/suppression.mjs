@@ -18,19 +18,23 @@
  */
 
 import { MODULE_ID, VISION_RANK } from "./constants.mjs";
+import { flag } from "./settings-cache.mjs";
 
 export const SETTING_DISABLE_NATIVE = "disableNativeSuppression";
 
 /** Tracks the last applied value so `onChange` can ignore no-op saves. */
 let lastValue = null;
 
-/** Is native darkness suppression currently disabled? */
+/**
+ * Is native darkness suppression currently disabled?
+ *
+ * @remarks
+ * **Through the settings cache, and this is one of the three reads that made it necessary.**
+ * `isPerceptionEnabled` calls this on every detection-mode `_testPoint`, so it ran ~1,400 times
+ * per visibility refresh at 14.7 µs a call. See `settings-cache.mjs`.
+ */
 export function isNativeSuppressionDisabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_DISABLE_NATIVE) === true;
-  } catch {
-    return false;
-  }
+  return flag(SETTING_DISABLE_NATIVE);
 }
 
 export function registerSettings() {
@@ -41,7 +45,7 @@ export function registerSettings() {
       "what the light level would have been before darkness applied. Until this module's renderer " +
       "exists, darkness will appear not to work — light will shine through it. Development use.",
     scope: "world",
-    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
     // Reachable from the console — see `game.pf1Lighting.settings`.
     config: false,
@@ -352,7 +356,7 @@ function createBlindedRecord(source) {
   });
 
   /**
-   * **The blinded *condition*, which blindsight should survive** (Patrick, 2026-08-26).
+   * **The blinded *condition*, which blindsight should survive** (Hamilcarbarcas, 2026-08-26).
    *
    * Written by `Token#updateVisionSource` from the status effect
    * (`placeables/token.mjs:889-890`, `:911`), and `isBlinded` is any-true over this record — so

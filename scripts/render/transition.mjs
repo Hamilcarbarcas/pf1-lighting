@@ -1,7 +1,7 @@
 /**
  * **One gradient, everywhere.** DESIGN.md §6.4.3.
  *
- * Patrick, 2026-08-27: *"our implementation looks very piecemeal right now. Can we consolidate
+ * Hamilcarbarcas, 2026-08-27: *"our implementation looks very piecemeal right now. Can we consolidate
  * that to a single gradient system that covers all transitions between brightnesses?"*
  *
  * It was piecemeal, and the reason is that each boundary got a mechanism invented for it at the
@@ -43,6 +43,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { number } from "../settings-cache.mjs";
 
 export const SETTING_WIDTH = "transitionWidth";
 
@@ -55,14 +56,10 @@ export const SETTING_WIDTH = "transitionWidth";
  * different grid size.
  */
 export function width() {
-  let squares = 0.75;
-  try {
-    const value = game.settings.get(MODULE_ID, SETTING_WIDTH);
-    if (Number.isFinite(value)) squares = Math.max(0, value);
-  } catch {
-    /* pre-registration */
-  }
-  return squares * (canvas?.grid?.size ?? 100);
+  // **The setting is cached; the product is not.** `canvas.grid.size` is per scene and stays a
+  // live read — only the stored number goes through `settings-cache.mjs`. Worth caching because
+  // `light-ramps.cacheKey` reaches this once per light cell per pass.
+  return Math.max(0, number(SETTING_WIDTH, 0.75)) * (canvas?.grid?.size ?? 100);
 }
 
 /** Hermite. A linear ramp between two plateaus shows its own two corners. */

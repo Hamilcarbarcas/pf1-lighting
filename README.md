@@ -58,6 +58,18 @@ game.pf1Lighting.render.stats()     // timings and cell counts from the last one
 game.pf1Lighting.render.reset()     // drop all clips, restore stock rendering
 ```
 
+If the canvas feels heavy while tokens move, two readouts say where the time goes.
+`render.paint()` reports a `stage` breakdown per pass and `fieldStable`, which is `true`
+whenever a repaint was triggered by an observer moving rather than by the scene changing —
+everything but `shadows` and `clamps` should then be near zero. `settingsCache()` reports the
+read-through cache over `game.settings.get`, which Foundry implements as a linear scan of every
+Setting document in the world; a `hitRate` well below 1 means something is bypassing it.
+
+```js
+game.pf1Lighting.render.paint()     // per-stage cost of the last repaint
+game.pf1Lighting.settingsCache()    // hit rate, keys held, invalidations
+```
+
 Real light sources are **clipped, not replaced** — flicker, colour and falloff survive,
 with a bite taken out where a darkness overlaps. Synthetic sources are pooled and reused,
 never created per frame (§9.5). How dark an area *is*, as opposed to what lights reach it, is

@@ -53,6 +53,7 @@
  */
 
 import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
+import { flag } from "../settings-cache.mjs";
 import {
   CLIPPER_SCALE,
   containsPoint,
@@ -79,6 +80,17 @@ import * as fieldBlur from "./texture-blur.mjs";
 
 let signature = null;
 let lastStats = null;
+/**
+ * The field object the last completed pass painted from.
+ *
+ * @remarks
+ * Separate from {@link signature}, which holds the field **and** every observer's `los` and so
+ * cannot say *which* of them moved. This one answers only "did the ground's input change", which
+ * is the question the redundant half of the pass turns on.
+ *
+ * @type {object|null}
+ */
+let lastPaintedField = null;
 /** The cells handed to the painter last time, for `ui/cell-overlay.levels`. @type {object[]|null} */
 let lastCellList = null;
 /** The composited ramps from the same pass — lights, halos and clamps. @type {object[]} */
@@ -106,20 +118,14 @@ export const SETTING_SOFT_CLAMPS = "softClamps";
  * one, which is what to fall back to if a clamp lands somewhere it should not.
  */
 export function softClamps() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_SOFT_CLAMPS) === true;
-  } catch {
-    return true;
-  }
+  // Cached — read three times in one pass and once more per merged ground region.
+  return flag(SETTING_SOFT_CLAMPS, true);
 }
 
 /** Is unseen ground drawn dark? See {@link unseenRegionFor}. */
 export function hideUnseen() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_HIDE_UNSEEN) === true;
-  } catch {
-    return true;
-  }
+  // Cached — `unseenRegionFor` asks once per observer per pass.
+  return flag(SETTING_HIDE_UNSEEN, true);
 }
 
 export function registerSettings() {
@@ -163,11 +169,7 @@ export function registerSettings() {
  */
 function active() {
   if (!ambientTakeover.isEnabled()) return false;
-  try {
-    return game.settings.get(MODULE_ID, SETTING_RENDER) === true;
-  } catch {
-    return false;
-  }
+  return flag(SETTING_RENDER);
 }
 
 /* -------------------------------------------- */
@@ -196,7 +198,7 @@ function observers() {
  * `renderer.mjs`.
  *
  * The cost of that move is the umbra clamp: an overlap is a light now, and a light in an umbra
- * dims without clamping (§7.0). Accepted deliberately (Patrick, 2026-08-23) because the torches
+ * dims without clamping (§7.0). Accepted deliberately (Hamilcarbarcas, 2026-08-23) because the torches
  * that *made* the overlap already behave that way — the clamped stack cell was the one thing in
  * the region that did not.
  */
@@ -217,7 +219,7 @@ function baseCells() {
  * Everything this observer cannot see, as a clamp region. DESIGN.md §4.3.1.
  *
  * @remarks
- * **Patrick's idea, 2026-08-27, and it is the right shape for a reason worth writing down.** The
+ * **Hamilcarbarcas's idea, 2026-08-27, and it is the right shape for a reason worth writing down.** The
  * model already owns *"this observer cannot perceive here, so clamp it"* — that is the umbra —
  * and a wall is the most basic case of not perceiving. Treating the two the same makes every
  * unseen part of a scene render consistently instead of showing whatever the model happened to
@@ -463,7 +465,7 @@ function clampRamps(shadows) {
     // -half)` put a collar around each hole as well, and the umbra's holes are the darkness sources
     // that cast it. There the clamp faded to 0 over ground the observer cannot see, `MAX` let
     // whatever was beneath show through, and a light out-reaching its own darkness came back as a
-    // bright ring at the darkness's rim. Patrick, 2026-08-27: *"it doesn't actually gradient away
+    // bright ring at the darkness's rim. Hamilcarbarcas, 2026-08-27: *"it doesn't actually gradient away
     // from dark from the token's perspective"* — exactly so, and the collar was inventing one.
     //
     // Not a judgement about holes in general: it is that a hole here is a boundary the clamp shares
@@ -589,11 +591,22 @@ export function repaint({ force = false } = {}) {
   if (!force && matches(next)) return lastStats;
   signature = next;
 
+  // **Which half of this pass was wasted.** The signature above is `[field, ...los]`, and an
+  // observer walking replaces its own `los` every time vision re-initialises — so the pass reruns
+  // with the field object identical. `shadowRegions` and `clampRamps` genuinely depend on the point
+  // of view; the ground paint, the light ramps and the halos do not. Recording it is what turns
+  // "repaint is 7 ms" into "6 ms of that had nothing to recompute".
+  const currentField = field.get();
+  const fieldStable = currentField === lastPaintedField;
+  lastPaintedField = currentField;
+
   const t0 = performance.now();
   const base = baseCells();
+  const tBase = performance.now();
   const shadows = shadowRegions();
+  const tShadows = performance.now();
 
-  // **The cut is off, and leaving it on was actively wrong** (Patrick, 2026-08-27, reporting hard
+  // **The cut is off, and leaving it on was actively wrong** (Hamilcarbarcas, 2026-08-27, reporting hard
   // edges on wall shadows and around a spill).
   //
   // §7.0 step 6 kept `applyShadows` running beside the new `MAX_COLOR` clamp meshes as
@@ -613,11 +626,14 @@ export function repaint({ force = false } = {}) {
   // §7.0 step 6 — the two passes that composite over the ground rather than being cut into it.
   // Lights first (`MIN_COLOR`, brightest wins), then clamps (`MAX_COLOR`, darkest wins); the sort
   // ladder in `render/darkness-shaders.mjs` is what puts them in that order.
-  const lights = lightRamps.rampsFrom(field.get().cells, tierOf(field.get().stats?.ambientB ?? 0));
+  const tCut = performance.now();
+  const lights = lightRamps.rampsFrom(currentField.cells, tierOf(currentField.stats?.ambientB ?? 0));
+  const tLights = performance.now();
   const clamps = softClamps() ? clampRamps(shadows) : [];
+  const tClamps = performance.now();
   // §6.4.3 — the ground's own boundaries, as ramps rather than as a blur.
   //
-  // **From `base`, not from the shadow-cut `cells`** (Patrick, 2026-08-27: *"inconsistent
+  // **From `base`, not from the shadow-cut `cells`** (Hamilcarbarcas, 2026-08-27: *"inconsistent
   // application of the gradient that changes as I drag lights around"*). A cut introduces
   // boundaries that are not brightness boundaries at all — they are the umbra and the edge of
   // vision, they move every frame an observer does, and they already have their own ramped mesh in
@@ -627,12 +643,15 @@ export function repaint({ force = false } = {}) {
   const halos = halo.halosFrom(base);
   // Cheap and idempotent: it compares one number and returns.
   fieldBlur.sync();
+  const tHalos = performance.now();
 
   // **Before the painter, because the painter asks whether a gradient exists.**
   const ramps = gradient.sync([...halos, ...lights, ...clamps]);
+  const tGradient = performance.now();
   lastCellList = cells;
   lastRampList = [...halos, ...lights, ...clamps];
   const painted = darknessTexture.paint(cells);
+  const tGround = performance.now();
 
   lastStats = {
     base: base.length,
@@ -651,6 +670,20 @@ export function repaint({ force = false } = {}) {
     softClamps: softClamps(),
     ops,
     ms: +(performance.now() - t0).toFixed(2),
+    // **`fieldStable: true` means every `ground`, `lights` and `halos` millisecond below was
+    // spent reproducing the previous answer.** Only `shadows` and `clamps` are observer-dependent;
+    // see the note where `fieldStable` is computed.
+    fieldStable,
+    stage: {
+      base: +(tBase - t0).toFixed(2),
+      shadows: +(tShadows - tBase).toFixed(2),
+      cut: +(tCut - tShadows).toFixed(2),
+      lights: +(tLights - tCut).toFixed(2),
+      clamps: +(tClamps - tLights).toFixed(2),
+      halos: +(tHalos - tClamps).toFixed(2),
+      gradient: +(tGradient - tHalos).toFixed(2),
+      ground: +(tGround - tGradient).toFixed(2),
+    },
     ...(shadows.length && !split ? { quiet: explainQuiet(base, shadows) } : {}),
   };
   Hooks.callAll(PAINTED_HOOK, lastStats);
@@ -710,6 +743,7 @@ export function registerHooks() {
   Hooks.on("canvasTearDown", () => {
     signature = null;
     lastStats = null;
+    lastPaintedField = null;
     // The container these live in belongs to the old canvas; this is about dropping *our*
     // references, same as `renderer.mjs` does for the texture pool.
     gradient.dispose();

@@ -1,7 +1,7 @@
 /**
  * **Where the brightness field must not be blurred.** DESIGN.md §6.4.7.
  *
- * Patrick, 2026-08-27: *"I want to be able to turn off blurring on lines created by walls. That way
+ * Hamilcarbarcas, 2026-08-27: *"I want to be able to turn off blurring on lines created by walls. That way
  * a lit interior room won't bleed light outside, and a dark room won't have light from around it
  * bleeding over the walls."*
  *

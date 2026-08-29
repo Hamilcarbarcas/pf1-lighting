@@ -142,7 +142,7 @@ export function darkSightRadius(source) {
  * How far a **blinded** creature still perceives, in pixels — its blindsight range, or `0`.
  *
  * @remarks
- * The rules answer to *"the blinded condition should not take away blindsight"* (Patrick,
+ * The rules answer to *"the blinded condition should not take away blindsight"* (Hamilcarbarcas,
  * 2026-08-26). Blindsight is not sight: a creature that maps a room by echo has nothing taken
  * from it by being unable to see, and PF1 already models the detection half — its `blindSight`
  * mode is type `OTHER` with `_canDetect() { return true }`, so it survives core's

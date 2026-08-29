@@ -100,15 +100,70 @@ class Entry {
   /** @type {number|undefined} */
   #pathScale;
 
+  /** @type {PIXI.Polygon|undefined} The shape the cached bounds were derived from. */
+  #boundsRef;
+
+  /** @type {{minX: number, minY: number, maxX: number, maxY: number}|null} */
+  #bounds = null;
+
+  /**
+   * This entry's axis-aligned extent, cached on `shape` identity.
+   *
+   * @remarks
+   * The same trick as {@link path}, for the same reason and against a different cost. Computed
+   * from `points` rather than asked of the polygon because the two shapes that reach here disagree
+   * about the API — a `PointSourcePolygon` carries `bounds`, a bare `PIXI.Polygon` from Clipper
+   * carries neither that nor `getBounds` — and the whole point is a test that cannot fall back to
+   * something slower without saying so.
+   *
+   * @returns {{minX: number, minY: number, maxX: number, maxY: number}|null}
+   */
+  bounds() {
+    const shape = this.shape;
+    const pts = shape?.points;
+    if (!pts?.length) return null;
+    if (this.#bounds && this.#boundsRef === shape) return this.#bounds;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < pts.length; i += 2) {
+      if (pts[i] < minX) minX = pts[i];
+      if (pts[i] > maxX) maxX = pts[i];
+      if (pts[i + 1] < minY) minY = pts[i + 1];
+      if (pts[i + 1] > maxY) maxY = pts[i + 1];
+    }
+
+    this.#boundsRef = shape;
+    return (this.#bounds = { minX, minY, maxX, maxY });
+  }
+
   /**
    * Does this source cover a point?
    *
+   * @remarks
    * Equivalent to `source.testPoint()` (`base-effect-source.mjs:343-345`), written out
    * so the model's containment test does not silently change meaning if the renderer
    * ever starts narrowing `shape` again.
+   *
+   * **The bounds test in front is not a micro-optimisation, it is the shape of the caller.**
+   * `emittersAt` asks *every* emitter on the scene about *every* point, and a point query runs per
+   * test point per detection mode per token per visibility refresh. `PIXI.Polygon#contains` is a
+   * ray cast over the ring, and these rings are wall sweeps — hundreds of vertices each. A profile
+   * of a six-token drag (2026-08-28) put `emittersAt` at 3.2% self with `Polygon.contains` a
+   * further 1.4% beneath it, the largest owned cost left in the module.
+   *
+   * Four comparisons reject every emitter the point is nowhere near, which on any scene larger
+   * than one room is nearly all of them. The bounds are exact and cached on shape identity, so
+   * this cannot disagree with the ring test: a point outside the extent is outside the polygon.
    */
   contains(point) {
-    return this.shape?.contains(point.x, point.y) === true;
+    const box = this.bounds();
+    if (!box) return false;
+    if (point.x < box.minX || point.x > box.maxX) return false;
+    if (point.y < box.minY || point.y > box.maxY) return false;
+    return this.shape.contains(point.x, point.y) === true;
   }
 }
 

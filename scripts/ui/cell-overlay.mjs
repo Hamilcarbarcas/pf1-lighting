@@ -71,7 +71,7 @@ export function draw({ force = false, log = false } = {}) {
 
   if (!active()) {
     clear();
-    // **Reported rather than returned bare** (Patrick, 2026-08-27: *"I get undefined for
+    // **Reported rather than returned bare** (Hamilcarbarcas, 2026-08-27: *"I get undefined for
     // `overlay.draw()`"*). This is the hook path's correct behaviour — the overlay is off — but
     // from the console it was indistinguishable from a broken function, because nothing was drawn
     // and nothing was said. {@link show} is the console door and turns the setting on first.
@@ -150,7 +150,7 @@ export function draw({ force = false, log = false } = {}) {
  *
  * **Deliberately identical to `levels` in behaviour, not merely in spelling.** Two debug overlays
  * on the same feature, driven by two different mechanisms, cost this project two rounds in one
- * session: `draw()` silently no-opped with the setting off and returned `undefined` (Patrick,
+ * session: `draw()` silently no-opped with the setting off and returned `undefined` (Hamilcarbarcas,
  * 2026-08-27: *"I get undefined for `game.pf1Lighting.overlay.draw()`"*), and then there was no
  * obvious way to turn it back off (*"how do I turn off the cell overlay?"*). The underlying
  * asymmetry is real and cannot go away — one is a persisted setting, the other is not — so it is
@@ -200,7 +200,7 @@ const TIER_STYLE = {
  * Draw **what the painter was actually given** — the ground regions and their tiers.
  *
  * @remarks
- * Patrick, 2026-08-27: *"Do I have a function available to see the lighting model backend that
+ * Hamilcarbarcas, 2026-08-27: *"Do I have a function available to see the lighting model backend that
  * we're drawing the lighting based on?"* He did not, and that gap is why the last three rounds of
  * this were diagnosed from screenshots.
  *
@@ -239,7 +239,7 @@ export function refreshLevels() {
  * Every claim on a piece of ground, resolved into **one region per tier, with no overlaps**.
  *
  * @remarks
- * Patrick, 2026-08-27, twice: *"are we able to do away with the overlaps in the overlay?"*
+ * Hamilcarbarcas, 2026-08-27, twice: *"are we able to do away with the overlaps in the overlay?"*
  *
  * The first version layered its sources — ground cells, then light zones, then spill bands — which
  * is how they are *drawn* and not how they *resolve*. A light sits on ground that already has a
@@ -408,7 +408,7 @@ export function registerSettings() {
       "Draws the lighting model's computed cells over the canvas: blue for unsuppressed light, " +
       "orange for reduced, violet for darkness fill. Development aid, not a play feature.",
     scope: "client",
-    // **No control surface, by decision (Patrick, 2026-08-26).** It was always a development
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** It was always a development
     // aid rather than a play feature; `game.pf1Lighting.overlay.toggle()` is its real interface
     // and always was.
     config: false,

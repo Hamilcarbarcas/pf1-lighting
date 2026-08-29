@@ -503,7 +503,7 @@ function ambientDomains(scale, base) {
  *
  * @remarks
  * **This is the half of §10.7 that is not about the ground at all**, and leaving it out produced
- * a report that read as the region "blocking light sources" (Patrick, 2026-08-26). It did not.
+ * a report that read as the region "blocking light sources" (Hamilcarbarcas, 2026-08-26). It did not.
  * The renderer turns a light's tier into one of Foundry's lighting levels through
  * `levelForTier(target, background)`, which returns `UNLIT` whenever `target <= background` — a
  * torch adds nothing at noon, correctly — and `background` was **one scalar for the whole
@@ -583,7 +583,7 @@ const domainNeedsCell = (tier, base) => tierCeiling(tier) > 0 || tier !== base;
  * inside one was drawn against the scene's background instead of the room's — which is a light
  * rendered against a brighter ground than the model says it stands on, and reads as blown out.
  *
- * Patrick, 2026-08-28: *"it's definitely global illumination getting turned off — if I manually
+ * Hamilcarbarcas, 2026-08-28: *"it's definitely global illumination getting turned off — if I manually
  * uncheck it at any light level the brightness inside the light look the same as they do when the
  * scene is set to dark."* Three routes to one condition, which is why it looked like three
  * different bugs.
@@ -661,7 +661,7 @@ export function compute({ filter = true } = {}) {
         suppressor: null,
         emission: null,
         tier,
-        // **Ambient-area cells are never feathered** (Patrick, 2026-08-26): a region boundary is
+        // **Ambient-area cells are never feathered** (Hamilcarbarcas, 2026-08-26): a region boundary is
         // drawn along a wall, and a wall is a hard edge. The ground blur (§6.4.2a) exists for
         // the boundary between a *darkness* and open ground, which has no architecture on it and
         // reads as a stencilled disc without one. Blurring a room's outline instead makes the
@@ -711,7 +711,7 @@ export function compute({ filter = true } = {}) {
    * that shortcut stops firing and every zone double-counts — the tier once in the darkness-level
    * texture (§7.0 step 6) and again as a lighting level over it.
    *
-   * Patrick, 2026-08-28: *"the brightness level of the light sources seems to get maxed out …
+   * Hamilcarbarcas, 2026-08-28: *"the brightness level of the light sources seems to get maxed out …
    * it only happens when inside a region with our restrict global illumination setting enabled.
    * If I move the light outside it they look as they should."* Both halves follow: outside a
    * region there are no domains, so `sceneTier` was right by definition; and the darker the

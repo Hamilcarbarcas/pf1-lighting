@@ -29,7 +29,7 @@ export const MENU_KEY = "spillConfig";
  * The three band widths, brightest first.
  *
  * @remarks
- * **They are widths, not radii, since §3.4.1** (Patrick, 2026-08-28: *"Am I correct assuming band
+ * **They are widths, not radii, since §3.4.1** (Hamilcarbarcas, 2026-08-28: *"Am I correct assuming band
  * width is an outdated knob?"*). The same three stored keys; what changed is that 40 means *bright
  * carries forty feet before it reads as normal* rather than *a bright spill's cone is forty feet
  * long*. The old scheme needed both a per-tier radius and a separate uniform band width, which
@@ -169,7 +169,7 @@ class SpillConfig extends foundry.applications.api.ApplicationV2 {
 
   static get #numericKeys() {
     return [
-      // **`transitionWidth` is deliberately not here** (Patrick, 2026-08-27: *"transition width in
+      // **`transitionWidth` is deliberately not here** (Hamilcarbarcas, 2026-08-27: *"transition width in
       // light spill can go too — it's a duplicate to brightness transition width"*). It was
       // repeated in this window on the grounds that a spill falloff is where the width shows most,
       // which was true and still cost more than it bought: one setting on two forms means two

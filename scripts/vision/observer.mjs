@@ -97,7 +97,7 @@ export function registerSettings() {
     // per-client — two GMs must be able to disagree about their own view, and §5.1's whole point
     // is that changing your own view must never write to the scene — but a player has no use for
     // it: the keybinding is `restricted` and the scene-control toggle returns early for non-GMs,
-    // so the settings row was the one place it leaked (Patrick, 2026-08-26).
+    // so the settings row was the one place it leaked (Hamilcarbarcas, 2026-08-26).
     //
     // Registered visible and hidden at `ready`, because `game.user` does not exist yet here.
     scope: "client",

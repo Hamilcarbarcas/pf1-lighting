@@ -85,6 +85,7 @@ import { TIER, TIER_NAME } from "../model/tiers.mjs";
 import { castsUmbra } from "../model/contest.mjs";
 import * as field from "../model/field.mjs";
 import { MODULE_ID, VISION_RANK, umbraRank } from "../constants.mjs";
+import { flag } from "../settings-cache.mjs";
 import { isPerceptionEnabled, visualDarkSightRange } from "./perception.mjs";
 import { stats as edgeStats } from "./umbra-edges.mjs";
 
@@ -168,6 +169,90 @@ function discPath(x, y, radius, segments = 60) {
   return path;
 }
 
+/** Fast-path hits and sweep fallbacks for {@link unobstructedReach}, for {@link stats}. */
+let reachDirect = 0;
+let reachSwept = 0;
+
+/**
+ * The observer's unobstructed reach, **without running a sweep**. DESIGN.md §9.9.
+ *
+ * @remarks
+ * **The base sweep could not be blocked by anything, and was costing a full sweep to say so.**
+ * `umbraFor` configures it with `edgeOptions.wall = false` and `priority: VISION_RANK.PIERCING`,
+ * which outranks every darkness rank — so `_determineEdgeTypes` admits no edge at all and
+ * `ClockwiseSweepPolygon` walks `_identifyEdges` → the edge quadtree → `_executeSweep` → the vertex
+ * sort in order to return the boundary box it started from.
+ *
+ * Measured 2026-08-28, on the frame that produced a 570 ms stall: the sweep came back with
+ * **four points** and the area of the scene rect. It is in the stack of the spike itself —
+ * `_testPoint → perceives → perceivedTier → clampAt → regionsFor → umbraFor → create → _compute`
+ * — because `regionsFor` misses whenever an observer's `los` is replaced, which for a moving token
+ * is every vision refresh, and the rebuild then happens *inside a detection test*.
+ *
+ * **The bounding box is asked of core rather than reconstructed.** `_defineBoundingBox` is
+ * `sceneRect` or `rect` depending on the `innerBounds` edge behaviour, intersected with every
+ * boundary shape, then `.ceil().pad(1)` (`clockwise-sweep.mjs:269-273`) — replicating that here
+ * would be a second copy of a derivation that can change under us. `initialize()` computes it and
+ * does **not** sweep; `compute()` is what calls `_compute` (`source-polygon.mjs:76-80`). So the
+ * fast path is core's own answer with only the walk skipped.
+ *
+ * **360° only.** A limited-angle source carries a cone in `boundaryShapes`, and its swept result is
+ * that cone rather than the box — so it falls back to the real sweep, which is correct and rare.
+ *
+ * Falls back on anything unexpected. A wrong answer here would silently mis-shape every umbra, so
+ * the guards are cheap insurance rather than defensiveness for its own sake.
+ *
+ * @param {{x: number, y: number}} origin
+ * @param {object} config - The sweep configuration, already carrying `priority` and `edgeOptions`
+ * @returns {PIXI.Polygon|null} The reach, or `null` to sweep for it
+ */
+function unobstructedReach(origin, config) {
+  // A cone is not its bounding box.
+  if ((config.angle ?? 360) < 360) return null;
+  try {
+    const cls = CONFIG.Canvas.polygonBackends.sight;
+    const poly = new cls();
+    // A copy, because `initialize` writes `boundingBox` and the defaulted edge types back into it
+    // and the caller reuses this object for the rank sweeps below.
+    poly.initialize(origin, { ...config });
+
+    const box = poly.config?.boundingBox;
+    if (!(box?.width > 0 && box?.height > 0)) return null;
+
+    // **The bounding box is not the answer — it is the answer plus a pixel.** `_defineBoundingBox`
+    // ends `.ceil().pad(1)` so that it always contains the origin
+    // (`clockwise-sweep.mjs:269-273`), while the sweep's own output follows the *boundary edges*,
+    // which are the unpadded rect. Returning the box gave a polygon one pixel proud on every side
+    // (measured 2026-08-28: 31,206,004 against the sweep's 31,183,600, a ratio of 1.000718) — a
+    // hairline of umbra around the map edge, which is precisely the kind of one-pixel seam §6.4
+    // spent a week removing.
+    //
+    // Which rect the boundary uses is core's decision, exposed as `useInnerBounds`
+    // (`clockwise-sweep.mjs:53`, set from the `innerBounds` edge behaviour in `initialize`), so it
+    // is read rather than guessed.
+    const rect = poly.useInnerBounds ? canvas.dimensions?.sceneRect : canvas.dimensions?.rect;
+    if (!(rect?.width > 0 && rect?.height > 0)) return null;
+
+    // **The box must still contain that rect, or a boundary shape is clipping the reach** — a
+    // radius smaller than the map, or a shape a future caller adds. The result is then not a
+    // rectangle at all and there is nothing to shortcut, so sweep for it. With `radius = maxR`
+    // this always passes, which is why the fast path is the normal one.
+    if (
+      box.x > rect.x ||
+      box.y > rect.y ||
+      box.right < rect.right ||
+      box.bottom < rect.bottom
+    ) {
+      return null;
+    }
+
+    return rect.toPolygon();
+  } catch (error) {
+    console.error("PF1 Lighting | unobstructed reach fast path failed; falling back to a sweep", error);
+    return null;
+  }
+}
+
 /**
  * The umbra for one observer, as a list of regions.
  *
@@ -227,15 +312,19 @@ export function umbraFor(source) {
   // (`umbraTiersPresent`) — sweeping the base at `NORMAL` would have it stopped by the very
   // edges the darkest rung needs to measure, and `los − los` is empty. At `PIERCING` the base is
   // the observer's unobstructed reach: sight radius and angle, nothing else.
-  let unshadowed;
-  try {
-    unshadowed = CONFIG.Canvas.polygonBackends.sight.create(source.origin, {
-      ...base,
-      priority: VISION_RANK.PIERCING,
-    });
-  } catch (error) {
-    console.error("PF1 Lighting | umbra base sweep failed", error);
-    return empty;
+  const baseConfig = { ...base, priority: VISION_RANK.PIERCING };
+  // Nothing can block this one — see {@link unobstructedReach} — so it is built rather than swept
+  // wherever that holds, which removes one full sweep per observer per movement.
+  let unshadowed = unobstructedReach(source.origin, baseConfig);
+  if (unshadowed) reachDirect++;
+  else {
+    reachSwept++;
+    try {
+      unshadowed = CONFIG.Canvas.polygonBackends.sight.create(source.origin, baseConfig);
+    } catch (error) {
+      console.error("PF1 Lighting | umbra base sweep failed", error);
+      return empty;
+    }
   }
 
   let losPath = [toClipperPath(unshadowed, CLIPPER_SCALE)];
@@ -306,11 +395,9 @@ export const SETTING_UMBRA = "umbraPerception";
  * costs a session.
  */
 export function isUmbraPerceptionEnabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_UMBRA) === true;
-  } catch {
-    return true;
-  }
+  // Cached — `regionsFor` asks on every point query, so this is on the same hot path as
+  // `isPerceptionEnabled`. See `settings-cache.mjs`.
+  return flag(SETTING_UMBRA, true);
 }
 
 export function registerSettings() {
@@ -405,7 +492,7 @@ let resolving = false;
  * The tier a point is clamped to for this observer, or `null` if it is not in shadow.
  *
  * @remarks
- * **Clamp, not reduce.** Patrick's rule (2026-08-22): "you cannot see through a darkness more
+ * **Clamp, not reduce.** Hamilcarbarcas's rule (2026-08-22): "you cannot see through a darkness more
  * clearly than the darkness allows". The umbra of a Dark bubble makes everything beyond it
  * Dark — not one step below whatever it already was, and not darker than the bubble either. A
  * torch burning on the far side of a *darkness* is reduced to the spell's own level and no
@@ -541,6 +628,11 @@ export function stats() {
     // changes nothing" becomes a bug hunt.
     affectsPerception: isUmbraPerceptionEnabled() && isPerceptionEnabled(),
     tiersPresent: umbraTiersPresent().map((rank) => TIER_NAME[tierOfRank(rank)]),
+    // §9.9. `baseSweeps` above zero means something is blocking a sweep that by construction
+    // nothing can block, or a limited-angle observer is on the scene — the first would be a
+    // correctness question, the second is ordinary. See {@link unobstructedReach}.
+    baseDirect: reachDirect,
+    baseSweeps: reachSwept,
     edges: edgeStats(),
     observers: results.length,
     // **Cold every time.** `all()` rebuilds rather than reading the cache, so this is the

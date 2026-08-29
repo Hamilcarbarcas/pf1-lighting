@@ -104,7 +104,7 @@ export function registerSettings() {
       "greys the darkness disc along with everything else. This is the fallback for worlds that " +
       "turn the takeover off.",
     scope: "world",
-    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
     // Reachable from the console — see `game.pf1Lighting.settings`.
     config: false,

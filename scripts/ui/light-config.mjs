@@ -3,7 +3,7 @@
  *
  * ## Inside the Basic tab, not beside it
  *
- * The first plan was a fourth tab on `AmbientLightConfig`. Patrick's objection settled it, and
+ * The first plan was a fourth tab on `AmbientLightConfig`. Hamilcarbarcas's objection settled it, and
  * it is not a matter of taste: our fields and Foundry's own two radii describe **one** light
  * between them, and the radii no longer mean what their labels say — "Dim Radius" is §3.2.1's
  * *increase* band and has nothing to do with dim light. A separate tab leaves that mislabelling
@@ -363,7 +363,7 @@ function fieldset(config, negative, activation) {
         <label>Steps</label>
         <input type="number" name="${FLAG}.steps" value="${esc(config.steps ?? 1)}"
                min="0" max="4" step="1">
-        <!-- "Max", not "Maximum" (Patrick, 2026-08-28). Three controls share this row and the
+        <!-- "Max", not "Maximum" (Hamilcarbarcas, 2026-08-28). Three controls share this row and the
              long label was taking the width the dropdown needed to show its own value. -->
         <label>Max</label>
         ${select(`${FLAG}.cap`, TIER_CHOICES, config.cap ?? emitTier, { numeric: true })}

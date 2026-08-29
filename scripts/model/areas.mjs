@@ -1,7 +1,7 @@
 /**
  * *Restrict Global Illumination* — a region that moves the light-level floor. DESIGN.md §10.7.
  *
- * Patrick's fourth control point was *"a region that excludes global illumination"*, and this is
+ * Hamilcarbarcas's fourth control point was *"a region that excludes global illumination"*, and this is
  * that generalised by one step: a region carrying a **tier** and a **mode**, which sets, lowers
  * or raises the ambient light level inside it. "Exclude global illumination" is *at most Dark*.
  *
@@ -161,7 +161,7 @@ function defineBehavior() {
  * Register the data model and its icon.
  *
  * @remarks
- * **The label is not set here, and the first build's attempt to was wrong** (found by Patrick
+ * **The label is not set here, and the first build's attempt to was wrong** (found by Hamilcarbarcas
  * 2026-08-26 — the *Create Region Behavior* dropdown showed the raw type key). Assigning a plain
  * English string into `CONFIG.RegionBehavior.typeLabels` works in two of the three places Foundry
  * shows it and fails in the one that matters most:

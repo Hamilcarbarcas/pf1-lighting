@@ -34,6 +34,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { flag } from "../settings-cache.mjs";
 import { evaluate } from "../model/evaluate.mjs";
 import { TIER, TIER_NAME } from "../model/tiers.mjs";
 import { isNativeSuppressionDisabled } from "../suppression.mjs";
@@ -57,11 +58,12 @@ let lastValue = null;
  * perception from that would double-count.
  */
 export function isPerceptionEnabled() {
-  try {
-    if (game.settings.get(MODULE_ID, SETTING_PERCEPTION) !== true) return false;
-  } catch {
-    return false;
-  }
+  // **Both reads are cached** (`settings-cache.mjs`). This is the hottest settings read in the
+  // module by a wide margin — every `_testPoint` and `_testLOS` of every detection mode calls it,
+  // and the patched `testInsideLight` calls it again, so a single visibility refresh over ~1,000
+  // test points made thousands of `game.settings.get` calls at 14.7 µs each. Measured 2026-08-28
+  // at ~61 ms per refresh, which was the largest single cost in the module.
+  if (!flag(SETTING_PERCEPTION)) return false;
   return isNativeSuppressionDisabled();
 }
 
@@ -73,7 +75,7 @@ export function registerSettings() {
       "polygons: ordinary sight needs dim light or better, darkvision works in darkness but not in " +
       "supernatural darkness. Requires 'Disable native darkness suppression'.",
     scope: "world",
-    // **No control surface, by decision (Patrick, 2026-08-26).** The functionality stays; the
+    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
     // switch was a development bisection aid and the module is past needing one in the menu.
     // Reachable from the console — see `game.pf1Lighting.settings`.
     config: false,

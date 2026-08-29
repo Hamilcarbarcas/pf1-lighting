@@ -24,7 +24,7 @@
  *
  * ## The slider is gone
  *
- * Not hidden alongside a dropdown — replaced (Patrick, 2026-08-25). The model quantises to five
+ * Not hidden alongside a dropdown — replaced (Hamilcarbarcas, 2026-08-25). The model quantises to five
  * tiers, so a continuous control offers precision that does not exist, and two controls that
  * update each other is the arrangement §10.5 already rejected for this exact field. Core's input
  * is *moved* into a hidden slot rather than duplicated, because two fields sharing a name make
@@ -33,7 +33,7 @@
  * ## And so are the two transition buttons
  *
  * The lighting palette's *Transition to Daylight* and *Transition to Darkness* are replaced by one
- * button per tier (Patrick, 2026-08-28), for the same reason twice over: they slide `darknessLevel`
+ * button per tier (Hamilcarbarcas, 2026-08-28), for the same reason twice over: they slide `darknessLevel`
  * across ten seconds, which against a four-rung model is a long crossfade through states the model
  * does not have, and they write the raw number without the tier flag — so a scene set by one of
  * them is a scene this file has to guess about. `setSceneTier` writes both fields at once and

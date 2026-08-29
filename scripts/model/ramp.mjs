@@ -61,7 +61,7 @@ export function normaliseEmission(emission) {
     inner,
     outer,
     steps: Math.max(0, Math.trunc(emission?.steps ?? 1)),
-    // **Not floored at `tier`, as of 2026-08-28** (Patrick: *"max seems to be automatically set to
+    // **Not floored at `tier`, as of 2026-08-28** (Hamilcarbarcas: *"max seems to be automatically set to
     // the brightness level of the inner radius (it should default to that, but max should be able
     // to override it)"*).
     //
