@@ -6,9 +6,10 @@
  * need it — `evaluate()` for one point, `field()` for one cell — and neither should
  * have to drag the other's machinery along.
  *
- * Model B (§4.1): **highest level wins, equal levels go to the suppressor, nothing
- * composes.** A transform pipeline was rejected in Appendix A.4 because the operations
- * don't commute, so there is exactly one winning suppressor and it is applied once.
+ * Model B (§4.1): **highest level wins, equal levels go to the suppressor.** There is exactly
+ * one winning suppressor and it is applied once. Suppressors still do not compose with each
+ * other — Appendix A.4's rejection of a suppressor *pipeline* stands, and this file has never
+ * had one.
  *
  * ## A suppressor does two separate things
  *
@@ -24,13 +25,37 @@
  * was then reduced once — so three torches inside a *darkness* came out Dim instead of
  * Dark, because the torches were never actually removed.
  *
+ * ## Light that survives applies *after* the darkness, not instead of it
+ *
+ * **Reversed 2026-08-29 (Hamilcarbarcas).** Until then a surviving higher-level light
+ * *countered* the suppressor: the whole contest short-circuited and the point resolved to the
+ * unsuppressed stack. That is one rule too many, and it had a consequence nobody would have
+ * asked for — the short circuit returned the stack over **every** emitter including the ones the
+ * darkness had just blocked, so a *daylight*-adjacent lamp anywhere in the area silently relit
+ * every torch the darkness was putting out.
+ *
+ * The order is now the one the rules describe, and it is an order rather than a contest:
+ *
+ * 1. the darkness **removes** every light it is eligible to block;
+ * 2. it **transforms** what is left standing on the ground — which is the ambient;
+ * 3. the surviving lights then **apply over that result**, setting or raising it exactly as they
+ *    would over any other ground.
+ *
+ * Worked example (Hamilcarbarcas's): a Dim scene, a mundane light setting Normal, a level-3
+ * magical light raising one step, and a level-2 *darkness* reducing by one. The mundane light is
+ * blocked; Dim reduces to Dark; the level-3 light raises Dark to Dim. Answer: **Dim**. Under the
+ * old counter rule the same point read Normal or brighter.
+ *
+ * Step 3 is `stack()` with the transformed ground injected as an absolute entry, so set-level
+ * zones contend and bands sum from it — no second implementation of §3.2.1.
+ *
  * Hence three categories rather than two:
  *
  * | Category | Test | Effect |
  * | --- | --- | --- |
- * | counters | not eligible, magical, level above the suppressor's | defeats it; light untouched |
  * | blocked | eligible per the preset | contributes nothing at all |
- * | passthrough | everything else, i.e. ambient | contributes, and *is* transformed |
+ * | over | anything else that is a real light | applies *after* the transform |
+ * | ground | the ambient | what the transform acts on |
  */
 
 import { TIER, reduceTiers, clampToTier, stepTier, tierCeiling, tierOf } from "./tiers.mjs";
@@ -115,11 +140,12 @@ export const DEFAULT_EMITTER = Object.freeze({
   level: 0,
 
   /**
-   * *Daylight*'s special case. A normal higher-level light **overrides** a darkness and
-   * goes on shining (see `counters` below); one flagged here **annihilates** with it
-   * instead — both effects vanish where they overlap, and this emitter stops
-   * contributing light of its own there. Other sources in that region are unaffected
-   * and unsuppressed.
+   * *Daylight*'s special case, and the one thing that still removes a suppressor from play. An
+   * ordinary higher-level light **survives** a darkness and applies over the level it produced;
+   * one flagged here **annihilates** with it instead — both effects vanish where they overlap,
+   * the ground reverts to what it would have been with neither cast, and this emitter stops
+   * contributing light of its own there. Other sources in that region are unaffected and
+   * unsuppressed.
    *
    * Cancels suppressors of its own level or lower.
    */
@@ -211,10 +237,26 @@ export const ELIGIBILITY_PRESETS = {
   /**
    * *Darkness*: blocks mundane light, and magical light of its own level or lower.
    * A torch and a level-0 *light* go out; *daylight* does not.
+   *
+   * **Mundane darkness ranks below level 0, so it blocks nothing** (Hamilcarbarcas, 2026-08-29:
+   * *"mundane darkness should be treated as -1, so non-magical or lvl 0 light works within its
+   * area"*). Level 0 means mundane for a suppressor exactly as it does for an emitter — the same
+   * rule `castsUmbra` has always carried — and an unlit cellar does not put out a torch carried
+   * into it. Without this a level-0 darkness extinguished every mundane light *and* every
+   * level-0 *light* spell, on `0 <= 0`.
+   *
+   * **Ranked here, not stored.** Writing −1 into `level` would mean migrating documents and
+   * teaching `castsUmbra`, `breaks`, `annihilate`, the preset table and the sheet's *Mundane*
+   * dropdown entry a second sentinel, all to reach an outcome identical to this line: below
+   * level 1 the preset is simply not entitled to anything.
+   *
+   * It leaves mundane darkness doing only what it can actually do: reduce the ambient, and be
+   * lit over by anything at all.
    */
   darkness: (emitter, suppressor) =>
-    emitter.kind === "mundane" ||
-    (emitter.kind === "magical" && emitter.level <= suppressor.level),
+    (suppressor.level ?? 0) >= 1 &&
+    (emitter.kind === "mundane" ||
+      (emitter.kind === "magical" && emitter.level <= suppressor.level)),
 
   /** Blocks everything, ambient included. Not a PF1 effect; useful for testing. */
   total: () => true,
@@ -232,22 +274,24 @@ export function eligibilityFn(spec) {
 /**
  * Does this emitter strip a suppressor of its force where the two overlap?
  *
- * Covers both ways that happens — an ordinary higher-level magical light *countering*
- * it, and a *daylight* *annihilating* with it. They differ in what happens to the
- * emitter itself, not in what happens to the suppressor, so geometry that only cares
- * about the suppressor can treat them alike.
+ * @remarks
+ * **Only *daylight* does, since 2026-08-29.** This used to carry a second clause for ordinary
+ * higher-level magical light, on the counter rule the file header records reversing: such a
+ * light was held to defeat the darkness outright over its own radius. It no longer defeats
+ * anything — it applies *after* the transform — so the darkness keeps its force there and this
+ * predicate keeps only the case where a light genuinely removes a suppressor from play.
+ *
+ * The distinction the geometry cares about is exactly that: a *daylight* takes the region away
+ * (`field.resolveRegions` cuts it), while a surviving higher-level light leaves the region
+ * standing and merely lights the ground it produced. Reading `breaks` as "the suppressor is not
+ * here" is what makes both correct with one predicate.
  *
  * @param {object} emitter
  * @param {object} suppressor
  * @returns {boolean}
  */
 export function breaks(emitter, suppressor) {
-  if (emitter.cancelsDarkness && emitter.level >= suppressor.level) return true;
-  return (
-    emitter.kind === "magical" &&
-    emitter.level > suppressor.level &&
-    !eligibilityFn(suppressor.eligibility)(emitter, suppressor)
-  );
+  return emitter.cancelsDarkness === true && emitter.level >= suppressor.level;
 }
 
 /**
@@ -256,7 +300,12 @@ export function breaks(emitter, suppressor) {
  * @remarks
  * `breaks` and `eligibilityFn` composed, and named, because the pair reads backwards otherwise:
  * an emitter is extinguished when the suppressor is *entitled* to block it **and** the emitter
- * does not counter or annihilate the suppressor first.
+ * does not annihilate the suppressor first.
+ *
+ * Unchanged by 2026-08-29's narrowing of `breaks`, and worth checking rather than assuming: a
+ * higher-level magical light was never extinguished by way of `breaks`, since the eligibility
+ * half already answers false for it. The clause that went was redundant here and load-bearing
+ * only in the geometry.
  *
  * Its one caller today is §3.3.1's origin rule — a light standing **inside** a darkness that
  * could block it goes out altogether rather than merely being clipped to what falls outside.
@@ -312,8 +361,9 @@ export function applyTransform(B, transform, floor = TIER.DARK) {
  * stops lighting. Everything else in that region then resolves as if neither had ever
  * been cast.
  *
- * That is what separates it from the `counters` branch, which is the *ordinary*
- * higher-level case — there the light keeps shining and simply overrides the darkness.
+ * That is what separates it from the ordinary higher-level case, where the light keeps shining
+ * but the darkness keeps acting — the ground it produced is what the light then applies over.
+ * *Daylight* is the only thing that takes the darkness off the board.
  *
  * A canceller is only spent if it actually cancelled something. *Daylight* with no
  * darkness around it is just a bright light.
@@ -366,14 +416,19 @@ function annihilate(emitters, suppressors) {
  * Resolve emitters against suppressors at one place.
  *
  * @remarks
- * `winner` and `applied` are separate on purpose. A *darkness* covering a *daylight*
- * is present and is the strongest suppressor there, but it is not eligible to touch a
- * level-3 emitter, so the daylight survives and floors the result at its own full
- * brightness — the suppressor changed nothing. Reporting only `winner` made that read
- * as "the darkness won" while `B` showed untouched light, which is exactly backwards.
+ * `winner` and `applied` are separate on purpose. A *darkness* under a surviving level-3 light
+ * is present and is the strongest suppressor there, and may still have changed nothing — the
+ * light sets a level above anything the transform could have produced. Reporting only `winner`
+ * made that read as "the darkness won" while `B` showed a brightly lit point, which is exactly
+ * backwards.
  *
- * `applied` is `B < baseline`, not "the transform ran". The transform always runs; what
- * matters is whether a survivor's floor then overrode it.
+ * `applied` is `B < baseline`, not "the transform ran". The transform always runs; what matters
+ * is whether the light standing over the result then overrode it.
+ *
+ * **`winner` is now set in cases that used to report `null`** — the old counter branch returned
+ * no winner at all. `evaluate` feeds it to `resolveTier` as a floor, and `vision/blindness`
+ * asks it whether the point casts an umbra; both are gated on the resolved tier first
+ * (`B <= 0` and `tier > SUPERNATURAL_DARK` respectively), so a lit point cannot reach either.
  *
  * @param {{B: number, kind: string, level: number}[]} emitters - Each with the
  *   brightness it contributes *here*, already resolved by the caller
@@ -409,28 +464,31 @@ export function contest(allEmitters, allSuppressors) {
   const strongest = suppressors.reduce((best, s) => (s.level > best.level ? s : best));
   const isEligible = eligibilityFn(strongest.eligibility);
 
-  // Three categories, not two — see the note above `contest`.
-  const blocked = [];
-  const passthrough = [];
-  for (const e of emitters) (isEligible(e, strongest) ? blocked : passthrough).push(e);
-
-  // Magical light the suppressor cannot block, which also out-levels it, counters it
-  // outright — *daylight* over *darkness*. Nothing is suppressed where that light falls.
-  if (passthrough.some((e) => e.kind === "magical" && e.level > strongest.level)) {
-    return { B: brightest(emitters), baseline, winner: null, applied: false, negated };
+  // Three categories, not two — see the note above `contest`. Blocked emitters are simply
+  // dropped: a torch inside a *darkness* does not dim, it stops counting.
+  //
+  // Equal-level magical light needs no special case: the `darkness` preset blocks magical light
+  // of its own level *or lower*, so a level-2 light inside a level-2 darkness is already blocked
+  // and the suppressor simply prevails (§4.1).
+  const over = [];
+  const ground = [];
+  for (const e of emitters) {
+    if (isEligible(e, strongest)) continue;
+    (e.kind === "ambient" ? ground : over).push(e);
   }
 
-  // Whatever the suppressor was never entitled to block. This — not the full baseline —
-  // is what the transform acts on.
-  //
-  // Equal-level magical light needs no special case: the `darkness` preset blocks
-  // magical light of its own level *or lower*, so a level-2 light inside a level-2
-  // darkness is already in `blocked` and the suppressor simply prevails (§4.1).
-  const remaining = brightest(passthrough);
+  // Step 2 — the transform acts on the **ground**, which is the ambient and nothing else. This is
+  // what a darkness reduces: not "the baseline", which would fold back in the very lights step 1
+  // just removed, and not the surviving lights, which have not been applied yet.
+  const B0 = applyTransform(brightest(ground), strongest.transform, strongest.floor ?? TIER.DARK);
 
-  // The suppressor prevails. Blocked emitters contribute **nothing** — a torch inside a
-  // *darkness* does not dim, it stops counting — and the transform then applies to what
-  // remains, bounded below by the suppressor's floor.
-  const B = applyTransform(remaining, strongest.transform, strongest.floor ?? TIER.DARK);
+  // Step 3 — surviving light applies over that result, by the ordinary stacking rules. A set
+  // level contends with `B0`, a band raises from it. `stack` reads a zone-less entry as an
+  // absolute brightness, which is exactly what the transformed ground is.
+  //
+  // `over.length` guards nothing but a wasted array: `stack([{B: B0}])` answers `B0` for every
+  // value including 0, since `tierOf(0)` is Dark and `tierCeiling(Dark)` is 0 again.
+  const B = over.length ? stack([{ B: B0 }, ...over]) : B0;
+
   return { B, baseline, winner: strongest, applied: B < baseline, negated };
 }

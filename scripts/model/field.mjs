@@ -22,8 +22,7 @@
  * | Kind | Geometry | Rendered as |
  * | --- | --- | --- |
  * | `clip` | `E \ (blocking regions + self-cancelled)` | the real source, clipped — keeps flicker and colour |
- * | `reduced` | `E ∩ region` where the suppressor may transform but not remove | synthetic source at `E`'s origin, set tier lowered (§3.2.1) |
- * | `dark` | the effective region, less any light it may only transform | a mesh in the darkness-level texture, at the transformed ambient tier (§7.0) |
+ * | `dark` | the whole effective region | a mesh in the darkness-level texture, at the transformed ambient tier (§7.0) |
  * | `ambient` | the scene, less every region a suppressor governs | the same, at the scene's own tier |
  * | `stack` | where two or more relative bands overlap | the same, at the summed tier (§3.2.1) |
  *
@@ -32,11 +31,12 @@
  * paint a lit lens over ground that should have been dark; caught by the cell overlay
  * once the same correction had already landed in `contest`.
  *
- * `reduced` cells use {@link transformEmission} rather than a flat fill, so light a
- * suppressor merely dims still falls off from its origin. With the `darkness` preset
- * they never occur for a placed light — anything not eligible either counters the
- * suppressor or annihilates with it — but other presets reach them, as will ambient once
- * §7.1 gives global illumination real geometry.
+ * **A surviving emitter produces its ordinary `clip` cell and nothing else** (2026-08-29).
+ * §4.1's reordering retired the `reduced` kind this file used to emit as well: a light the
+ * suppressor cannot block is not dimmed by it, it stands on the ground the suppressor produced
+ * and applies over it. That ground reaches the emitter as its `base` — see {@link groundDomains}
+ * — so the whole of the new rule is carried by which tier a cell is stamped with. The renderer
+ * still knows how to draw a `reduced` cell; nothing produces one.
  *
  * ## Cost
  *
@@ -54,7 +54,7 @@ import {
 } from "./registry.mjs";
 import { CLIPPER_SCALE, groupRings, toClipperPath } from "../geometry.mjs";
 import { applyTransform, breaks, eligibilityFn } from "./contest.mjs";
-import { normaliseEmission, transformEmission } from "./ramp.mjs";
+import { normaliseEmission } from "./ramp.mjs";
 import { TIER, resolveTier, stepTier, tierCeiling, tierOf } from "./tiers.mjs";
 import * as areas from "./areas.mjs";
 
@@ -305,10 +305,10 @@ function carveRegions(suppressors) {
  * Reduce each region to the part where its suppressor is not defeated.
  *
  * @remarks
- * A higher-level magical light *counters* the suppressor within its radius, and a
- * *daylight* *annihilates* with it (§4.1.2). Both strip the suppressor of force over the
- * same geometry, so both are subtracted here; they differ only in what happens to the
- * emitter, which is handled in the emitter loop.
+ * **Only a *daylight* does that now** (§4.1.2, narrowed 2026-08-29). A higher-level magical
+ * light used to *counter* the suppressor within its radius and was subtracted here alongside;
+ * under §4.1's reordering it does not remove the darkness from the ground, it lights the ground
+ * the darkness produced, so the region stands and only the annihilation case cuts it.
  *
  * `effective` is what everything downstream clips against. `paths` stays available
  * because a canceller has to know the *original* overlap in order to remove its own
@@ -325,19 +325,26 @@ function resolveRegions(regions, emitters) {
       const broken = union(breakers.map((e) => e.path(SCALE)));
       region.effective = difference(region.paths, broken);
     }
-    region.effectiveBoxes = region.effective.map(boundsOf);
+    // `effectiveBoxes` was computed here until 2026-08-29 and read by exactly one thing, the
+    // `reduced` cell loop's `tight` pre-filter. That loop is gone, so the boxes are too.
   }
   return regions.filter((r) => r.effective.length);
 }
 
 /**
- * Sort the regions touching one emitter into what they do to it.
+ * The regions that put this emitter out.
  *
  * @remarks
  * Memoised on `(kind, level, cancelsDarkness)` — eligibility and precedence both depend
  * only on those, so every mundane torch on the scene shares an answer. That turns 53
  * per-emitter computations into one or two, and lets the *union* of blocking regions,
  * which is the part costing a Clipper op, be computed once per signature.
+ *
+ * **`reducing` is gone (2026-08-29).** It held the regions that were entitled to *dim* this
+ * emitter rather than remove it, and under §4.1's reordering no such category exists: a light
+ * the darkness cannot block is not dimmed by it, it applies over the ground the darkness
+ * produced. So an emitter is either blocked in a region or untouched by it, and "untouched"
+ * needs no list — it is the absence of one.
  */
 function classifyRegions(emitter, regions, cache) {
   const key = `${emitter.kind}:${emitter.level}:${emitter.cancelsDarkness ? 1 : 0}`;
@@ -345,20 +352,19 @@ function classifyRegions(emitter, regions, cache) {
   if (hit) return hit;
 
   const blocking = [];
-  const reducing = [];
   for (const region of regions) {
     // Re-tested rather than read off `region.breakers`, which is keyed by object
     // identity. `breaks` depends only on the memo signature, so the two always agree —
     // but relying on that silently would make the cache correct by coincidence.
     if (breaks(emitter, region.suppressor)) continue;
-    const isEligible = eligibilityFn(region.suppressor.eligibility);
-    (isEligible(emitter, region.suppressor) ? blocking : reducing).push(region);
+    if (eligibilityFn(region.suppressor.eligibility)(emitter, region.suppressor)) {
+      blocking.push(region);
+    }
   }
 
   const paths = blocking.flatMap((r) => r.effective);
   const entry = {
     blocking,
-    reducing,
     union: paths.length ? union(paths) : [],
   };
   entry.boxes = entry.union.map(boundsOf);
@@ -372,7 +378,9 @@ function classifyRegions(emitter, regions, cache) {
 
 /**
  * @typedef {object} Cell
- * @property {"clip"|"reduced"|"dark"|"ambient"} kind
+ * @property {"clip"|"dark"|"ambient"|"stack"} kind - `reduced` is retired and no longer
+ *   produced; the renderer's branch for it is left standing but unreachable (see the note at
+ *   the head of this file)
  * @property {PIXI.Polygon} polygon - The outer ring. **Treat as read-only:** on a scene with
  *   no suppressors this is the source's own `shape`, shared rather than copied, because
  *   copying it would be the only cost on the fast path.
@@ -382,7 +390,7 @@ function classifyRegions(emitter, regions, cache) {
  *   the field — every other kind is hole-free by construction.
  * @property {object|null} emitter - Registry entry this cell's light comes from
  * @property {object|null} suppressor - Registry entry that modified it
- * @property {object|null} emission - For `reduced`, the transformed emission to render with
+ * @property {object|null} emission - The emitter's own emission, for a `clip` cell
  * @property {number|undefined} tier - For `dark`, the tier to fill at: ambient
  *   transformed by the suppressor and bounded by its floor, so a *darkness* cast at noon
  *   fills at Normal and one cast at midnight fills at Dark
@@ -495,6 +503,76 @@ function ambientDomains(scale, base) {
     else byTier.set(key, { tier: domain.tier, derived: domain.derived, paths: [...domain.paths] });
   }
   return { list: [...byTier.values()], box: boundsOfPaths(areaPaths) };
+}
+
+/**
+ * The domain list for {@link stampDomains}, with each darkness region folded in as ground of its
+ * own. DESIGN.md §4.1.1a, §10.7.
+ *
+ * @remarks
+ * **This is what makes §4.1.1a's reordering render.** A surviving light applies *over* the level
+ * a darkness produced, and the renderer already knows how to do that — `light-ramps.zonesFor`
+ * resolves a band as `min(stepTier(base, steps), cap)`, measured from the ground it stands on.
+ * The only thing it was missing is that a darkness region *is* a ground. Fold the regions'
+ * resolved tiers in beside §10.7's ambient areas and the existing machinery answers it: cells are
+ * split at the region boundary and each part carries the tier under it.
+ *
+ * **The list must partition the scene rect.** `stampDomains` drops any part of a cell that
+ * intersects no domain, so the open ground is carried too, as each ambient domain (or the whole
+ * rect) less everything a suppressor governs.
+ *
+ * Merged by tier, for `ambientDomains`' reason — the number of Clipper ops `stampDomains` pays
+ * per cell is the length of this list, so the collapse bounds it at the number of distinct tiers
+ * (five) rather than the number of regions drawn.
+ *
+ * **The stack pass deliberately does not read this.** Merging by tier throws away which
+ * suppressor produced a part, and `emitStacks` needs it to know which emitters that region left
+ * standing — see the note at its call site, and the bug that note records.
+ *
+ * `box` stays the extent of the *interesting* ground only — the areas and the regions — so a
+ * light nowhere near either still takes `stampDomains`' no-Clipper path. It is deliberately not
+ * the extent of the returned list, which is the whole scene rect by construction and would make
+ * every cell pay.
+ *
+ * @param {object|null} domains - §10.7's ambient areas, or null
+ * @param {{tier: number, paths: object[]}[]} regionParts - One per (region × domain), from the
+ *   fill loop, which has already resolved the tier
+ * @param {object[]} governed - Union of every region's effective area
+ * @param {number} sceneTier
+ * @returns {{list: {tier: number, paths: object[]}[], box: object}|null}
+ */
+function groundDomains(domains, regionParts, governed, sceneTier) {
+  if (!regionParts.length) return domains;
+
+  const byTier = new Map();
+  const add = (tier, paths) => {
+    const hit = byTier.get(tier);
+    if (hit) hit.paths.push(...paths);
+    else byTier.set(tier, { tier, paths: [...paths] });
+  };
+
+  for (const part of regionParts) add(part.tier, part.paths);
+
+  // The open ground. Disjoint from the regions by construction, so the parts can be
+  // concatenated into one entry per tier without a union op.
+  const open = domains?.list ?? [{ tier: sceneTier, paths: [ambientDomain(SCALE)].filter(Boolean) }];
+  for (const domain of open) {
+    if (!domain.paths.length) continue;
+    const rest = governed.length ? difference(domain.paths, governed) : domain.paths;
+    if (rest.length) add(domain.tier, rest);
+  }
+
+  const regionBox = boundsOfPaths(regionParts.flatMap((p) => p.paths));
+  const box = domains
+    ? {
+        minX: Math.min(domains.box.minX, regionBox.minX),
+        minY: Math.min(domains.box.minY, regionBox.minY),
+        maxX: Math.max(domains.box.maxX, regionBox.maxX),
+        maxY: Math.max(domains.box.maxY, regionBox.maxY),
+      }
+    : regionBox;
+
+  return { list: [...byTier.values()], box };
 }
 
 /**
@@ -821,7 +899,7 @@ export function compute({ filter = true } = {}) {
   for (const emitter of emitters) {
     const path = emitter.path(SCALE);
     const box = boundsOf(path);
-    const { blocking, reducing, union: blocked, boxes } = classifyRegions(emitter, regions, cache);
+    const { union: blocked, boxes } = classifyRegions(emitter, regions, cache);
 
     // Where a *daylight* annihilated a suppressor it stops emitting too — the only place
     // in the model where a light's own output is shaped by a suppressor it defeated
@@ -851,34 +929,23 @@ export function compute({ filter = true } = {}) {
       emit("clip", difference([path], remove), emitter, null, emitter.emission, undefined, true);
     }
 
-    // `reduced` — a suppressor that is *not* entitled to remove this emitter still
-    // transforms it. With the `darkness` preset this never fires for a placed light:
-    // anything not eligible either counters the suppressor or annihilates with it. It is
-    // reachable through other presets, and through ambient once §7.1 gives global
-    // illumination real geometry.
-    for (const region of reducing) {
-      if (filter && !touchesAny(box, region.effectiveBoxes)) continue;
-      const inside = intersection([path], region.effective);
-      if (!inside.length) continue;
-      emit(
-        "reduced",
-        inside,
-        emitter,
-        region.suppressor,
-        transformEmission(emitter.emission, region.suppressor.transform)
-      );
-    }
+    // **No second cell for the regions this emitter survives in** (2026-08-29). There used to be
+    // a `reduced` one, carrying `transformEmission(...)`, for a suppressor entitled to dim this
+    // light but not to remove it. §4.1's reordering retired the category: a surviving light is
+    // not dimmed, it is *applied over* the ground the darkness produced — which is the `dark`
+    // cell below, and which reaches this emitter as the `base` its zones are measured from.
+    // Nothing here has to know about it, because `stampDomains` assigns that base.
   }
 
   // --- Fill, per region. ---
   //
-  // Blocked emitters contribute **nothing** here, so the fill is the whole effective
-  // region rather than only the parts no light reached. That was the bug: the old
-  // version subtracted every emitter's polygon and dimmed them instead, which left a
-  // lit-looking lens wherever a torch crossed a darkness.
-  //
-  // Only `reducing` emitters — light the suppressor may transform but not remove — are
-  // carved out, because those do still light the ground.
+  // **The fill is the whole effective region, with nothing subtracted from it** — blocked
+  // emitters contribute nothing, and surviving ones do not replace the ground, they stand on it
+  // (§4.1). The old version subtracted every emitter's polygon and dimmed them instead, which
+  // left a lit-looking lens wherever a torch crossed a darkness; the 2026-08-29 version
+  // subtracted only the survivors, which was the same bug in miniature — the hole read at the
+  // container's clear colour, i.e. the scene's *un-reduced* darkness, so a lamp inside a
+  // *darkness* on a lit map undid the spell over its own radius.
   const ambientB = ambient ? ambient.brightnessAt() : 0;
 
   // What each domain's ground is worth before any suppressor touches it (§10.7). A darkness
@@ -893,15 +960,12 @@ export function compute({ filter = true } = {}) {
       ? domains.list.map((d) => ({ paths: d.paths, B: tierCeiling(d.tier) }))
       : null;
 
+  // The ground each region produced, as a domain — see {@link stampDomains} and the note on
+  // `regionDomains` below. Collected here because this loop already resolves the tier.
+  const regionParts = [];
+
   for (const region of regions) {
-    const lighting = emitters.filter(
-      (e) =>
-        !breaks(e, region.suppressor) &&
-        !eligibilityFn(region.suppressor.eligibility)(e, region.suppressor)
-    );
-    const fill = lighting.length
-      ? difference(region.effective, union(lighting.map((e) => e.path(SCALE))))
-      : region.effective;
+    const fill = region.effective;
     if (!fill.length) continue;
 
     // The tier is the *transformed ambient* level, not a fixed Supernatural Dark. At
@@ -916,9 +980,11 @@ export function compute({ filter = true } = {}) {
 
     if (!domainBases) {
       const B = applyTransform(ambientB, region.suppressor.transform, floor);
+      const tier = resolveTier(B, { floor });
       // `clipped: true` — a `dark` cell is always a Clipper product, never a source's own
       // outline, and the darkness source drawn for it is narrowed to exactly this region.
-      emit("dark", fill, null, region.suppressor, null, resolveTier(B, { floor }), true);
+      emit("dark", fill, null, region.suppressor, null, tier, true);
+      regionParts.push({ tier, paths: fill, suppressor: region.suppressor });
       continue;
     }
 
@@ -929,7 +995,9 @@ export function compute({ filter = true } = {}) {
       const part = intersection(fill, base.paths);
       if (!part.length) continue;
       const B = applyTransform(base.B, region.suppressor.transform, floor);
-      emit("dark", part, null, region.suppressor, null, resolveTier(B, { floor }), true);
+      const tier = resolveTier(B, { floor });
+      emit("dark", part, null, region.suppressor, null, tier, true);
+      regionParts.push({ tier, paths: part, suppressor: region.suppressor });
     }
   }
 
@@ -947,6 +1015,15 @@ export function compute({ filter = true } = {}) {
   // Everywhere a suppressor governs, as one path set. Both consumers below need exactly
   // this, so it is unioned once — it was two identical ops when `stack` landed.
   const governed = union(regions.map((r) => r.effective).filter((p) => p.length).flat());
+
+  // Every darkness region is now a ground in its own right (§4.1.1a), so `stampDomains` asks this
+  // list rather than §10.7's areas alone what tier a cell is standing on. Falls back to `domains`
+  // unchanged, including `null`, when no region survived: `regionParts` is empty exactly when
+  // `governed` is, so a scene with no darkness keeps the op count it had.
+  //
+  // **Stamping only.** The stack pass below needs the suppressor as well as the tier, so it reads
+  // `regionParts` directly — see the note there.
+  const ground = groundDomains(domains, regionParts, governed, sceneTier);
 
   if (!domains) {
     // **No `ambientB > 0` guard, since §7.0 step 6.** An unlit scene used to emit no ambient cell
@@ -972,6 +1049,9 @@ export function compute({ filter = true } = {}) {
   }
 
   // --- `stack` — where two or more relative bands overlap. DESIGN.md §3.2.1. ---
+  //
+  // Open ground first, exactly as before: every emitter, once per ambient domain, with everything
+  // a suppressor governs cut out.
   const stacks = [];
   if (!domains) stacks.push(...emitStacks(emitters, sceneTier, governed));
   else {
@@ -981,15 +1061,36 @@ export function compute({ filter = true } = {}) {
       );
     }
   }
+
+  // Then inside the regions, which is new with §4.1.1a and **must be filtered by eligibility, not
+  // only by geometry**. `emitStacks` sums bands over whatever emitter list it is handed; the
+  // region's blocked emitters are still in `emitters`, still have bands, and their bands still
+  // overlap. Handing it the unfiltered list built a Normal overlap out of two level-2 lights that
+  // a level-2 *darkness* had put out — each light alone correctly showed nothing, and the pair lit
+  // the ground between them (Hamilcarbarcas, 2026-08-29). Nothing in the pass could have caught
+  // that: geometry is all it sees.
+  //
+  // The survivors are the same set `contest` calls `over`, so two *surviving* lights overlapping
+  // inside a darkness do still stack — from the tier it reduced the ground to.
+  for (const part of regionParts) {
+    const isEligible = eligibilityFn(part.suppressor.eligibility);
+    const survivors = emitters.filter((e) => !isEligible(e, part.suppressor));
+    if (survivors.length < 2) continue;
+    stacks.push(...emitStacks(survivors, part.tier, outsideOf(part, SCALE)));
+  }
+
   for (const cell of stacks) cells.push(cell);
 
-  return finish(stampDomains(cells, domains, sceneTier), t0, {
+  return finish(stampDomains(cells, ground, sceneTier), t0, {
     filtered: filter,
     emitters: emitters.length,
     suppressors: suppressors.length,
     regions: regions.length,
     stacks: stacks.length,
     domains: domains?.list.length ?? 0,
+    // Distinct ground tiers the map resolved into, regions included. `domains` above counts only
+    // §10.7's areas, so the two differ exactly when a darkness is on the scene.
+    grounds: ground?.list.length ?? 0,
     ambientB: +ambientB.toFixed(3),
   });
 }

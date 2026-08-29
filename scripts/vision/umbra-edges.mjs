@@ -52,10 +52,12 @@ let lastStats = null;
 /**
  * Cell kinds that lie inside a suppressor's effective region.
  *
- * `clip` is the *unsuppressed* part of an emitter and is explicitly not darkness. `reduced`
- * and `dark` together tile what the suppressor actually governs.
+ * `clip` is the *unsuppressed* part of an emitter and is explicitly not darkness. `dark` tiles
+ * what the suppressor governs, and since §4.1.1a it tiles all of it: `reduced` was the other half
+ * of this set and is retired, because a light a suppressor cannot block is no longer dimmed by it
+ * — it stands on the ground the suppressor produced, which is the `dark` cell itself.
  */
-const SUPPRESSED_KINDS = new Set(["reduced", "dark"]);
+const SUPPRESSED_KINDS = new Set(["dark"]);
 
 function unionPaths(paths) {
   if (!paths.length) return [];

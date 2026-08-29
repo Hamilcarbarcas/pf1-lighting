@@ -63,9 +63,16 @@ const active = () => {
 /**
  * Draw the current field.
  *
- * Cells are drawn in kind order — `ambient` beneath, then `clip`, `reduced`, `dark` — so the
- * suppressed regions read on top of the light they replace. That is the same ordering
- * question the renderer has to answer, and getting it visibly wrong here is cheap.
+ * Cells are drawn in kind order — the two **ground** kinds beneath, then the light that stands on
+ * them. That is the same ordering question the renderer has to answer, and getting it visibly
+ * wrong here is cheap.
+ *
+ * **`dark` moved under `clip` on 2026-08-29**, with the rule it illustrates (§4.1.1a). It used to
+ * sit on top, which was right while a region was carved away wherever surviving light fell — the
+ * violet never overlapped the yellow, so the order was only ever a statement about the *fill*.
+ * A `dark` cell is now the whole region and does overlap, and drawing it last would bury every
+ * light inside a darkness under violet: the picture would say the darkness replaced the light
+ * when what it did was give it a darker floor to work from.
  */
 export function draw({ force = false, log = false } = {}) {
   if (!canvas?.ready) return { drawn: false, reason: "canvas not ready" };
@@ -101,7 +108,7 @@ export function draw({ force = false, log = false } = {}) {
   // whose *existence* is the interesting fact, since the shader cannot show it unaided" — and then
   // the kind was left out of this list, so the cells were computed, counted in `byKind`, and never
   // drawn. Found 2026-08-27 from a scene reporting `5 stack` with nothing on screen to match.
-  const order = ["ambient", "clip", "reduced", "dark", "stack"];
+  const order = ["ambient", "dark", "clip", "reduced", "stack"];
 
   for (const kind of order) {
     const style = STYLE[kind];
@@ -406,8 +413,8 @@ export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_OVERLAY, {
     name: "Show field cell overlay (debug)",
     hint:
-      "Draws the lighting model's computed cells over the canvas: blue for unsuppressed light, " +
-      "orange for reduced, violet for darkness fill. Development aid, not a play feature.",
+      "Draws the lighting model's computed cells over the canvas: violet for the ground a darkness " +
+      "produced, blue for the light standing on it. Development aid, not a play feature.",
     scope: "client",
     // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** It was always a development
     // aid rather than a play feature; `game.pf1Lighting.overlay.toggle()` is its real interface

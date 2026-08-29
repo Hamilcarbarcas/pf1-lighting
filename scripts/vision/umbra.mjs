@@ -78,6 +78,7 @@ import {
   containsPoint,
   difference,
   fromClipperPaths,
+  intersection,
   splitRings,
   toClipperPath,
 } from "../geometry.mjs";
@@ -117,7 +118,8 @@ import { stats as edgeStats } from "./umbra-edges.mjs";
 function umbraTiersPresent() {
   const ranks = new Set();
   for (const cell of field.get().cells) {
-    if (cell.kind !== "reduced" && cell.kind !== "dark") continue;
+    // `dark` alone since 2026-08-29 — `reduced` was tested here too and is retired (§4.1.1a).
+    if (cell.kind !== "dark") continue;
     if (!cell.suppressor || !castsUmbra(cell.suppressor)) continue;
     const rank = umbraRank(cell.tier);
     if (rank > 0) ranks.add(rank);
@@ -168,6 +170,66 @@ function discPath(x, y, radius, segments = 60) {
     };
   }
   return path;
+}
+
+/**
+ * The umbra-casting ground the observer is **standing on**. DESIGN.md §4.3.
+ *
+ * @remarks
+ * **The 360° case has a floor, and it was missing.** `umbraFor` builds each region as
+ * `los − sweep(rank)`, and a sweep taken from inside a darkness is stopped by that darkness's own
+ * edges — so `sweep` *is* the disc and every region it produces is the ground **outside** it. The
+ * disc the observer occupies therefore appeared in no region at all, and the consumers read that
+ * as "not in umbra":
+ *
+ * - `umbra-mask` hides only regions clamped below `SIGHT_TIER`, so everything the observer looked
+ *   *through* the darkness at went black, while the darkness they were standing in kept the
+ *   god's-eye texture — the faintly legible `ambientDarkness` ground;
+ * - which renders the whole disc uniformly *brighter* than the map around it (Hamilcarbarcas,
+ *   2026-08-29: *"the entire inner circle is slightly brighter than the outer umbra"*), drawing
+ *   the one shape a creature blinded by that darkness should be least able to see.
+ *
+ * The rule reads the same from either side: a creature in magical darkness sees nothing there —
+ * not the ground beyond it, and not the ground under its own feet. Clamping the disc to its own
+ * tier is a no-op for the darkness-level texture, which already paints that tier; what it changes
+ * is that the mask now treats it like the rest of the umbra.
+ *
+ * **From the field's cells**, like `umbraTiersPresent` and `umbra-edges`, so the tier here cannot
+ * drift from the tier swept for. Intersected with `los` — which already has any bounded
+ * *true seeing* disc cut out of it — so a creature that can see in its own square keeps that
+ * exemption without this needing to know the faculty exists.
+ *
+ * @param {{x: number, y: number}} origin
+ * @param {object[]} losPath - The observer's reach, exemptions already removed
+ * @returns {{polygons: PIXI.Polygon[], clamp: number}|null}
+ */
+function standingIn(origin, losPath) {
+  // Carved regions are disjoint (`field.carveRegions`), so in practice one cell claims the point.
+  // Collected as a list anyway because a `dark` cell is split per ambient domain and per annulus,
+  // and two pieces of one darkness meeting at the observer's feet must not resolve to whichever
+  // the cell order happened to put first.
+  const under = [];
+  let darkest = null;
+  for (const cell of field.get().cells) {
+    if (cell.kind !== "dark") continue;
+    if (!cell.suppressor || !castsUmbra(cell.suppressor)) continue;
+    if (umbraRank(cell.tier) <= 0) continue;
+    if (!containsPoint([cell.polygon, ...(cell.holes ?? [])], origin)) continue;
+    under.push(cell);
+    if (darkest === null || cell.tier < darkest) darkest = cell.tier;
+  }
+  if (darkest === null) return null;
+
+  // Bounded by what the observer could reach in the first place: beyond a wall is somebody else's
+  // problem, and `los` is where the bounded true-seeing exemption already lives.
+  const paths = under
+    .filter((cell) => cell.tier === darkest)
+    .map((cell) => toClipperPath(cell.polygon, CLIPPER_SCALE));
+  const inside = intersection(paths, losPath);
+  if (!inside.length) return null;
+
+  const polygons = fromClipperPaths(inside, CLIPPER_SCALE);
+  return polygons.length ? { polygons, clamp: darkest } : null;
 }
 
 /** Fast-path hits and sweep fallbacks for {@link unobstructedReach}, for {@link stats}. */
@@ -375,6 +437,12 @@ export function umbraFor(source) {
     const polygons = fromClipperPaths(own, CLIPPER_SCALE);
     if (polygons.length) regions.push({ polygons, clamp: tierOfRank(rank) });
   }
+
+  // The ground under the observer's own feet — see {@link standingIn}. Disjoint from everything
+  // above by construction: every region there is `los − sweep`, and the sweep taken from inside
+  // the disc is the disc, so none of them can contain it.
+  const floor = standingIn(source.origin, losPath);
+  if (floor) regions.push(floor);
 
   return { regions, ms: Math.round((performance.now() - t0) * 100) / 100 };
 }

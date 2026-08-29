@@ -37,15 +37,19 @@ export const SETTING_DETAIL = "readoutDetail";
  * Whether the readout is the GM's alone.
  *
  * @remarks
- * **World scope, and defaulting on** (Hamilcarbarcas, 2026-08-26). Foundry hides a world-scoped setting
- * from non-GM clients outright (`applications/settings/config.mjs:67`), so the scope does the
- * "GM only" half of the job for free — and defaulting it on is what makes the readout off for
- * players without a second per-user default, which a client setting registered at `init` could
- * not express anyway (`game.user` does not exist yet).
+ * **World scope.** Foundry hides a world-scoped setting from non-GM clients outright
+ * (`applications/settings/config.mjs:67`), so the scope does the "GM only" half of the job for
+ * free.
  *
- * The light level *is* information — a player who can read the exact tier under their token
- * knows things their character has to work out — so the GM opting players in is the right
- * direction for the default to point.
+ * **Defaults off since 2026-08-29** (Hamilcarbarcas), reversing the original. The old default was on,
+ * on the argument that the light level *is* information a player's character has to work out, so
+ * the GM should opt players in. That argument was answered by the other half of the pair rather
+ * than by this one: {@link SETTING_ENABLED} now defaults **off** as well, so nobody — GM included
+ * — sees the chip until they ask for it, and what this switch decides is only whether a player is
+ * *allowed* to ask. Withholding the permission as well made the feature invisible twice over.
+ *
+ * The two defaults are load-bearing together and neither reads correctly alone: *available to
+ * everyone, shown to no one.*
  */
 export const SETTING_DM_ONLY = "readoutGmOnly";
 
@@ -254,6 +258,13 @@ function update() {
   frame = null;
   if (!element) return;
 
+  // **A hovered token can stop existing without saying so.** `hoverToken(false)` is the only
+  // signal this tracks, and a placeable that is destroyed never sends it — so a stale reference
+  // would go on being evaluated and the chip would freeze at whatever it last read. `deleteToken`
+  // covers the case that prompted this; the guard covers the class, since anything that destroys
+  // a placeable out from under the pointer looks identical from here.
+  if (hovered?.destroyed) hovered = null;
+
   // `hovered` is allowed through without `overBoard`, because a token can only be hovered while
   // the pointer is on the board and `hoverToken(false)` fires before it can be anywhere else.
   if (!enabled() || !canvas?.ready || (!overBoard && !hovered)) {
@@ -342,7 +353,10 @@ export function registerSettings() {
     scope: "client",
     config: true,
     type: Boolean,
-    default: true,
+    // **Off, for everyone including the GM** (Hamilcarbarcas, 2026-08-29). It is a per-client
+    // preference and there is a keybinding for it, so the cost of it being off is one keypress;
+    // the cost of it being on is a chip following the cursor of somebody who never asked for one.
+    default: false,
     onChange: () => schedule(),
   });
 
@@ -352,7 +366,8 @@ export function registerSettings() {
     scope: "world",
     config: true,
     type: Boolean,
-    default: true,
+    // Off — players may have the readout if they turn it on. See the note on the constant.
+    default: false,
     onChange: () => {
       // A player who may no longer have the readout must not keep a row for it — the switch
       // takes the feature away, so it takes its control surface with it.
@@ -451,6 +466,28 @@ export function registerHooks() {
 
   // A token can stop being hovered by being deleted or by the canvas going away, neither
   // of which fires `hoverToken`.
+  //
+  // **Deletion was named here and not handled** (Hamilcarbarcas, 2026-08-29: *"if I delete a token
+  // while hovering over it, the tooltip freezes to that value until I mouse-over another
+  // token"*). The chip did not merely go stale — `update` kept re-evaluating a destroyed
+  // placeable, and the next `hoverToken(true)` was the only thing that could replace it.
+  //
+  // Cleared on `deleteToken` rather than left to `update`'s liveness guard, because the two
+  // answer different questions: the guard stops a destroyed token being *read*, this puts the
+  // chip back on the point under the cursor, which is what it would have shown had the token
+  // never been there.
+  Hooks.on("deleteToken", (doc) => {
+    // **Identity through the document, never through `token.id`.** `PlaceableObject#id` is a
+    // getter for `this.document.id`, and the placeable is being torn down around this hook — so
+    // the convenient test is the one that can throw inside a hook callback.
+    if (hovered && (hovered.document === doc || hovered.document?.id === doc?.id)) hovered = null;
+    // Unconditional, and not only for the hovered case: the token may have been carrying a light,
+    // so the level under the cursor can change whichever token went. It also covers an identity
+    // test that missed — `update`'s liveness guard then clears the reference, but only if
+    // something asks it to run.
+    schedule();
+  });
+
   Hooks.on("canvasTearDown", () => {
     hovered = null;
   });

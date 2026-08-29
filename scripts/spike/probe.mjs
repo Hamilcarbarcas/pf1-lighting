@@ -122,6 +122,12 @@ export function cellsAt(x, y) {
       kind: cell.kind,
       tier: cell.tier,
       tierName: cell.tier === undefined ? undefined : TIER_NAME[cell.tier],
+      // **The ground this cell is standing on**, and since §4.1.1a a darkness region is one of
+      // those. It is what `levelForTier` and `zonesFor` measure a light's zones against, so a
+      // light reading the scene's tier here rather than the region's is the whole failure mode
+      // of that change, and it is invisible in `tier` — which for a `clip` cell is undefined.
+      base: cell.base,
+      baseName: cell.base === undefined ? undefined : TIER_NAME[cell.base],
       emitter: cell.emitter?.id ?? null,
       suppressor: cell.suppressor?.id ?? null,
       holes: cell.holes?.length ?? 0,
