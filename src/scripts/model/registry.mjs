@@ -24,8 +24,9 @@
  */
 
 import { MODULE_ID, isSynthetic } from "../constants.mjs";
-import { brightnessAt, contributionAt, emissionOf, ZONE } from "./ramp.mjs";
-import { DEFAULT_EMITTER, DEFAULT_SUPPRESSOR, extinguishes } from "./contest.mjs";
+import { baseRadiusOf, brightnessAt, contributionAt, emissionOf, ZONE } from "./ramp.mjs";
+import { intersection } from "../geometry.mjs";
+import { breaks, DEFAULT_EMITTER, DEFAULT_SUPPRESSOR, extinguishes } from "./contest.mjs";
 import { TIER, tierCeiling, tierFromDarkness } from "./tiers.mjs";
 import { ambientTierAt } from "./areas.mjs";
 
@@ -238,6 +239,113 @@ class EmitterEntry extends Entry {
     const distance = Math.hypot(point.x - this.source.x, point.y - this.source.y);
     return brightnessAt(distance, this.emission, base);
   }
+
+  /* ------------------------------------------ */
+  /*  Cancellation reach (§4.1.2, §4.4a)        */
+  /* ------------------------------------------ */
+
+  /**
+   * Authored radius, unmultiplied — how far this emitter cancels darkness. DESIGN.md §4.4a.
+   *
+   * @remarks
+   * Not `source.data`, which low-light vision has already scaled, per client. `Infinity` with no
+   * document to read, degenerating {@link cancels} and {@link cancelPaths} to the source's own
+   * shape.
+   */
+  get cancelRadius() {
+    if (this.#cancelRadius === undefined) this.#cancelRadius = baseRadiusOf(this.source) ?? Infinity;
+    return this.#cancelRadius;
+  }
+
+  /** @type {number|undefined} */
+  #cancelRadius;
+
+  /**
+   * Radius half of {@link cancels}, without the containment test.
+   *
+   * @remarks
+   * Split out for `emittersAt`, which has already proved containment: it is the hottest loop here
+   * (§9.9) and `PIXI.Polygon#contains` walks a wall sweep of hundreds of vertices.
+   *
+   * @param {{x: number, y: number}} point
+   * @returns {boolean}
+   */
+  withinCancelRadius(point) {
+    const r = this.cancelRadius;
+    if (!Number.isFinite(r)) return true;
+    return Math.hypot(point.x - this.source.x, point.y - this.source.y) <= r;
+  }
+
+  /**
+   * Does this emitter annihilate a suppressor at this point?
+   *
+   * @remarks
+   * Containment as well as radius, so an intervening wall still stops it — `shape` is a wall sweep,
+   * a disc is not.
+   *
+   * @param {{x: number, y: number}} point
+   * @returns {boolean}
+   */
+  cancels(point) {
+    if (this.cancelsDarkness !== true || this.isGlobal) return false;
+    if (!this.contains(point)) return false;
+    return this.withinCancelRadius(point);
+  }
+
+  /**
+   * Area within which this emitter annihilates, as Clipper paths. DESIGN.md §4.1.2, §4.4a.
+   *
+   * @remarks
+   * `shape ∩ disc(origin, cancelRadius)` is exactly the sweep at the smaller radius, not an
+   * approximation: a sweep is the points within radius reachable without crossing a wall, and
+   * reachability does not depend on the radius.
+   *
+   * Returns `[path]` untouched with no multiplier in effect — the common case, and no op. Cached on
+   * `shape` identity like {@link path}.
+   *
+   * @param {number} scale
+   * @returns {{X: number, Y: number}[][]}
+   */
+  cancelPaths(scale) {
+    const path = this.path(scale);
+    if (!path) return [];
+
+    // `source.radius`, not the shape's extent: a bounding box would clear a square whose corners
+    // fall outside the disc.
+    const r = this.cancelRadius;
+    if (!Number.isFinite(r) || (this.source.radius ?? 0) <= r) return [path];
+
+    if (this.#cancelRef === this.shape && this.#cancelScale === scale) return this.#cancelPaths;
+
+    this.#cancelRef = this.shape;
+    this.#cancelScale = scale;
+    return (this.#cancelPaths = intersection(
+      [path],
+      [discPath(this.source.x, this.source.y, r, scale)]
+    ));
+  }
+
+  /** @type {PIXI.Polygon|undefined} */
+  #cancelRef;
+
+  /** @type {number|undefined} */
+  #cancelScale;
+
+  /** @type {{X: number, Y: number}[][]} */
+  #cancelPaths = [];
+}
+
+/** A circle as a Clipper path. 60 segments, matching `vision/umbra.discPath`. */
+function discPath(x, y, radius, scale, segments = 60) {
+  const path = new Array(segments);
+  for (let i = 0; i < segments; i++) {
+    const angle = (i / segments) * Math.PI * 2;
+    path[i] = {
+      X: Math.round((x + Math.cos(angle) * radius) * scale),
+      Y: Math.round((y + Math.sin(angle) * radius) * scale),
+    };
+  }
+  return path;
 }
 
 /** A suppressor: reduces or clamps whatever reaches it. */
@@ -358,15 +466,20 @@ function buildSuppressors() {
  * stopped drawing and withhold its mesh, and every readout, which should be able to say why a light
  * contributes nothing. {@link activeEmitters} is what resolution reads.
  *
- * Geometry and eligibility only; the contest is not re-run here. The consequence is one
- * second-order case this gets wrong: a daylight annihilating the darkness at the torch's own
- * position would leave the torch lit, and this still puts it out. Resolving it properly would mean
- * running the regional contest to decide which emitters exist, which is the input to that contest.
- * Deliberate, and cheap to revisit if a scene ever produces it.
+ * Geometry and eligibility only; the contest is not re-run here — with one exception. A *daylight*
+ * takes a darkness off the board over the overlap (§4.1.2), so a light standing in that slice is
+ * standing on ordinary ground and nothing puts it out.
+ *
+ * Still not the full contest. Annihilation is the only rule that removes a suppressor rather than
+ * out-lighting it (§4.1.1a), so it is the only thing that can answer "is this suppressor in force
+ * here" with no. Reach is {@link EmitterEntry#cancels} — authored radius, walls respected (§4.4a).
  */
 function markOriginSuppression(emitterEntries, suppressorEntries) {
   for (const emitter of emitterEntries) emitter.suppressedAtOrigin = false;
   if (!suppressorEntries.length) return;
+
+  // Empty on nearly every scene, which keeps the inner test off the common path.
+  const cancellers = emitterEntries.filter((e) => e.cancelsDarkness && !e.isGlobal);
 
   for (const emitter of emitterEntries) {
     // Global illumination has no origin to stand anywhere.
@@ -375,6 +488,8 @@ function markOriginSuppression(emitterEntries, suppressorEntries) {
     for (const suppressor of suppressorEntries) {
       if (!extinguishes(suppressor, emitter)) continue;
       if (!suppressor.contains(origin)) continue;
+      // Struck out here by a daylight, so it is not a darkness this light is standing in.
+      if (cancellers.some((c) => breaks(c, suppressor) && c.cancels(origin))) continue;
       emitter.suppressedAtOrigin = true;
       break;
     }
@@ -457,9 +572,13 @@ export function suppressors() {
  * against Dark is still present, and dropping it here would silently unstack it — the same class of
  * mistake as the `bright`-past-`dim` disappearance, absence leaving no trace.
  *
+ * `cancelsDarkness` is answered per point, not read off the entry (§4.4a): low-light vision can put
+ * a point inside a light's reach while leaving it outside the radius it counters over. `evaluate`
+ * spreads this over the entry's own fields, so this is the answer `contest.annihilate` sees.
+ *
  * @param {{x: number, y: number, elevation?: number}} point
- * @returns {{entry: EmitterEntry, B: number, zone: number, tier?: number, steps?: number,
- *   cap?: number}[]}
+ * @returns {{entry: EmitterEntry, B: number, zone: number, cancelsDarkness: boolean, tier?: number,
+ *   steps?: number, cap?: number}[]}
  */
 export function emittersAt(point) {
   const out = [];
@@ -468,7 +587,15 @@ export function emittersAt(point) {
     if (!entry.isGlobal && !entry.contains(point)) continue;
     const contribution = entry.contributionAt(point);
     if (contribution.zone === ZONE.NONE) continue;
-    out.push({ entry, B: entry.brightnessAt(point), ...contribution });
+    out.push({
+      entry,
+      B: entry.brightnessAt(point),
+      // Containment established above, so only the radius half is asked — and only of a light that
+      // claims to cancel at all.
+      cancelsDarkness:
+        entry.cancelsDarkness === true && !entry.isGlobal && entry.withinCancelRadius(point),
+      ...contribution,
+    });
   }
   return out;
 }

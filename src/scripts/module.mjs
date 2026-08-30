@@ -680,5 +680,5 @@ Hooks.once("ready", () => {
     },
   };
 
-  console.error(`${MODULE_ID} | ready — vertical slice. Try game.pf1Lighting.probe.stack()`);
+  // No ready banner: console output here is a requested readout or a real failure, nothing else.
 });

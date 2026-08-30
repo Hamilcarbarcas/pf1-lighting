@@ -305,6 +305,9 @@ function carveRegions(suppressors) {
  *
  * `effective` is what everything downstream clips against. `paths` stays available because a
  * canceller has to know the original overlap in order to remove its own light from it.
+ *
+ * Cuts against `cancelPaths`, not `path`: the shape is what low-light vision made of the canceller,
+ * the authored radius is what it counters over (§4.4a).
  */
 function resolveRegions(regions, emitters) {
   for (const region of regions) {
@@ -314,7 +317,7 @@ function resolveRegions(regions, emitters) {
     if (!breakers.length) {
       region.effective = region.paths;
     } else {
-      const broken = union(breakers.map((e) => e.path(SCALE)));
+      const broken = union(breakers.flatMap((e) => e.cancelPaths(SCALE)));
       region.effective = difference(region.paths, broken);
     }
     // `effectiveBoxes` was computed here until 2026-08-29 and read by exactly one thing, the
@@ -676,6 +679,45 @@ function outsideOf(domain, scale) {
 }
 
 /**
+ * Split the cancelled ground by which cancellers are spent on it. DESIGN.md §4.1.2.
+ *
+ * @remarks
+ * A canceller is out of play only where it cancelled something, and the stack pass needs one emitter
+ * list per run — so the parts must be disjoint and each must name its own set.
+ *
+ * Same fold as {@link ambientDomains}, exponential in overlapping cancellers. One canceller — every
+ * real scene — folds to a single part with no Clipper op: nothing to split against.
+ *
+ * `outside` precomputed because the caller runs once per ambient domain.
+ *
+ * @param {{emitter: object, paths: object[]}[]} spent
+ * @returns {{paths: object[], spent: object[], outside: object[]}[]}
+ */
+function partitionSpent(spent) {
+  let parts = [];
+
+  for (const entry of spent) {
+    const next = [];
+    let rest = entry.paths;
+
+    for (const part of parts) {
+      const both = intersection(part.paths, entry.paths);
+      if (both.length) next.push({ paths: both, spent: [...part.spent, entry.emitter] });
+      const only = difference(part.paths, entry.paths);
+      if (only.length) next.push({ paths: only, spent: part.spent });
+      // Parts are disjoint, so this walks `rest` down to the ground this canceller claims alone.
+      if (rest.length) rest = difference(rest, part.paths);
+    }
+
+    if (rest.length) next.push({ paths: rest, spent: [entry.emitter] });
+    parts = next;
+  }
+
+  for (const part of parts) part.outside = outsideOf(part, SCALE);
+  return parts;
+}
+
+/**
  * Compute the whole-scene cell decomposition.
  *
  * @param {object} [options]
@@ -879,17 +921,43 @@ export function compute({ filter = true } = {}) {
     }
   };
 
+  /**
+   * Where each canceller is spent. DESIGN.md §4.1.2.
+   *
+   * @remarks
+   * Same geometry as `selfCancelled` below, kept because the stack pass needs it too: an
+   * annihilated light contributes no `clip` cell *and* no term to a band sum, and `emitStacks` sums
+   * whatever list it is handed. Empty on scenes with no canceller.
+   */
+  const spent = [];
+
   for (const emitter of emitters) {
     const path = emitter.path(SCALE);
     const box = boundsOf(path);
     const { union: blocked, boxes } = classifyRegions(emitter, regions, cache);
 
-    // Where a daylight annihilated a suppressor it stops emitting too — the only place in the model
-    // where a light's own output is shaped by a suppressor it defeated (§4.1.2). Uses the region's
-    // original geometry, since `effective` is exactly the part this emitter already carved away.
-    const selfCancelled = emitter.cancelsDarkness
-      ? carved.regions.filter((r) => r.suppressor.level <= emitter.level).flatMap((r) => r.paths)
-      : [];
+    // Where a daylight annihilated a suppressor it stops emitting too — the only place a light's own
+    // output is shaped by a suppressor it defeated (§4.1.2). The region's original geometry, since
+    // `effective` is exactly the part this emitter carved away.
+    //
+    // Intersected with the canceller's reach (§4.4a): past that radius the darkness still stands and
+    // the canceller is an ordinary surviving light over it (§4.1.1a), so subtracting the whole
+    // region would punch out light it never cancelled.
+    let selfCancelled = [];
+    if (emitter.cancelsDarkness) {
+      const cancellable = carved.regions
+        .filter((r) => r.suppressor.level <= emitter.level)
+        .flatMap((r) => r.paths);
+      if (cancellable.length) {
+        const reach = emitter.cancelPaths(SCALE);
+        // Identity, not geometry: `cancelPaths` returns the emitter's own cached path when nothing
+        // enlarged it, and `difference` below only removes what lies inside it anyway. Keeps the op
+        // count unchanged on scenes with no multiplier.
+        selfCancelled =
+          reach.length === 1 && reach[0] === path ? cancellable : intersection(cancellable, reach);
+        if (selfCancelled.length) spent.push({ emitter, paths: selfCancelled });
+      }
+    }
 
     const remove = [...blocked, ...selfCancelled];
 
@@ -1029,15 +1097,28 @@ export function compute({ filter = true } = {}) {
 
   // --- `stack` — where two or more relative bands overlap. DESIGN.md §3.2.1. ---
   //
-  // Open ground first, exactly as before: every emitter, once per ambient domain, with everything
-  // a suppressor governs cut out.
+  // Open ground: every emitter, once per ambient domain, less what a suppressor governs and what a
+  // canceller is spent on (§4.1.2, {@link spent}). Cancelled ground is open ground at the ordinary
+  // ambient, so it differs only in the emitter list — same call, different clip.
+  const cancelled = spent.length ? partitionSpent(spent) : [];
+  const cancelledGround = cancelled.flatMap((part) => part.paths);
+
   const stacks = [];
-  if (!domains) stacks.push(...emitStacks(emitters, sceneTier, governed));
+
+  /** Open ground, then each cancelled part with its own cancellers dropped. */
+  const stackPass = (tier, clip) => {
+    stacks.push(...emitStacks(emitters, tier, [...clip, ...cancelledGround]));
+    for (const part of cancelled) {
+      const survivors = emitters.filter((e) => !part.spent.includes(e));
+      if (survivors.length < 2) continue; // one daylight and one torch: nothing to sum
+      stacks.push(...emitStacks(survivors, tier, [...clip, ...part.outside]));
+    }
+  };
+
+  if (!domains) stackPass(sceneTier, governed);
   else {
     for (const domain of domains.list) {
-      stacks.push(
-        ...emitStacks(emitters, domain.tier, [...governed, ...outsideOf(domain, SCALE)])
-      );
+      stackPass(domain.tier, [...governed, ...outsideOf(domain, SCALE)]);
     }
   }
 
@@ -1442,6 +1523,15 @@ export function explain() {
         kind: e.kind,
         level: e.level,
         cancelsDarkness: !!e.cancelsDarkness,
+        // Canceller only: `reach` is what low-light vision made of the light, `cancelRadius` what it
+        // was authored at (§4.4a). Equal numbers rule the multiplier out as the explanation for a
+        // wrong-sized overlap.
+        ...(e.cancelsDarkness
+          ? {
+              reach: +(e.source.radius ?? 0).toFixed(0),
+              cancelRadius: +e.cancelRadius.toFixed(0),
+            }
+          : {}),
         fullArea: +full.toFixed(0),
         clipArea: +kept.toFixed(0),
         removedPct: pct(kept, full),

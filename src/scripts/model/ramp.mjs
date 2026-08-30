@@ -125,6 +125,34 @@ export function brightnessAt(distance, emission, base = TIER.DARK) {
 }
 
 /**
+ * Radius with no low-light multiplier applied, in pixels. DESIGN.md §4.4a.
+ *
+ * @remarks
+ * PF1's `LLVMixin.getRadius()` scales `dim`/`bright` inside `_getLightSourceData()`
+ * (`pf1/module/canvas/low-light-vision.mjs:47-116`), so `source.data` is already multiplied — and
+ * multiplied per client. Read the document instead: the two multipliers are independent, so there
+ * is no single factor to divide back out.
+ *
+ * `externalRadius` folded in because `PointEffectSourceMixin._initialize` raises a non-zero radius
+ * to it (`point-effect-source.mjs:104`).
+ *
+ * @param {object} source - A PointLightSource
+ * @returns {number|null} Pixels, or `null` with no document to read
+ */
+export function baseRadiusOf(source) {
+  // AmbientLight keeps light config on `config`, TokenDocument on `light`.
+  const doc = source?.object?.document;
+  const config = doc?.config ?? doc?.light;
+  const d = canvas?.dimensions;
+  if (!config || !(d?.distance > 0)) return null;
+
+  const scale = d.size / d.distance;
+  const dim = Math.abs(Number(config.dim) || 0) * scale;
+  const bright = Math.abs(Number(config.bright) || 0) * scale;
+  return Math.max(dim, bright, source.data?.externalRadius ?? 0);
+}
+
+/**
  * Read an emitter's emission off a live light source.
  *
  * `data.bright` / `data.dim` are already in pixels by the time they reach the source (PF1's
