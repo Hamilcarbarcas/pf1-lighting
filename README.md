@@ -269,6 +269,7 @@ This setting has no effect on non-GM users.
 ![Configuration](assets/config-main.png)
 
 | Setting | Effect |
+| --- | --- |
 | **Lighting Presets** | Edit preset lighting configurations |
 | **Light Spill** | Configure the effects of light spill |
 | **Visuals** | Configure visual effects of lighting |
