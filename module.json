@@ -13,11 +13,11 @@
     "verified": "13"
   },
   "esmodules": [
-    "scripts/module.mjs"
+    "src/scripts/module.mjs"
   ],
   "styles": [
-    "styles/readout.css",
-    "styles/config.css"
+    "src/styles/readout.css",
+    "src/styles/config.css"
   ],
   "languages": [
     {
