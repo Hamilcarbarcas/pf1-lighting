@@ -1,5 +1,37 @@
 # PF1 Lighting
 
+**Manifest URL:** `https://github.com/Hamilcarbarcas/pf1-lighting/releases/latest/download/module.json`
+
+## Requirements
+- Foundry VTT v13
+- PF1e system v11.10
+
+## Contents
+
+- [Core features](#core-features)
+  - [New lighting model](#new-lighting-model)
+    - [Discrete levels](#discrete-levels)
+    - [Umbras](#umbras)
+    - [Vision mode reworks](#vision-mode-reworks)
+  - [Light sources](#light-sources)
+    - [Darkness sources](#darkness-sources)
+  - [Presets](#presets)
+  - [Overlapping increases](#overlapping-increases)
+  - [Ambient lighting changes](#ambient-lighting-changes)
+    - [Interior regions](#interior-regions)
+      - [Light spill](#light-spill)
+  - [Light level tooltip](#light-level-tooltip)
+  - [Token Vision](#token-vision)
+- [Configuration](#configuration)
+  - [Edit Presets](#edit-presets)
+  - [Light Spill](#light-spill-1)
+  - [Visuals](#visuals)
+- [Compatibility](#compatibility)
+- [Performance](#performance)
+- [More](#more)
+
+# Core features
+
 Reworked Foundry lighting to match Pathfinder 1e lighting rules.
 
 - Light levels are now defined as discrete values (supernatural dark, dark, dim, normal, bright)
@@ -10,10 +42,6 @@ Reworked Foundry lighting to match Pathfinder 1e lighting rules.
 - Magical daylight cancels darkness effects in its area
 - Indoor spaces can be defined in scenes that ignore ambient lighting
 - Low-light vision, Darkvision, See in Darkness, True Seeing and Blindsight all tooled to work RAW
-
-**Requires** Foundry VTT v13 and the Pathfinder 1e system v11.
-
-# Core features
 
 ## New lighting model
 
