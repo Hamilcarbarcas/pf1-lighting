@@ -2,17 +2,17 @@
  * Vertical slice, step 1 — document-less synthetic light sources with injected
  * polygons. DESIGN.md §8.1 and §6.5.
  *
- * Everything in §6.5 was verified by reading v13 source, never by running it. This
- * file is the experiment that turns that into evidence:
+ * Everything in §6.5 was verified by reading v13 source, never by running it. This file turns that
+ * into evidence:
  *
  *   - Can a source exist with no backing placeable? (`sourceId`, no `object`)
  *   - Does an injected polygon survive into the render?
- *   - Does our subclass coexist with PF1's and `limits`' mixins?
+ *   - Does the subclass coexist with PF1's and `limits`' mixins?
  *
  * Injection technique: let Foundry sweep normally, then narrow the result with
- * `PointSourcePolygon#applyConstraint`. That clones the polygon and preserves its
- * `config` and `bounds` (source-polygon.mjs:222), so downstream geometry code keeps
- * working. Assigning a bare `PIXI.Polygon` over `shape` would lose both.
+ * `PointSourcePolygon#applyConstraint`, which clones the polygon and preserves its `config` and
+ * `bounds` (source-polygon.mjs:222) so downstream geometry keeps working. Assigning a bare
+ * `PIXI.Polygon` over `shape` loses both.
  */
 
 import { MODULE_ID, SYNTHETIC_MARK } from "../constants.mjs";
@@ -25,9 +25,9 @@ let SyntheticLightSource = null;
 /**
  * Build the synthetic source class.
  *
- * Deferred until first use because `CONFIG.Canvas.lightSourceClass` is not final until
- * `canvasInit` — PF1 and `limits` both mix over it. Extending whatever is installed at
- * that moment is what puts us *on top of* them rather than beside them.
+ * Deferred until first use because `CONFIG.Canvas.lightSourceClass` is not final until `canvasInit`
+ * — PF1 and `limits` both mix over it. Extending whatever is installed at that moment lands on top
+ * of them rather than beside them.
  *
  * @returns {typeof foundry.canvas.sources.PointLightSource}
  */
@@ -37,14 +37,14 @@ function getSyntheticClass() {
   const Base = CONFIG.Canvas.lightSourceClass;
 
   SyntheticLightSource = class extends Base {
-    /** @see SYNTHETIC_MARK — lets other code skip our sources. */
+    /** @see SYNTHETIC_MARK — lets other code skip these sources. */
     [SYNTHETIC_MARK] = true;
 
     /** Optional PIXI shape the swept polygon is narrowed to. */
     constrainTo = null;
 
     /**
-     * A polygon used *instead of* sweeping. See {@link buildDirectShape}.
+     * A polygon used instead of sweeping. See {@link buildDirectShape}.
      * @type {PIXI.Polygon|null}
      */
     directPolygon = null;
@@ -52,14 +52,12 @@ function getSyntheticClass() {
     /**
      * Whether this source gets Foundry's soft-edge treatment.
      *
-     * Defaults **off** for synthetic sources. Measured 2026-08-21 (DESIGN.md §9.5):
-     * once source construction is pooled away, `PolygonMesher`'s Clipper offsetting
-     * passes — `ceil(|EDGE_OFFSET| / 3)` of them per source — become the dominant
-     * remaining cost, worth a ~3.9× difference.
+     * Defaults off for synthetic sources. Measured 2026-08-21 (DESIGN.md §9.5): once source
+     * construction is pooled away, `PolygonMesher`'s Clipper offsetting passes —
+     * `ceil(|EDGE_OFFSET| / 3)` per source — become the dominant remaining cost, worth ~3.9×.
      *
-     * Turning them off costs nothing here: soft edges only matter on real light
-     * sources, where a wall-cut shadow edge is visible. Synthetic tier fills have
-     * deliberately hard boundaries (§6.2 — umbra and darkness edges *should* be sharp).
+     * Costs nothing here: soft edges only matter on real light sources, where a wall-cut shadow
+     * edge is visible. Synthetic tier fills have deliberately hard boundaries (§6.2).
      *
      * @type {boolean}
      */
@@ -83,15 +81,14 @@ function getSyntheticClass() {
     /**
      * Build the source shape from a supplied polygon without running a wall sweep.
      *
-     * DESIGN.md §9.3 — the sweep is essentially the entire cost of creating a source
-     * on a wall-heavy scene (~0.63-0.83 ms vs ~0.12 ms on an empty one). Synthetic
-     * fills never need it: their polygon comes from the subdivision, which was itself
-     * derived from already-swept source shapes, so wall occlusion is *already baked
-     * in*. Sweeping again re-derives information we have and then discards most of it.
+     * DESIGN.md §9.3 — the sweep is essentially the entire cost of creating a source on a
+     * wall-heavy scene (~0.63-0.83 ms vs ~0.12 ms on an empty one). Synthetic fills never need it:
+     * their polygon comes from the subdivision, itself derived from already-swept source shapes, so
+     * wall occlusion is baked in. Sweeping again re-derives that and discards most of it.
      *
      * `PointSourcePolygon.create()` is `new → initialize() → compute()`
-     * (source-polygon.mjs:76-81); only `compute()` sweeps. So we do everything except
-     * that, then supply the points ourselves.
+     * (source-polygon.mjs:76-81), and only `compute()` sweeps — so run everything except that, then
+     * supply the points.
      */
     #buildDirectShape() {
       this._deleteEdges?.();
@@ -125,12 +122,11 @@ function getSyntheticClass() {
  * @param {number} [options.alpha=0.5]
  * @param {PIXI.Polygon|PIXI.Circle|PIXI.Rectangle} [options.constrainTo] - Sweep, then
  *   narrow the result to this shape
- * @param {PIXI.Polygon} [options.polygon] - Use this polygon directly and **skip the
- *   wall sweep entirely**. Mutually exclusive with `constrainTo`, and far cheaper — see
- *   DESIGN.md §9.3
- * @param {boolean} [options.redraw=true] - Ask Foundry to refresh lighting afterwards.
- *   Pass false when spawning in bulk and refresh once at the end — otherwise the
- *   perception queue dominates any timing you take around this call.
+ * @param {PIXI.Polygon} [options.polygon] - Use this polygon directly and skip the wall sweep
+ *   entirely. Mutually exclusive with `constrainTo`, and far cheaper — see DESIGN.md §9.3
+ * @param {boolean} [options.redraw=true] - Ask Foundry to refresh lighting afterwards. Pass false
+ *   when spawning in bulk and refresh once at the end, or the perception queue dominates any
+ *   timing taken around this call.
  * @returns {object} The attached source
  */
 export function spawn({
@@ -162,8 +158,8 @@ export function spawn({
   source.directPolygon = polygon;
   source.softEdges = softEdges;
 
-  // initialize() builds the shape; add() attaches and configures. In that order the
-  // shape exists before anything tries to render it.
+  // initialize() builds the shape, add() attaches and configures. In that order the shape exists
+  // before anything tries to render it.
   source.initialize({
     x,
     y,
@@ -185,8 +181,8 @@ export function spawn({
 }
 
 /**
- * A regular polygon centred on a point — a cheap stand-in for a subdivision cell when
- * testing the no-sweep path.
+ * A regular polygon centred on a point — a cheap stand-in for a subdivision cell when testing the
+ * no-sweep path.
  *
  * @param {number} x
  * @param {number} y
@@ -243,9 +239,9 @@ export function refresh() {
 /**
  * Re-attach synthetic sources after Foundry rebuilds its light source collection.
  *
- * `EffectsCanvasGroup#initializeLightSources` iterates the existing collection and
- * fires this hook afterwards, with a docstring explicitly inviting packages to add
- * sources programmatically (effects.mjs:172-175).
+ * `EffectsCanvasGroup#initializeLightSources` iterates the existing collection and fires this hook
+ * afterwards, its docstring explicitly inviting packages to add sources programmatically
+ * (effects.mjs:172-175).
  */
 export function registerHooks() {
   Hooks.on("initializeLightSources", () => {

@@ -14,10 +14,10 @@ export const TIER = Object.freeze({
 });
 
 /**
- * **English, and deliberately not translated.** This is the developer surface: every
- * `game.pf1Lighting` readout prints it, and `api.tierName()` hands it to other modules as the
- * name of a tier. A consumer keying off `"Supernatural Dark"` must not break because someone
- * changed their language. {@link tierLabel} is the one to show a user.
+ * English, and deliberately not translated: this is the developer surface. Every
+ * `game.pf1Lighting` readout prints it, and `api.tierName()` hands it to other modules as a tier's
+ * name, so a consumer keying off `"Supernatural Dark"` must not break on a language change.
+ * {@link tierLabel} is the one to show a user.
  */
 export const TIER_NAME = Object.freeze({
   [TIER.SUPERNATURAL_DARK]: "Supernatural Dark",
@@ -40,12 +40,12 @@ const TIER_KEY = Object.freeze({
  * A tier's name as a user should read it.
  *
  * @remarks
- * **Render time only** — `game.i18n` has no translations loaded during `init` (see `i18n.mjs`),
- * so a module-level `const` built from this would freeze the keys instead of the names. Every
- * caller is inside `_renderHTML`, a hook, or a notification, which is late enough.
+ * Render time only: `game.i18n` has no translations loaded during `init` (see `i18n.mjs`), so a
+ * module-level `const` built from this would freeze the keys instead of the names. Every caller is
+ * inside `_renderHTML`, a hook, or a notification, all late enough.
  *
- * Falls back to {@link TIER_NAME} for an unrecognised tier rather than returning a raw key,
- * because the one caller that can be handed one is the readout, mid-drag.
+ * Falls back to {@link TIER_NAME} for an unrecognised tier rather than returning a raw key — the
+ * one caller that can be handed one is the readout, mid-drag.
  */
 export const tierLabel = (tier) =>
   TIER_KEY[tier] ? game.i18n.localize(`PF1LIGHTING.Tier.${TIER_KEY[tier]}`) : (TIER_NAME[tier] ?? "");
@@ -71,10 +71,9 @@ const TIER_MAX = TIER.BRIGHT;
  * Move a tier up or down whole rungs, bounded.
  *
  * @remarks
- * The primitive §3.2.1's band stacking is defined on. Bounded at Dark rather than at
- * Supernatural Dark for the same reason {@link tierOf} never returns it: Supernatural Dark is
- * not a point anyone can *arrive* at by adding or removing light, only somewhere a suppressor
- * with the right `floor` can put you.
+ * The primitive §3.2.1's band stacking is defined on. Bounded at Dark rather than Supernatural Dark
+ * for the reason {@link tierOf} never returns it: Supernatural Dark is not somewhere adding or
+ * removing light can arrive at, only somewhere a suppressor with the right `floor` puts a creature.
  *
  * @param {number} tier - A {@link TIER} value
  * @param {number} steps - Rungs to move; may be negative
@@ -101,16 +100,15 @@ export function tierOf(B) {
  * Threshold a brightness into a tier, honouring a suppressor's floor.
  *
  * @remarks
- * **The only correct way to get a tier out of a suppressed brightness**, and the reason it
- * is a shared function rather than three lines at each call site: `tierOf` cannot express
- * Supernatural Dark, because thresholding cannot distinguish it from Dark — both are `B = 0`.
- * The distinction comes from *why* it is zero and how far the suppressor is licensed to
- * reach, so it can only be applied where the suppressor is known.
+ * The only correct way to get a tier out of a suppressed brightness, and why it is a shared function
+ * rather than three lines per call site: `tierOf` cannot express Supernatural Dark, thresholding
+ * being unable to tell it from Dark — both are `B = 0`. The distinction comes from why it is zero
+ * and how far the suppressor is licensed to reach, so it applies only where the suppressor is known.
  *
- * Written after `field()` and `evaluate()` disagreed about it (found 2026-08-22): `evaluate`
- * had the floor logic, `field` called plain `tierOf`, and so every `dark` cell reported Dark
- * however supernatural its source. That silently disabled both the renderer's black fill
- * (`darkeningStrength` fires only at Supernatural Dark) and the umbra's top rank.
+ * Written after `field()` and `evaluate()` disagreed about it (2026-08-22): `evaluate` had the floor
+ * logic, `field` called plain `tierOf`, so every `dark` cell reported Dark however supernatural its
+ * source. That silently disabled both the renderer's black fill (`darkeningStrength` fires only at
+ * Supernatural Dark) and the umbra's top rank.
  *
  * @param {number} B - Brightness after the suppressor's transform
  * @param {object} [options]
@@ -126,7 +124,7 @@ export function resolveTier(B, { suppressed = true, floor = TIER.DARK } = {}) {
 
 /**
  * The `B` value at the top of a tier's band. Used when a suppressor demotes a tier —
- * "reduce one step" lands you at the brightest end of the tier below.
+ * "reduce one step" lands at the brightest end of the tier below.
  *
  * @param {number} tier - A {@link TIER} value
  * @returns {number} Brightness, 0..1
@@ -150,10 +148,9 @@ export function tierCeiling(tier) {
  * Step a brightness value down by whole tiers.
  *
  * @remarks
- * Reduction is defined on tiers, not on B, so this quantises. A point at B=0.87
- * (Normal) reduced one step lands at exactly B=0.5 (top of Dim) rather than
- * retaining its position within the band. See DESIGN.md Appendix B for the open
- * question about whether that is the behaviour we want.
+ * Reduction is defined on tiers rather than on B, so this quantises: a point at B=0.87 (Normal)
+ * reduced one step lands at exactly B=0.5, the top of Dim, rather than keeping its position within
+ * the band. DESIGN.md Appendix B holds the open question about whether that is the right behaviour.
  *
  * @param {number} B - Brightness, 0..1
  * @param {number} steps - Whole tiers to descend
@@ -185,37 +182,33 @@ export function clampToTier(B, maxTier) {
 /* -------------------------------------------- */
 
 /**
- * Tier → **darkness level**, the `[0,1]` scalar the darkness-level texture carries.
+ * Tier → darkness level, the `[0,1]` scalar the darkness-level texture carries.
  *
  * @remarks
- * **In `model/`, not `render/`, since 2026-08-23**, and the move is the point rather than
- * tidying. §3.2.1's band stacking is additive on rungs, so the *ambient* rung is the base of
- * every sum in the model — and it used to come from `tierOf(1 - darknessLevel)`, a completely
- * separate quantisation from the one the renderer paints with. Two ladders under one sum is a
- * bug waiting for the first scene whose darkness sits near a boundary. There is one ladder
- * now, and `render/levels.mjs` re-exports it so nothing else moved.
+ * In `model/` rather than `render/` since 2026-08-23, and the move is the point rather than tidying.
+ * §3.2.1's band stacking is additive on rungs, so the ambient rung is the base of every sum in the
+ * model — and it used to come from `tierOf(1 - darknessLevel)`, a separate quantisation from the one
+ * the renderer paints with. Two ladders under one sum is a bug waiting for the first scene whose
+ * darkness sits near a boundary. There is one ladder now, and `render/levels.mjs` re-exports it so
+ * nothing else moved.
  *
- * A different axis from a *lighting level* (`render/levels.levelForTier`) and not a
- * rearrangement of it. A lighting level says how a light source paints relative to the ambient;
- * a darkness level **is** the ambient, per fragment:
+ * A different axis from a lighting level (`render/levels.levelForTier`), not a rearrangement of it.
+ * A lighting level says how a light source paints relative to the ambient; a darkness level is the
+ * ambient, per fragment:
  *
  * ```glsl
  * computedDarknessLevel = texture2D(darknessLevelTexture, vSamplerUvs).r;
  * computedBackgroundColor = mix(ambientDaylight, ambientDarkness, computedDarknessLevel);
  * ```
  *
- * Every lighting *and* vision shader samples it, which is the property that made §7.0's
- * stand-in light fills obsolete: a region written here keeps its brightness **through** a
- * vision source's paint, so god's eye, *true seeing* and darkvision all still read the map's
- * light levels.
+ * Every lighting and vision shader samples it, the property that made §7.0's stand-in light fills
+ * obsolete: a region written here keeps its brightness through a vision source's paint, so god's
+ * eye, true seeing and darkvision all still read the map's light levels.
  *
- * ## Why these numbers
- *
- * Two fixed points, then even spacing between them. **Dark is 1.0** — Dark means no light, and
- * `ambientDarkness` is what no light looks like. **Supernatural Dark shares it**, because the
- * darkness source's own overlay already tells the two apart and is the better distinction.
- * That leaves Bright at 0 — full daylight is our Bright tier — with Normal and Dim dividing
- * the middle evenly.
+ * The numbers are two fixed points with even spacing between. Dark is 1.0, Dark meaning no light
+ * and `ambientDarkness` being what no light looks like; Supernatural Dark shares it, the darkness
+ * source's own overlay already telling the two apart and being the better distinction. That leaves
+ * Bright at 0 — full daylight is the Bright tier — with Normal and Dim dividing the middle evenly.
  *
  * @type {Record<number, number>}
  */
@@ -223,9 +216,9 @@ export const TIER_TO_DARKNESS = Object.freeze({
   [TIER.BRIGHT]: 0,
   [TIER.NORMAL]: 1 / 3,
   [TIER.DIM]: 2 / 3,
-  // **Dark and Supernatural Dark share a level, deliberately** (Hamilcarbarcas, 2026-08-23). Dark
-  // means no light, and `ambientDarkness` is what no light looks like — there is nothing below
-  // it to reserve. Supernatural Dark is told apart by the darkness source's own overlay.
+  // Dark and Supernatural Dark share a level, deliberately (2026-08-23). Dark means no light and
+  // `ambientDarkness` is what no light looks like, so there is nothing below it to reserve.
+  // Supernatural Dark is told apart by the darkness source's own overlay.
   [TIER.DARK]: 1,
   [TIER.SUPERNATURAL_DARK]: 1,
 });
@@ -233,11 +226,11 @@ export const TIER_TO_DARKNESS = Object.freeze({
 /**
  * Named alternatives, so the choice can be made by looking at a scene rather than by argument.
  *
- * - **`matched`** is {@link TIER_TO_DARKNESS}, the default.
- * - **`even`** gives Supernatural Dark a level of its own, at the cost of Dark no longer
- *   meaning "no light". What the §7.0 spike measured, literally.
- * - **`bands`** is `1 - tierCeiling(tier)`, so ambient never lifts past its own `B` band and a
- *   dark scene stays dark. Its cost is that Bright/Normal and Dark/Supernatural sit 0.1 apart.
+ * - `matched` is {@link TIER_TO_DARKNESS}, the default.
+ * - `even` gives Supernatural Dark a level of its own, at the cost of Dark no longer meaning no
+ *   light. Literally what the §7.0 spike measured.
+ * - `bands` is `1 - tierCeiling(tier)`, so ambient never lifts past its own `B` band and a dark
+ *   scene stays dark. Its cost is Bright/Normal and Dark/Supernatural sitting 0.1 apart.
  */
 export const DARKNESS_PRESETS = Object.freeze({
   matched: TIER_TO_DARKNESS,
@@ -282,23 +275,21 @@ const AMBIENT_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
  * A scene darkness level → the ambient tier, **through the same table the renderer paints**.
  *
  * @remarks
- * The inverse of {@link TIER_TO_DARKNESS}, and the base of every additive sum in §3.2.1. It
- * replaces `tierOf(1 - darknessLevel)`, which quantised the identical quantity on the
- * *threshold* ladder instead — a second answer to the same question, and the one the picture
- * did not use.
+ * The inverse of {@link TIER_TO_DARKNESS} and the base of every additive sum in §3.2.1. It replaces
+ * `tierOf(1 - darknessLevel)`, which quantised the identical quantity on the threshold ladder — a
+ * second answer to the same question, and the one the picture did not use.
  *
- * **Nearest rung, ties to the darker.** With the default table a scene at `darkness = 0.5`
- * sits exactly between Normal (⅓) and Dim (⅔), and resolving the tie downward keeps the
- * behaviour the threshold ladder had. It also makes the darkness slider step visibly between
- * tiers rather than sliding through them, which is the honest presentation of a quantised
- * model.
+ * Nearest rung, ties to the darker. With the default table a scene at `darkness = 0.5` sits exactly
+ * between Normal (⅓) and Dim (⅔), and resolving downward keeps the threshold ladder's behaviour. It
+ * also makes the darkness slider step visibly between tiers rather than sliding through them, the
+ * honest presentation of a quantised model.
  *
- * **The tie is decided with a tolerance, not on exact equality** (2026-08-28). A midpoint
+ * The tie is decided with a tolerance rather than on exact equality (2026-08-28). A midpoint
  * computed as `(a + b) / 2` is not reliably equidistant in binary: `(2/3 + 1) / 2` sits one ulp
- * nearer ⅔ than 1, so the Dim/Dark boundary resolved to *Dim* while the Normal/Dim boundary at
- * 0.5 resolved to *Dim* as intended — the rule held or broke depending on which rungs it fell
- * between. Found by {@link darknessBand} failing to round-trip its own lower edge. Anything the
- * tolerance changes was decided by float noise before it.
+ * nearer ⅔ than 1, so the Dim/Dark boundary resolved to Dim while the Normal/Dim boundary at 0.5
+ * resolved to Dim as intended — the rule held or broke depending on which rungs it fell between.
+ * Found by {@link darknessBand} failing to round-trip its own lower edge. Anything the tolerance
+ * changes was decided by float noise before it.
  *
  * @param {number} darkness - 0..1
  * @returns {number} A {@link TIER} value in `[TIER.DARK, TIER.BRIGHT]`
@@ -323,38 +314,13 @@ export function tierFromDarkness(darkness) {
 const TIE = 1e-9;
 
 /**
- * The span of darkness levels that {@link tierFromDarkness} answers `tier` for.
- *
- * @remarks
- * The inverse of `tierFromDarkness` as a **range** rather than a point, and the thing anything
- * comparing a raw darkness number against a tier actually needs. `darknessTable()[tier]` is the
- * level a tier *paints* at; it is not the set of levels that *read* as that tier, and a control
- * built on the point rather than the band is wrong for every scene whose darkness was not set
- * through §10.5's dropdown. See §10.4.1 — Foundry's own activation test is
- * `canvas.darknessLevel.between(min, max)` on the raw number.
- *
- * Nearest rung means the edges are the midpoints to the neighbouring rungs, and ties-to-the-darker
- * means the band is **`[from, to)`** — closed at the bright end, open at the dark end. A caller
- * feeding an inclusive comparison has to close `to` itself.
- *
- * Neighbours are found by sorting on level rather than by position in {@link AMBIENT_TIERS},
- * because the table is four editable settings and nothing stops a GM from making Dim brighter
- * than Normal. A non-monotone table gives degenerate bands here rather than crossed ones; the
- * tie rule in `tierFromDarkness` is the one place the two can still disagree, and only for a
- * table that has already made a tier unreachable.
- *
- * @param {number} tier - A {@link TIER} value the ambient can hold
- * @returns {{from: number, to: number}} Darkness levels, `from` inclusive and `to` exclusive
- */
-/**
  * How far below a band's open upper edge to land.
  *
  * @remarks
- * {@link darknessBand} returns `[from, to)` but `Number#between` is **inclusive at both ends**
- * (`primitives/number.mjs:83`, and `light.mjs:159` calls it with no third argument), so the dark
- * end has to be closed by hand. It matters at exactly one value per boundary and that value is
- * reachable: the Normal/Dim edge under the default table is 0.5, which is where a hand-dragged
- * darkness slider likes to sit.
+ * {@link darknessBand} returns `[from, to)` but `Number#between` is inclusive at both ends
+ * (`primitives/number.mjs:83`, and `light.mjs:159` calls it with no third argument), so the dark end
+ * is closed by hand. It matters at exactly one value per boundary, and that value is reachable: the
+ * Normal/Dim edge under the default table is 0.5, where a hand-dragged darkness slider likes to sit.
  */
 const EDGE = 1e-6;
 
@@ -362,13 +328,13 @@ const EDGE = 1e-6;
  * A tier range → the `darkness.min`/`max` pair Foundry gates a light source on.
  *
  * @remarks
- * **Here rather than in `ui/light-config.mjs`, where it began.** The preset editor needs the same
+ * Here rather than in `ui/light-config.mjs`, where it began: the preset editor needs the same
  * arithmetic to store an activation range (§10.2.1), and two copies of a rounding rule is how the
- * sheet and the preset table would come to disagree about which tier a light switches on at.
+ * sheet and the preset table come to disagree about which tier a light switches on at.
  *
- * The **full ladder is `{min: 0, max: 1}`** — Foundry's own defaults, i.e. always on — because
+ * The full ladder is `{min: 0, max: 1}` — Foundry's own defaults, always on — because
  * `darknessBand` opens the brightest tier at 0 and closes the darkest at 1. That is what lets a
- * preset express *always* by simply not carrying a range.
+ * preset express always by simply not carrying a range.
  *
  * @param {number} brightest - The brightest ambient this light is on at
  * @param {number} darkest - The darkest ambient this light is on at
@@ -378,13 +344,36 @@ export function activationRange(brightest, darkest) {
   const bright = darknessBand(brightest);
   const dark = darknessBand(darkest);
   return {
-    // Closed at the bright end already — a midpoint belongs to the darker tier, which is the
-    // one we are starting from.
+    // Closed at the bright end already — a midpoint belongs to the darker tier, which is where
+    // this starts from.
     min: bright.from,
     max: dark.to >= 1 ? 1 : dark.to - EDGE,
   };
 }
 
+/**
+ * The span of darkness levels that {@link tierFromDarkness} answers `tier` for.
+ *
+ * @remarks
+ * The inverse of `tierFromDarkness` as a range rather than a point, which is what anything comparing
+ * a raw darkness number against a tier needs. `darknessTable()[tier]` is the level a tier paints at,
+ * not the set of levels that read as that tier, and a control built on the point rather than the
+ * band is wrong for every scene whose darkness was not set through §10.5's dropdown. See §10.4.1 —
+ * Foundry's own activation test is `canvas.darknessLevel.between(min, max)` on the raw number.
+ *
+ * Nearest rung means the edges are the midpoints to the neighbouring rungs, and ties-to-the-darker
+ * means the band is `[from, to)`: closed at the bright end, open at the dark end. A caller feeding
+ * an inclusive comparison has to close `to` itself.
+ *
+ * Neighbours are found by sorting on level rather than by position in {@link AMBIENT_TIERS}, the
+ * table being four editable settings with nothing stopping a GM making Dim brighter than Normal. A
+ * non-monotone table gives degenerate bands here rather than crossed ones; the tie rule in
+ * `tierFromDarkness` is the one place the two can still disagree, and only for a table that has
+ * already made a tier unreachable.
+ *
+ * @param {number} tier - A {@link TIER} value the ambient can hold
+ * @returns {{from: number, to: number}} Darkness levels, `from` inclusive and `to` exclusive
+ */
 export function darknessBand(tier) {
   const level = (t) => table[t] ?? 1;
   const ordered = [...AMBIENT_TIERS].sort((a, b) => level(a) - level(b));

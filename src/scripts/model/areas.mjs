@@ -1,59 +1,52 @@
 /**
  * *Restrict Global Illumination* — a region that moves the light-level floor. DESIGN.md §10.7.
  *
- * Hamilcarbarcas's fourth control point was *"a region that excludes global illumination"*, and this is
- * that generalised by one step: a region carrying a **tier** and a **mode**, which sets, lowers
- * or raises the ambient light level inside it. "Exclude global illumination" is *at most Dark*.
+ * The fourth control point was a region that excludes global illumination, generalised by one
+ * step: a region carrying a tier and a mode, which sets, lowers or raises the ambient light level
+ * inside it. Exclude global illumination is at-most-Dark.
  *
- * The name is the scope. This changes **global illumination and nothing else** — it is not a
- * dimmer, not a suppressor, and it has no opinion about any light in it. Everything below that
- * looks like a general "ambient" mechanism is that one claim seen from a different angle.
+ * The name is the scope. This changes global illumination and nothing else — not a dimmer, not a
+ * suppressor, with no opinion about any light in it. Everything below that looks like a general
+ * ambient mechanism is that one claim from a different angle.
  *
- * ## Why not core's `AdjustDarknessLevel`
+ * Not core's `AdjustDarknessLevel`, because this module paints over it: core's behaviour builds a
+ * `RegionMesh` with `AdjustDarknessLevelRegionShader` into
+ * `canvas.effects.illumination.darknessLevelMeshes` (`adjust-darkness-level.mjs:66-88`), and
+ * `render/darkness-texture.mjs` builds meshes of the same class, with the same shader, in
+ * `MODE_OVERRIDE`, into the same container. `addChild` appends, these draw last, and the ground
+ * fill covers the whole scene rect, so the region's value is overwritten everywhere it could
+ * matter.
  *
- * Because we paint over it, and reported so: core's behaviour builds a `RegionMesh` with
- * `AdjustDarknessLevelRegionShader` into `canvas.effects.illumination.darknessLevelMeshes`
- * (`adjust-darkness-level.mjs:66-88`), and `render/darkness-texture.mjs` builds meshes of the
- * same class, with the same shader, in `MODE_OVERRIDE`, into the same container. `addChild`
- * appends, ours draw last, and our ground fill covers the whole scene rect. The region's value
- * is overwritten everywhere it could matter.
+ * Cooperating with it was possible and wrong for §4.1.1's reason: it makes the picture the arbiter
+ * of a value the model owns, composing by draw order rather than by the contest.
  *
- * Cooperating with it was possible and wrong for §4.1.1's reason: it makes the *picture* the
- * arbiter of a value the model owns, and composes by draw order rather than by the contest.
- *
- * ## What this is, in the model
- *
- * The ambient tier is `A` — the base every §3.2.1 band adds rungs to, and what a suppressor
- * transforms *down from*. An ambient area makes `A` **position-dependent** and changes nothing
- * else. Concretely:
+ * In the model, the ambient tier is `A` — the base every §3.2.1 band adds rungs to, and what a
+ * suppressor transforms down from. An ambient area makes `A` position-dependent and changes nothing
+ * else:
  *
  * - Lights inside still light, and still add their bands. A torch in an unlit cellar is a torch.
  * - A *darkness* inside still suppresses, from the lower base.
- * - The area casts **no umbra** and is not a suppressor. It is not magical darkness; it is an
- *   unlit room. `castsUmbra` never sees it.
+ * - The area casts no umbra and is not a suppressor. It is not magical darkness, it is an unlit
+ *   room; `castsUmbra` never sees it.
  * - Nothing about it is observer-relative.
  *
- * That is the whole feature, and it is why it composes: everything downstream already reads `A`
- * through {@link ambientTierAt}.
+ * That is the whole feature, and why it composes: everything downstream already reads `A` through
+ * {@link ambientTierAt}.
  *
- * ## How it reaches the screen
+ * It draws nothing of its own. `field.compute` emits the area as an ordinary `kind: "ambient"` cell
+ * at the area's tier, `render/paint.mjs` puts it in the darkness-level texture with every other
+ * ground cell, and §7.0's shader threshold discards global illumination per fragment wherever that
+ * texture reads darker than {@link globalLightCutoff}. No polygon on the global light source, no
+ * second mechanism.
  *
- * It does not draw anything of its own. `field.compute` emits the area as an ordinary
- * `kind: "ambient"` cell at the area's tier, `render/paint.mjs` puts it in the darkness-level
- * texture with every other ground cell, and §7.0's shader threshold discards global
- * illumination per fragment wherever that texture reads darker than {@link globalLightCutoff}.
- * No polygon on the global light source, no second mechanism.
+ * So it needs Model global illumination on to be visible. With it off the model answers correctly —
+ * the readout, perception and detection all move — and the map does not change, the texture being
+ * the only channel through which anything darkens below global light. {@link status} reports that
+ * rather than leaving it to be discovered.
  *
- * **So this needs *Model global illumination* on to be visible.** With it off the model answers
- * correctly — the readout, perception and detection all move — and the map does not change,
- * because the texture is the only channel through which anything can be darkened below global
- * light. {@link status} reports that rather than leaving it to be discovered.
- *
- * ## The cost, and the case that must stay free
- *
- * A scene with no ambient areas must take exactly the path it took before this existed, down to
- * the Clipper op count. {@link areas} returns an empty array and every consumer's `if` short-
- * circuits — the same discipline as the no-suppressor fast path in `field.compute`.
+ * A scene with no ambient areas must take exactly the path it took before this existed, down to the
+ * Clipper op count. {@link areas} returns an empty array and every consumer's `if` short-circuits —
+ * the same discipline as the no-suppressor fast path in `field.compute`.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -65,11 +58,11 @@ import { TIER, TIER_NAME, tierLabel } from "./tiers.mjs";
  * The behavior type key.
  *
  * @remarks
- * Foundry namespaces module-provided sub-types as `${moduleId}.${type}`, and the bare half has
- * to be declared in `module.json` under `documentTypes.RegionBehavior` — a data-model class
- * registered into `CONFIG.RegionBehavior.dataModels` without the manifest entry is never offered
- * in the *Add Behavior* list. So this string is authored in two places that must agree, and the
- * manifest half is why the feature needs a **full Foundry reload** rather than an F5.
+ * Foundry namespaces module-provided sub-types as `${moduleId}.${type}`, and the bare half must be
+ * declared in `module.json` under `documentTypes.RegionBehavior` — a data-model class registered
+ * into `CONFIG.RegionBehavior.dataModels` without the manifest entry is never offered in the Add
+ * Behavior list. So this string is authored in two places that must agree, and the manifest half is
+ * why the feature needs a full Foundry reload rather than an F5.
  */
 export const BEHAVIOR_TYPE = `${MODULE_ID}.globalIllumination`;
 
@@ -77,14 +70,13 @@ export const BEHAVIOR_TYPE = `${MODULE_ID}.globalIllumination`;
  * How an area's tier combines with the scene's.
  *
  * @remarks
- * `AT_MOST` is the default, and the reason is time of day. *Set* looks like the obvious
- * semantics until an outdoor scene's ambient drops to Dark at night, at which point a cellar
- * configured *set Dark* is exactly as bright as the field outside it — and a cellar configured
- * *set Dim* is **brighter**. A room that is unlit is unlit relative to whatever the sky is
- * doing, which is a clamp, not an assignment.
+ * `AT_MOST` is the default, for time of day. Set looks like the obvious semantics until an outdoor
+ * scene's ambient drops to Dark at night, at which point a cellar configured set-Dark is exactly as
+ * bright as the field outside it, and one configured set-Dim is brighter. An unlit room is unlit
+ * relative to whatever the sky is doing, which is a clamp rather than an assignment.
  *
- * `SET` is kept because a magically lit vault on a dark map is a real case and a clamp cannot
- * express it. `AT_LEAST` is that case's other half and costs one line.
+ * `SET` is kept because a magically lit vault on a dark map is a real case a clamp cannot express.
+ * `AT_LEAST` is that case's other half and costs one line.
  */
 export const MODE = Object.freeze({
   SET: "set",
@@ -109,14 +101,14 @@ const MODE_NAME = Object.freeze({
  * The two choice tables, as **functions**.
  *
  * @remarks
- * **Not constants, and not localised keys either.** `defineSchema` runs at `init`, where
- * `game.i18n` still holds no translations (see `i18n.mjs`) — so a table built here would freeze
- * the keys. And Foundry only localises a choice label when the caller passes `localize: true`,
- * which `RegionBehaviorConfig` does not.
+ * Not constants, and not localised keys either. `defineSchema` runs at `init`, where `game.i18n`
+ * holds no translations (see `i18n.mjs`), so a table built here would freeze the keys. And Foundry
+ * localises a choice label only when the caller passes `localize: true`, which
+ * `RegionBehaviorConfig` does not.
  *
- * A function is the way out that Foundry already supports: `StringField` and `NumberField` both
- * accept one for `choices` and call it at validate and at render (`fields.mjs` — `if (choices
- * instanceof Function) choices = choices()`), which is late enough for both.
+ * A function is the way out Foundry already supports: `StringField` and `NumberField` both accept
+ * one for `choices` and call it at validate and at render (`fields.mjs` — `if (choices instanceof
+ * Function) choices = choices()`), late enough for both.
  */
 const MODE_LABEL = () => ({
   [MODE.SET]: t("Behavior.GlobalIllumination.Mode.set"),
@@ -136,18 +128,17 @@ const TIER_CHOICES = () =>
  * Build the `RegionBehaviorType` subclass.
  *
  * @remarks
- * Built inside a function rather than at module scope because `foundry.data.regionBehaviors`
- * does not exist until Foundry's own modules have evaluated, and an ES import of this file runs
- * before that. Called from {@link registerBehavior} at `init`.
+ * Built inside a function rather than at module scope, `foundry.data.regionBehaviors` not existing
+ * until Foundry's own modules have evaluated while an ES import of this file runs before that.
+ * Called from {@link registerBehavior} at `init`.
  *
- * **No `static events`.** Every other behaviour in core reacts to tokens entering and leaving;
- * this one is a passive value that the model reads by position, so there is no event whose
- * firing would tell us anything. What it needs instead is *invalidation*, which is
- * {@link registerHooks} — a different mechanism for a different question.
+ * No `static events`. Every other behaviour in core reacts to tokens entering and leaving; this one
+ * is a passive value the model reads by position, so no event's firing would say anything. What it
+ * needs instead is invalidation, which is {@link registerHooks}.
  *
- * A field's `label` and `hint` are handed over as **keys**, which the form-group helper localises
- * at render — the same contract every setting in the module now uses. `choices` cannot be, and
- * takes a function instead; see {@link MODE_LABEL}.
+ * A field's `label` and `hint` are handed over as keys, localised by the form-group helper at
+ * render — the contract every setting in the module uses. `choices` cannot be, and takes a function
+ * instead; see {@link MODE_LABEL}.
  */
 function defineBehavior() {
   const { StringField, NumberField } = foundry.data.fields;
@@ -182,37 +173,35 @@ function defineBehavior() {
  * Register the data model and its icon.
  *
  * @remarks
- * **The label is not set here, and the first build's attempt to was wrong** (found by Hamilcarbarcas
- * 2026-08-26 — the *Create Region Behavior* dropdown showed the raw type key). Assigning a plain
- * English string into `CONFIG.RegionBehavior.typeLabels` works in two of the three places Foundry
- * shows it and fails in the one that matters most:
+ * The label is not set here, and the first build's attempt to was wrong (2026-08-26 — the Create
+ * Region Behavior dropdown showed the raw type key). Assigning a plain English string into
+ * `CONFIG.RegionBehavior.typeLabels` works in two of the three places Foundry shows it and fails in
+ * the one that matters most:
  *
  * ```js
  * let label = CONFIG[this.documentName]?.typeLabels?.[type];
  * label = label && game.i18n.has(label) ? game.i18n.localize(label) : type;
  * ```
  *
- * `ClientDocument.createDialog` (`abstract/client-document.mjs:822-823`) demands a **key that
- * exists**, not a string that localises — `game.i18n.has()` is false for any literal — and falls
- * back to the bare type name. `RegionConfig` (`sheets/region-config.mjs:114`) calls plain
- * `localize`, which is why the behaviour list beside it read correctly and the dropdown did not.
- * A readout that is right in the places you happen to look.
+ * `ClientDocument.createDialog` (`abstract/client-document.mjs:822-823`) demands a key that exists
+ * rather than a string that localises — `game.i18n.has()` is false for any literal — and falls back
+ * to the bare type name. `RegionConfig` (`sheets/region-config.mjs:114`) calls plain `localize`,
+ * which is why the behaviour list beside it read correctly and the dropdown did not.
  *
  * So the label lives in `lang/en.json` under the key `Localization#initialize` writes by default
- * (`helpers/localization.mjs:72-73`) and nothing is assigned here at all. This is the one
- * user-facing string in the module that **cannot** stay in the source it describes; §10.6 moves
- * the rest to join it.
+ * (`helpers/localization.mjs:72-73`) and nothing is assigned here. This is the one user-facing
+ * string in the module that cannot stay in the source it describes; §10.6 moves the rest to join it.
  *
- * `typeIcons` is untouched by any of that — it is a class name, never localised.
+ * `typeIcons` is untouched by any of that, being a class name and never localised.
  */
 export function registerBehavior() {
   const models = CONFIG.RegionBehavior?.dataModels;
   if (!models || models[BEHAVIOR_TYPE]) return;
 
   models[BEHAVIOR_TYPE] = defineBehavior();
-  // Deliberately **not** `fa-circle-half-stroke`: that is core's *Adjust Darkness Level*, the one
-  // behaviour this replaces and the one a GM is most likely to reach for by mistake. Two entries
-  // in the same list wearing the same icon is the wrong place to save a decision.
+  // Deliberately not `fa-circle-half-stroke`: that is core's Adjust Darkness Level, the behaviour
+  // this replaces and the one a GM is most likely to reach for by mistake. Two entries in the same
+  // list wearing the same icon is the wrong place to save a decision.
   CONFIG.RegionBehavior.typeIcons[BEHAVIOR_TYPE] = "fa-solid fa-brightness-low";
 }
 
@@ -241,15 +230,15 @@ export function invalidate() {
  * Every enabled ambient area on the current scene.
  *
  * @remarks
- * Order is document order and is **not** a precedence: {@link ambientTierAt} folds the modes in
- * sequence, so two overlapping areas compose rather than one winning. Two *at most* areas is a
- * `min`, which is order-independent; a *set* under an *at most* is not, and that is the GM's
- * problem in the same way two overlapping darkness sources are.
+ * Order is document order and not a precedence: {@link ambientTierAt} folds the modes in sequence,
+ * so two overlapping areas compose rather than one winning. Two at-most areas is a `min`, which is
+ * order-independent; a set under an at-most is not, and that is the GM's problem in the same way
+ * two overlapping darkness sources are.
  *
- * Geometry comes from `RegionDocument#polygonTree`, whose nodes carry `isHole` — so a region
- * with a hole in it reaches Clipper as a hole rather than as a second filled island. The
- * placeable's own `polygons`/`testPoint` accessors are deprecated in v13 in favour of the
- * document's, which is what these are.
+ * Geometry comes from `RegionDocument#polygonTree`, whose nodes carry `isHole`, so a region with a
+ * hole reaches Clipper as a hole rather than a second filled island. The placeable's own
+ * `polygons`/`testPoint` accessors are deprecated in v13 in favour of the document's, which these
+ * are.
  *
  * @returns {{behavior: object, region: object, mode: string, tier: number}[]}
  */
@@ -274,11 +263,11 @@ export function areas() {
     }
   }
 
-  // **Derived areas last, and the order is load-bearing.** {@link ambientTierAt} and
-  // `field.ambientDomains` both fold in list order, and the modes do not commute: §3.4's spill
-  // is an `AT_LEAST` into a room a drawn region clamped with `AT_MOST`, so
-  // `max(min(Bright, Dark), Bright)` is Bright only while the clamp runs first. Reversed, the
-  // clamp eats the spill and the feature silently does nothing.
+  // Derived areas last, and the order is load-bearing. {@link ambientTierAt} and
+  // `field.ambientDomains` both fold in list order, and the modes do not commute: §3.4's spill is
+  // an `AT_LEAST` into a room a drawn region clamped with `AT_MOST`, so
+  // `max(min(Bright, Dark), Bright)` is Bright only while the clamp runs first. Reversed, the clamp
+  // eats the spill and the feature silently does nothing.
   for (const provider of providers) {
     const derived = provider();
     if (derived?.length) out.push(...derived);
@@ -291,13 +280,13 @@ export function areas() {
  * Register a source of **computed** ambient areas — §3.4's light spill, today.
  *
  * @remarks
- * A provider rather than an import so the dependency runs one way: `model/spill.mjs` reads this
- * module freely, and this module knows nothing about it. That is what makes the feature
- * separable — a build with spill disabled registers no provider and every loop below is
- * identical to the one that existed before it.
+ * A provider rather than an import, so the dependency runs one way: `model/spill.mjs` reads this
+ * module freely and this module knows nothing about it. That is what makes the feature separable —
+ * a build with spill disabled registers no provider and every loop below is identical to the one
+ * that existed before it.
  *
- * A provider must be a **pure cache read**. It is called from inside {@link areas}, so anything
- * that rebuilds lazily here would re-enter this function through its own ambient queries.
+ * A provider must be a pure cache read. It is called from inside {@link areas}, so anything
+ * rebuilding lazily here would re-enter this function through its own ambient queries.
  *
  * @param {() => object[]} provider
  */
@@ -332,16 +321,16 @@ export function foldTier(base, area) {
  * Does an area cover a point?
  *
  * @remarks
- * **Deliberately 2D**, per §3.6. A region carries `elevation.bottom`/`top` and
+ * Deliberately 2D, per §3.6. A region carries `elevation.bottom`/`top` and
  * `RegionDocument#testPoint` tests them, but the model has no elevation anywhere else — every
- * emitter is a disc on the floor — so consulting it here would make ambient the one quantity
- * with a third dimension, and a cellar region authored at its real depth would then apply to
- * nothing. Revisit when §3.6 does.
+ * emitter is a disc on the floor — so consulting it here would make ambient the one quantity with a
+ * third dimension, and a cellar region authored at its real depth would apply to nothing. Revisit
+ * when §3.6 does.
  */
 export function covers(area, point) {
-  // A derived area (§3.4) has no document and no `polygonTree`; it carries its own rings, and
-  // they can contain holes, so the test has to be even-odd across all of them rather than
-  // "inside any" — see `geometry.containsPoint`.
+  // A derived area (§3.4) has no document and no `polygonTree`; it carries its own rings, which can
+  // contain holes, so the test is even-odd across all of them rather than inside-any — see
+  // `geometry.containsPoint`.
   if (area.derived) return containsPoint(area.polygons ?? [], point);
   return area.region.polygonTree?.testPoint(point) === true;
 }
@@ -350,8 +339,8 @@ export function covers(area, point) {
  * The ambient tier at a point, given the scene's.
  *
  * @remarks
- * The scene tier is passed in rather than read, because the two callers already have it and one
- * of them (`registry.ambientTier`) is what would be re-entered if this read it back.
+ * The scene tier is passed in rather than read: both callers already have it, and one
+ * (`registry.ambientTier`) is what would be re-entered if this read it back.
  *
  * @param {{x: number, y: number}} [point] - Omit for the scene tier untouched
  * @param {number} base - The scene's ambient tier
@@ -383,21 +372,21 @@ export function ambientTierAt(point, base, { derived = true } = {}) {
  * An area's outline as Clipper paths at `scale`, holes wound against their outer ring.
  *
  * @remarks
- * Orientation is normalised from `node.isHole` rather than trusted from the source paths,
- * because `field.mjs` runs Clipper with `pftNonZero` — under which a hole wound the same way as
- * its outer ring fills solid instead of cutting. Foundry does wind them correctly today
- * (`polygon-tree.mjs:264` sets `_isPositive` from the same flag); normalising costs one
- * orientation test per ring and removes the dependency.
+ * Orientation is normalised from `node.isHole` rather than trusted from the source paths, because
+ * `field.mjs` runs Clipper with `pftNonZero`, under which a hole wound the same way as its outer
+ * ring fills solid instead of cutting. Foundry winds them correctly today (`polygon-tree.mjs:264`
+ * sets `_isPositive` from the same flag); normalising costs one orientation test per ring and
+ * removes the dependency.
  *
  * @param {object} area
  * @param {number} scale
  * @returns {{X: number, Y: number}[][]}
  */
 export function pathsFor(area, scale) {
-  // Derived areas (§3.4) arrive already in Clipper space at `CLIPPER_SCALE`, because they were
-  // built there. Rescaling is a loop nobody has needed yet — `field` and `spill` both work at
-  // that scale — but it is written out rather than asserted, so a future caller at another
-  // scale gets the right answer instead of a polygon a hundred times too big.
+  // Derived areas (§3.4) arrive already in Clipper space at `CLIPPER_SCALE`, having been built
+  // there. Rescaling is a loop nobody has needed yet — `field` and `spill` both work at that scale
+  // — but it is written out rather than asserted, so a future caller at another scale gets the
+  // right answer instead of a polygon a hundred times too big.
   if (area.derived) {
     if (scale === CLIPPER_SCALE) return area.paths;
     const k = scale / CLIPPER_SCALE;
@@ -414,8 +403,8 @@ export function pathsFor(area, scale) {
       path[j] = { X: Math.round(points[i] * scale), Y: Math.round(points[i + 1] * scale) };
     }
 
-    // `Orientation` is true for a positively-oriented ring. An outer must be positive and a
-    // hole negative for NonZero to cut rather than fill.
+    // `Orientation` is true for a positively-oriented ring. An outer must be positive and a hole
+    // negative for NonZero to cut rather than fill.
     if (ClipperLib.Clipper.Orientation(path) === node.isHole) path.reverse();
     paths.push(path);
   }
@@ -428,20 +417,20 @@ export function pathsFor(area, scale) {
 
 /**
  * @remarks
- * Both halves are needed and they are not the same event. A region's *shape* changes on
- * `updateRegion`; its *values* change on `updateRegionBehavior`, which does not touch the
- * region document at all. Missing the second is the failure where editing the tier does
- * nothing until the region is nudged.
+ * Both halves are needed and they are not the same event. A region's shape changes on
+ * `updateRegion`; its values change on `updateRegionBehavior`, which does not touch the region
+ * document at all. Missing the second is the failure where editing the tier does nothing until the
+ * region is nudged.
  *
- * `canvasReady` clears rather than rebuilds — the next read does that, and on a scene with no
- * areas there is nothing to build.
+ * `canvasReady` clears rather than rebuilds — the next read does that, and on a scene with no areas
+ * there is nothing to build.
  */
 export function registerHooks() {
   const dirty = () => {
     invalidate();
-    // The field caches on a signature that includes {@link version}, so this is what makes the
-    // ambient cells rebuild. Requested as a lighting change, not a vision one: the area moves
-    // the ground's tier, and vision follows from the tier rather than the other way round.
+    // The field caches on a signature including {@link version}, so this is what makes the ambient
+    // cells rebuild. Requested as a lighting change rather than a vision one: the area moves the
+    // ground's tier, and vision follows from the tier rather than the other way round.
     if (canvas?.ready) {
       canvas.perception.update({ refreshLighting: true, refreshVision: true });
     }
@@ -462,16 +451,16 @@ export function registerHooks() {
  * What ambient areas exist, and whether they can be seen.
  *
  * @remarks
- * `visible: false` with areas present is the expected shape of "I added the region and nothing
- * happened": the model has moved and the picture cannot, because §7.0's texture is the only
- * route by which anything darkens global illumination.
+ * `visible: false` with areas present is the expected shape of a region added with nothing
+ * happening: the model has moved and the picture cannot, §7.0's texture being the only route by
+ * which anything darkens global illumination.
  */
 export function status() {
   const list = areas();
   const drawn = list.filter((area) => !area.derived);
-  // The key by name rather than `ambient.SETTING_AMBIENT` by import: `model/` does not import
-  // from `render/`, and a diagnostic is not the place to open that direction. The cost of the
-  // string going stale is one wrong line in a readout.
+  // The key by name rather than `ambient.SETTING_AMBIENT` by import: `model/` does not import from
+  // `render/`, and a diagnostic is not the place to open that direction. The cost of the string
+  // going stale is one wrong line in a readout.
   const takeover = (() => {
     try {
       return game.settings.get(MODULE_ID, "ambientTakeover") === true;
@@ -486,26 +475,26 @@ export function status() {
     // has not been relaunched since it was added, and the behaviour is not offered in the UI
     // however healthy `registered` looks.
     declared: game.documentTypes?.RegionBehavior?.includes(BEHAVIOR_TYPE) ?? false,
-    // **The third independent half**, and it fails on its own. The label reaches the *Create
-    // Region Behavior* dropdown only through `game.i18n.has()`, so a missing `lang/en.json` — or
-    // a world not relaunched since `languages` was added to the manifest — leaves the type
-    // registered, working, and listed under its raw key. Anything other than the label here
-    // means the language file did not load.
+    // The third independent half, which fails on its own. The label reaches the Create Region
+    // Behavior dropdown only through `game.i18n.has()`, so a missing `lang/en.json` — or a world not
+    // relaunched since `languages` was added to the manifest — leaves the type registered, working,
+    // and listed under its raw key. Anything other than the label here means the language file did
+    // not load.
     label: (() => {
       const key = CONFIG.RegionBehavior?.typeLabels?.[BEHAVIOR_TYPE];
       return key && game.i18n.has(key) ? game.i18n.localize(key) : `UNLOCALISED (${key})`;
     })(),
-    // Drawn regions only. Derived areas (§3.4) are in the same list and fold the same way, but
-    // this readout is about the *behaviour* — every field below it reads off a document — and
-    // they have their own: `game.pf1Lighting.spill.stats()`.
+    // Drawn regions only. Derived areas (§3.4) are in the same list and fold the same way, but this
+    // readout is about the behaviour — every field below reads off a document — and they have their
+    // own: `game.pf1Lighting.spill.stats()`.
     count: drawn.length,
     derived: list.length - drawn.length,
     // Whether an area can change the picture at all — see the file header.
     visible: takeover,
-    // **The other way an area does nothing.** These regions move the *ambient*, and global
-    // illumination is where the ambient comes from: with it disabled on the scene there is no
-    // ambient entry in the registry, so there is nothing to override and a *set Bright* area is
-    // as inert as a *set Dark* one. Place a light instead.
+    // The other way an area does nothing. These regions move the ambient, and global illumination
+    // is where the ambient comes from: with it disabled on the scene there is no ambient entry in
+    // the registry, so there is nothing to override and a set-Bright area is as inert as a set-Dark
+    // one. Place a light instead.
     globalLight: canvas?.scene?.environment?.globalLight?.enabled ?? null,
     generation,
     areas: drawn.map((area) => ({

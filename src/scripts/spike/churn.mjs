@@ -1,14 +1,14 @@
 /**
  * Vertical slice, step 5 — source churn measurement. DESIGN.md §8.1, §9.2-9.4.
  *
- * The renderer design (§6.1) creates and destroys synthetic sources on every field
- * recompute. Measurements so far:
+ * The renderer design (§6.1) creates and destroys synthetic sources on every field recompute.
+ * Measurements so far:
  *
  *   empty scene   ~0.12 ms/source
  *   town scene    ~0.60 ms/source   — wall sweeps
  *   direct mode   ~0.34 ms/source   — skipping the sweep saves ~40%, not ~100%
  *
- * So the sweep is *not* the dominant cost. This harness isolates what is.
+ * So the sweep is not the dominant cost. This harness isolates what is.
  *
  * Modes:
  *   sweep      Foundry's normal path. What a real placed light costs.
@@ -48,8 +48,8 @@ function measureCreateDestroy(mode, count, iterations) {
   const clearTimes = [];
 
   for (let i = 0; i < iterations; i++) {
-    // redraw: false throughout — a perception update per source would measure
-    // Foundry's refresh queue rather than the cost of building sources.
+    // redraw: false throughout — a perception update per source would measure Foundry's refresh
+    // queue rather than the cost of building sources.
     const t0 = performance.now();
     for (let n = 0; n < count; n++) {
       const { x, y } = positionFor(n);
@@ -77,8 +77,8 @@ function measureCreateDestroy(mode, count, iterations) {
 /**
  * Re-initialise a fixed pool of sources rather than recreating them.
  *
- * If this is much cheaper than `direct`, the cost is construction and mesh/shader
- * allocation, and the renderer should pool sources rather than churn them.
+ * Much cheaper than `direct` means the cost is construction and mesh/shader allocation, and the
+ * renderer should pool sources rather than churn them.
  */
 function measureReuse(count, iterations) {
   const grid = canvas.grid.size;
@@ -139,8 +139,8 @@ export function run({
 
   const priorSoftEdges = canvas.performance.lightSoftEdges;
   if (softEdges !== undefined) canvas.performance.lightSoftEdges = softEdges;
-  // Captured before the finally block restores it — reporting the restored value made
-  // every run claim softEdges=true regardless of what was measured.
+  // Captured before the finally block restores it — reporting the restored value made every run
+  // claim softEdges=true regardless of what was measured.
   const measuredSoftEdges = canvas.performance.lightSoftEdges;
 
   const results = {};
@@ -150,8 +150,8 @@ export function run({
       results[mode] = {
         mode,
         ...raw,
-        // Median, not mean — a single GC spike otherwise dominates and inverts the
-        // ranking. That bug produced a misleading headline on the first run.
+        // Median, not mean — a single GC spike otherwise dominates and inverts the ranking, which
+        // produced a misleading headline on the first run.
         perSourceMs: +(raw.spawnMs.median / count).toFixed(3),
         withinBudget: raw.spawnMs.median <= 16,
       };

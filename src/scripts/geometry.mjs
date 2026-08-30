@@ -1,21 +1,19 @@
 /**
  * Shared polygon primitives.
  *
- * Extracted when umbra (§4.3) became the second consumer of Clipper. `field.mjs` keeps its
- * own copies of the boolean operations deliberately — its `boolOp` increments a per-compute
- * `opCount` that the subdivision benchmarks read (§9.6), and threading a counter through a
- * shared helper would put instrumentation into everyone's call path to serve one caller.
- * What is shared here is the part that must **not** diverge: the scaling factor and the
- * conversions either side of it.
+ * Extracted when umbra (§4.3) became the second consumer of Clipper. `field.mjs` keeps its own
+ * copies of the boolean operations deliberately: its `boolOp` increments a per-compute `opCount`
+ * that the subdivision benchmarks read (§9.6), and threading that counter through a shared helper
+ * would put instrumentation on every call path to serve one caller. What is shared here is the
+ * part that must not diverge — the scaling factor and the conversions either side of it.
  */
 
 /**
  * Clipper works in integers, so coordinates are scaled before and after.
  *
- * Core uses 100 wherever it touches Clipper (`common/constants.mjs:2146`). Matching it is
- * not cosmetic: a path produced at one scale and consumed at another silently yields
- * geometry off by a factor of 100, which reads as "the polygon vanished" rather than as a
- * unit error.
+ * Core uses 100 wherever it touches Clipper (`common/constants.mjs:2146`). Matching it is not
+ * cosmetic: a path produced at one scale and consumed at another is off by a factor of 100, which
+ * presents as a vanished polygon rather than a unit error.
  */
 export const CLIPPER_SCALE = 100;
 
@@ -39,8 +37,8 @@ export function toClipperPath(polygon, scale = CLIPPER_SCALE) {
 /**
  * Clipper paths back to polygons.
  *
- * Degenerate rings are dropped: Clipper can emit two-point slivers from a difference, and
- * they are not drawable, not testable, and not meaningful.
+ * Degenerate rings are dropped: a difference can emit two-point slivers, which are neither
+ * drawable nor testable.
  *
  * @param {{X: number, Y: number}[][]} paths
  * @param {number} [scale=CLIPPER_SCALE]
@@ -64,8 +62,8 @@ export function fromClipperPaths(paths, scale = CLIPPER_SCALE) {
  * `subject` minus `clip`.
  *
  * @remarks
- * `pftNonZero` rather than even-odd, matching `field.mjs` and core. With even-odd, two
- * overlapping subject paths cancel where they overlap, which turns an overlap into a hole.
+ * `pftNonZero` rather than even-odd, matching `field.mjs` and core. Under even-odd, two
+ * overlapping subject paths cancel, turning the overlap into a hole.
  *
  * @param {{X: number, Y: number}[][]} subject
  * @param {{X: number, Y: number}[][]} clip
@@ -120,14 +118,13 @@ export function union(paths) {
  * Group a flat ring list into `{outer, holes}` pairs.
  *
  * @remarks
- * A Clipper solution is a flat list in which holes are marked only by reversed winding, and
- * anything that renders a region as a *mesh* needs them attached to the right outer ring —
- * `earcut` takes one outer plus its holes, not a soup. {@link splitRings} answers which is
- * which; this answers which belongs to which.
+ * A Clipper solution is a flat list marking holes only by reversed winding, but meshing a region
+ * needs them attached to the right outer ring — `earcut` takes one outer plus its holes, not a
+ * soup. {@link splitRings} answers which is which; this answers which belongs to which.
  *
- * Holes are assigned by testing a vertex against each outer, and only when there is more than
- * one outer. The single-outer case is both overwhelmingly the common one (a scene rect with a
- * hole per darkness) and free.
+ * Holes are assigned by testing a vertex against each outer, and only when there is more than one
+ * outer. The single-outer case (a scene rect with a hole per darkness) is both the common one and
+ * free.
  *
  * @param {PIXI.Polygon[]} polygons
  * @returns {{outer: PIXI.Polygon, holes: PIXI.Polygon[]}[]}
@@ -162,9 +159,9 @@ export function signedArea(polygon) {
  * Split a path list into outer rings and holes by winding direction.
  *
  * @remarks
- * Clipper marks holes by reversing their winding, and the sign that means "outer" depends on
- * the coordinate convention — so it is read off the **largest** ring rather than assumed.
- * Disjoint outer rings all share a winding, so this is correct for several at once.
+ * Clipper marks holes by reversed winding, but the sign meaning "outer" depends on the coordinate
+ * convention, so it is read off the largest ring rather than assumed. Disjoint outer rings share a
+ * winding, so this stays correct for several at once.
  *
  * @param {PIXI.Polygon[]} polygons
  * @returns {{outers: PIXI.Polygon[], holes: PIXI.Polygon[]}}
@@ -194,14 +191,13 @@ export function splitRings(polygons) {
  * Is a point inside this region?
  *
  * @remarks
- * **Even-odd across every ring, not "inside any".** A Clipper result routinely contains
- * holes — subtracting a darkness bubble from an observer's line of sight leaves the bubble as
- * a reversed ring inside the result — and treating each ring as a separate solid says a point
- * in the hole is inside the region. That is exactly backwards: the hole is the part that was
- * removed.
+ * Even-odd across every ring, not "inside any". Clipper results routinely contain holes —
+ * subtracting a darkness bubble from an observer's line of sight leaves the bubble as a reversed
+ * ring — and treating each ring as a separate solid reports a point in the hole as inside the
+ * region, which is backwards: the hole is the part that was removed.
  *
- * Counting crossings handles nesting to any depth without needing to know which ring is
- * which, so it stays correct for a hole inside a hole.
+ * Counting crossings handles nesting to any depth without knowing which ring is which, so it stays
+ * correct for a hole inside a hole.
  *
  * @param {PIXI.Polygon[]} polygons
  * @param {{x: number, y: number}} point

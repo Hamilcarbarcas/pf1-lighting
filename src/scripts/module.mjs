@@ -59,24 +59,24 @@ import * as probe from "./spike/probe.mjs";
 import * as darknessLevel from "./spike/darkness-level.mjs";
 
 Hooks.once("init", () => {
-  // **The API goes up first, and at `init` rather than at `ready`** (§11.2).
-  // `game.modules.get("pf1-lighting").api` is the address another module will look at — Foundry's
-  // convention, and the one this project's own modules already publish and consume. The
-  // `game.pf1Lighting.api` alias assigned in `ready` is the same frozen object, for console use.
+  // The API goes up first, at `init` rather than `ready` (§11.2).
+  // `game.modules.get("pf1-lighting").api` is the address another module looks at — Foundry's
+  // convention. The `game.pf1Lighting.api` alias assigned in `ready` is the same frozen object, for
+  // console use.
   //
-  // Timing is the substance, not tidiness: an API published in `ready` races every consumer's own
-  // `ready` on module load order, so whether it exists would depend on alphabetical luck.
+  // Timing is the substance rather than tidiness: an API published in `ready` races every consumer's
+  // own `ready` on module load order, so its existence would depend on alphabetical luck.
   publicApi.publish();
 
-  // **First, and before any `registerSettings` call.** Every module setting read on a hot path goes
-  // through this cache, and its invalidation hooks have to be listening before anything can write a
+  // First, and before any `registerSettings` call. Every module setting read on a hot path goes
+  // through this cache, and its invalidation hooks must be listening before anything can write a
   // setting. Registering a setting does not itself write one, so nothing is missed by being here
-  // rather than earlier. See `settings-cache.mjs` for the 14.7 µs measurement that motivated it.
+  // rather than earlier. See `settings-cache.mjs` for the 14.7 µs measurement behind it.
   settingsCache.registerHooks();
 
-  // **Before anything reads a tier.** Registers the region behaviour's data model and icon; its
-  // *label* is deliberately not set here and comes from `lang/en.json` — see
-  // `areas.registerBehavior` for why a literal cannot work.
+  // Before anything reads a tier. Registers the region behaviour's data model and icon; its label is
+  // deliberately not set here and comes from `lang/en.json` — see `areas.registerBehavior` for why a
+  // literal cannot work.
   areas.registerBehavior();
 
   suppression.registerSettings();
@@ -85,9 +85,9 @@ Hooks.once("init", () => {
   cellOverlay.registerSettings();
   renderer.registerSettings();
   desaturate.registerSettings();
-  // Greyscale as a *region* rather than as a screen (§6.2.11): Foundry's five desaturation routes
-  // zeroed, one pass on `canvas.environment` in their place. Registered before `visuals`, which
-  // reads the fog dial by name.
+  // Greyscale as a region rather than a screen (§6.2.11): Foundry's five desaturation routes zeroed,
+  // one pass on `canvas.environment` in their place. Registered before `visuals`, which reads the fog
+  // dial by name.
   greyscale.registerSettings();
   darknessMask.registerSettings();
   ambient.registerSettings();
@@ -101,8 +101,8 @@ Hooks.once("init", () => {
   // The appearance numbers, edited in their own window (§10.6). Registered after the
   // modules that own the keys, so the menu never opens on a key that does not exist yet.
   soften.registerSettings();
-  // **One width for every brightness boundary** (§6.4.3). Registered before the producers that
-  // read it — the ground halos, a spill band and a light's zones all fade over this distance.
+  // One width for every brightness boundary (§6.4.3). Registered before the producers that read it —
+  // the ground halos, a spill band and a light's zones all fade over this distance.
   transition.registerSettings();
   // Whether that width is delivered by blurring the whole field or by a gradient per region
   // (§6.4.4). One switch, two implementations, so they can be compared on the same scene.
@@ -137,13 +137,13 @@ Hooks.once("init", () => {
   // filter cannot do it.
   observer.registerHooks();
 
-  // The vision layer's verdicts, handed down to the suppression layer. Injected rather
-  // than imported so the dependency runs one way only — see `setVisionModel`.
+  // The vision layer's verdicts, handed down to the suppression layer. Injected rather than imported
+  // so the dependency runs one way only — see `setVisionModel`.
   suppression.setVisionModel({
     blinds: blindness.modelBlinds,
     darkSightRadius: blindness.darkSightRadius,
-    // Narrower on purpose — the blinded *condition* strips sight, and true seeing is sight.
-    // Only blindsight survives it, so it needs its own reach. See `blindness.blindsightRadius`.
+    // Narrower deliberately: the blinded condition strips sight, and true seeing is sight. Only
+    // blindsight survives it, so it needs its own reach. See `blindness.blindsightRadius`.
     blindsightRadius: blindness.blindsightRadius,
     darkSightBrightness: blindness.darkSightBrightness,
     perceptionActive: perception.isPerceptionEnabled,
@@ -166,9 +166,9 @@ Hooks.once("init", () => {
   // which does not touch the region document at all — so both, or editing the tier does nothing
   // until the region is nudged.
   areas.registerHooks();
-  // **After `areas`, and the ordering is real.** `spill.registerHooks` ends by calling
-  // `areas.registerProvider`, and a provider's bands fold *after* the drawn regions — which is
-  // the only order in which an `AT_LEAST` spill survives an `AT_MOST` room clamp (§3.4).
+  // After `areas`, and the ordering is real. `spill.registerHooks` ends by calling
+  // `areas.registerProvider`, and a provider's bands fold after the drawn regions — the only order
+  // in which an `AT_LEAST` spill survives an `AT_MOST` room clamp (§3.4).
   spill.registerHooks();
   readout.registerHooks();
   cellOverlay.registerHooks();
@@ -179,40 +179,40 @@ Hooks.once("init", () => {
   renderer.registerHooks();
   // Solves the light weights against the scene's ambient colours, per canvas.
   ambient.registerHooks();
-  // Soft transitions: the light-edge inset and the darkness-texture blur (§3.2.1, §6.4).
-  // Its own hook set, and deliberately not the renderer's: the tier field has to repaint when
-  // the *observer* moves, which must not drag source re-initialisation along behind it (§9.5).
+  // Soft transitions: the light-edge inset and the darkness-texture blur (§3.2.1, §6.4). Its own
+  // hook set rather than the renderer's, deliberately: the tier field has to repaint when the
+  // observer moves, which must not drag source re-initialisation behind it (§9.5).
   tierPaint.registerHooks();
   umbraEdges.registerHooks();
   desaturate.registerHooks();
   // §6.2.11's single desaturation pass, on `canvas.environment`. That group is rebuilt on every
   // canvas draw, so the filter is re-attached at `canvasReady` rather than installed once.
   greyscale.registerHooks();
-  // §6.4.7 — the segments the field blur must not cross. Its own hooks rather than the renderer's:
-  // a wall moving changes the mask without changing a single brightness, and a door opening
-  // changes it without moving anything at all.
+  // §6.4.7 — the segments the field blur must not cross. Its own hooks rather than the renderer's: a
+  // wall moving changes the mask without changing a single brightness, and a door opening changes it
+  // without moving anything at all.
   wallMask.registerHooks();
 
-  // A prototype patch, so it neither races the canvas group's construction nor cares
-  // who else has touched the class.
+  // A prototype patch, so it neither races the canvas group's construction nor cares who else has
+  // touched the class.
   detection.patchEffectsGroup();
 
-  // **`init`, and it has to be.** `EnvironmentCanvasGroup` builds the global light source in
-  // its constructor as a non-writable value property (`environment.mjs:29-30`), and the canvas
-  // groups are created in `Canvas#initialize()` (`board.mjs:582`) — long before `canvasInit`
-  // fires (`board.mjs:1024`). Patching the CONFIG slot any later leaves the live singleton an
-  // instance of the stock class, which cannot be replaced. Found 2026-08-23, from the mixin
-  // reporting `patched: true` while the source went on behaving as though it were not.
+  // `init`, and it has to be. `EnvironmentCanvasGroup` builds the global light source in its
+  // constructor as a non-writable value property (`environment.mjs:29-30`), and the canvas groups
+  // are created in `Canvas#initialize()` (`board.mjs:582`), long before `canvasInit` fires
+  // (`board.mjs:1024`). Patching the CONFIG slot later leaves the live singleton an instance of the
+  // stock class, unreplaceable. Found 2026-08-23, from the mixin reporting `patched: true` while the
+  // source went on behaving as though it were not.
   ambient.applyMixin();
 
-  // Also a prototype patch, and also once: the clip has to reach Foundry's visibility mask
-  // as well as the mesh (§6.2.4's third consumer). Self-gating on `RENDER_SHAPE`, so it does
-  // nothing at all with the renderer off.
+  // Also a prototype patch, and also once: the clip has to reach Foundry's visibility mask as well
+  // as the mesh (§6.2.4's third consumer). Self-gating on `RENDER_SHAPE`, so it does nothing at all
+  // with the renderer off.
   clip.patchVisibility();
 
-  // The observer-relative half of the same idea: an umbra removes a region from what *this*
-  // creature's light perception reveals (§4.3). Separate from `clip.patchVisibility` because
-  // `render/` must not import from `vision/`.
+  // The observer-relative half of the same idea: an umbra removes a region from what one creature's
+  // light perception reveals (§4.3). Separate from `clip.patchVisibility` because `render/` must not
+  // import from `vision/`.
   umbraMask.applyPatch();
 
   // The darkness layer is the one effects layer core never vision-masks, so a darkness source
@@ -220,10 +220,10 @@ Hooks.once("init", () => {
   // groups are built inside `Canvas#initialize()` and the class has no CONFIG slot to swap.
   darknessMask.applyPatch();
 
-  // The other half, and the one that mattered: core paints *unseen* ground from the
-  // darkness-level texture, which since §7.0 is where this module writes its model — so fog
-  // reproduced every darkness disc and umbra. A CONFIG class swap, and it must precede the first
-  // canvas draw because every effects layer reads that slot in its own `_draw`.
+  // The other half, and the one that mattered: core paints unseen ground from the darkness-level
+  // texture, which since §7.0 is where this module writes its model, so fog reproduced every
+  // darkness disc and umbra. A CONFIG class swap, and it must precede the first canvas draw, every
+  // effects layer reading that slot in its own `_draw`.
   darknessMask.applyFilterPatch();
   // The third darkening of unseen ground — Foundry's fog overlay, hard-coded at half black.
   // Same CONFIG-slot rule as the filter above: swapped at `init`, before the canvas is drawn.
@@ -233,34 +233,34 @@ Hooks.once("init", () => {
 /**
  * Detection modes, exactly once and exactly here.
  *
- * `setup` is the only correct window: PF1 replaces its modes during `init`, and `limits`
- * re-mixes them at every `canvasInit` with a cache that only stays valid if nothing
- * re-parents the instance underneath it afterwards. See `vision/detection.mjs`.
+ * `setup` is the only correct window: PF1 replaces its modes during `init`, and `limits` re-mixes
+ * them at every `canvasInit` with a cache that stays valid only if nothing re-parents the instance
+ * underneath it afterwards. See `vision/detection.mjs`.
  */
 Hooks.once("setup", () => {
   detection.mixinDetectionModes();
 
-  // Also `setup`, and for the same class of reason: PF1 installs `LLVMixin` on the
-  // placeable classes during `init`, so we have to be after it, and once, so the chain
-  // does not grow a link per canvas draw.
+  // Also `setup`, for the same class of reason: PF1 installs `LLVMixin` on the placeable classes
+  // during `init`, so this must follow it, and run once, so the chain does not grow a link per canvas
+  // draw.
   llv.applyMixin();
 
-  // Must follow `llv.applyMixin()` — both wrap `CONFIG.Token.objectClass`, and each guards
-  // on its own static mark, so order decides the chain but not whether both apply.
+  // Must follow `llv.applyMixin()` — both wrap `CONFIG.Token.objectClass`, each guarding on its own
+  // static mark, so order decides the chain but not whether both apply.
   observer.applyMixin();
 
-  // **`setup` because PF1 assigns `CONFIG.Canvas.visionModes.darkvision` during `init`**
-  // (`pf1.mjs:261`) — anything earlier is overwritten. Zeroes Foundry's five desaturation routes
+  // `setup`, because PF1 assigns `CONFIG.Canvas.visionModes.darkvision` during `init`
+  // (`pf1.mjs:261`) and anything earlier is overwritten. Zeroes Foundry's five desaturation routes
   // so §6.2.11's single pass is the only thing greying anything.
   greyscale.neutralise();
 });
 
-// Must run after `limits` applies its own source-class mixins, so we sit on top.
+// Must run after `limits` applies its own source-class mixins, so these sit on top.
 Hooks.on("canvasInit", () => {
   suppression.applyMixin();
   clip.applyMixin();
-  // A **core** oversight rather than one of ours, but this module is what makes it visible: a
-  // darkness sweep indexes each edge with its own source type, and `darkness` is not one of the
+  // A core oversight rather than one of this module's, though this module is what makes it visible:
+  // a darkness sweep indexes each edge with its own source type, and `darkness` is not one of the
   // four wall restrictions, so every wall blocks it — windows and open doors included. See
   // `clip.patchDarknessWalls`.
   clip.patchDarknessWalls();
@@ -268,14 +268,14 @@ Hooks.on("canvasInit", () => {
 
 Hooks.once("ready", () => {
   game.pf1Lighting = {
-    // **The supported surface — DESIGN.md §11.** Everything else on this object is a debug
-    // readout: it logs, it gains and loses fields as diagnoses need them, and several entries
-    // hand back live internals. `api` is the half that promises not to change under a consumer,
-    // and `api.version` is how one feature-detects.
+    // The supported surface — DESIGN.md §11. Everything else on this object is a debug readout: it
+    // logs, gains and loses fields as diagnoses need them, and several entries hand back live
+    // internals. `api` is the half that promises not to change under a consumer, and `api.version`
+    // is how one feature-detects.
     //
-    // **A console alias, not the address.** Another module should use
-    // `game.modules.get("pf1-lighting").api`, which is published at `init` and is the same frozen
-    // object. This exists because `pf1-lighting.api` cannot be typed — the hyphen is a minus sign.
+    // A console alias rather than the address. Another module should use
+    // `game.modules.get("pf1-lighting").api`, published at `init` and the same frozen object. This
+    // exists because `pf1-lighting.api` cannot be typed — the hyphen is a minus sign.
     //
     //   game.pf1Lighting.api.perceivedBy(token, { sample: "min" })
     //   game.pf1Lighting.api.brightnessOf([a, b, c], { observer })
@@ -290,24 +290,23 @@ Hooks.once("ready", () => {
     brightnessAt,
     contributionAt,
     emissionOf,
-    // §3.2.1's resolution rule on its own: set levels contend, relative bands sum. Takes the
-    // same shape `evaluate().emitters` returns, so a suspect reading can be re-run by hand.
+    // §3.2.1's resolution rule on its own: set levels contend, relative bands sum. Takes the same
+    // shape `evaluate().emitters` returns, so a suspect reading can be re-run by hand.
     //
-    // **Not** `stack` — `probe.stack()` has meant "the sources under the cursor" since the
-    // vertical slice, and two things called that would be one console typo apart.
+    // Not named `stack`: `probe.stack()` has meant the sources under the cursor since the vertical
+    // slice, and two things called that would be one console typo apart.
     stackEmitters,
     tiers,
 
-    // **Every setting this module owns, including the ones with no control surface.**
+    // Every setting this module owns, including the ones with no control surface.
     //
     //   game.pf1Lighting.settings()                              // list them all
     //   game.pf1Lighting.settings("renderEnabled")               // read one
     //   game.pf1Lighting.settings("renderEnabled", true)         // write one
     //
-    // §10.6 removed the menu rows for eight switches on the grounds that they were development
-    // bisection aids rather than play features (Hamilcarbarcas, 2026-08-26). *Removed the rows*, not
-    // the switches — and a switch reachable only by remembering its exact key is a switch that
-    // is gone in practice. `hidden: true` marks the ones this is the only route to.
+    // §10.6 removed the menu rows for eight switches as development bisection aids rather than play
+    // features (2026-08-26) — the rows, not the switches, and a switch reachable only by remembering
+    // its exact key is gone in practice. `hidden: true` marks the ones this is the only route to.
     settings: (key, value) => {
       const all = [...game.settings.settings.values()].filter((s) => s.namespace === MODULE_ID);
 
@@ -315,10 +314,10 @@ Hooks.once("ready", () => {
         const report = {};
         for (const setting of all) {
           report[setting.key] = {
-            // **Localised here, and it has to be.** `setting.name` is a *key* since §10.11 —
-            // Foundry resolves it when it renders a settings row, and 32 of the 38 settings
-            // below are `config: false` and never get one. This readout is their only interface,
-            // so without this the console prints `PF1LIGHTING.Setting.renderEnabled.Name`.
+            // Localised here, and it has to be. `setting.name` is a key since §10.11, resolved by
+            // Foundry when it renders a settings row, and 32 of the 38 settings below are
+            // `config: false` and never get one. This readout is their only interface, so without
+            // this the console prints `PF1LIGHTING.Setting.renderEnabled.Name`.
             name: game.i18n.localize(setting.name),
             scope: setting.scope,
             hidden: setting.config !== true,
@@ -345,11 +344,11 @@ Hooks.once("ready", () => {
     //
     //   light.document.update(game.pf1Lighting.presets.apply("deeperDarkness"))
     //
-    // There is deliberately no matcher: the stored `preset` records where the numbers came
-    // from, which is history and not recoverable by looking at them.
+    // Deliberately no matcher: the stored `preset` records where the numbers came from, which is
+    // history and not recoverable by looking at them.
     presets: {
-      // A **function**, not the object: the table is a world setting since the editor landed,
-      // and a snapshot taken at `ready` would go stale the first time it is edited.
+      // A function rather than the object: the table is a world setting since the editor landed, and
+      // a snapshot taken at `ready` would go stale the first time it is edited.
       table: presets.table,
       apply: presets.applyPreset,
       choices: presets.presetChoices,
@@ -374,10 +373,10 @@ Hooks.once("ready", () => {
     },
 
     // Regions that move the ambient light level (DESIGN.md §10.7). `status()` answers the two
-    // questions this feature actually generates: whether the behaviour is on offer at all
-    // (`declared` is the module.json half and needs a world relaunch, not an F5), and whether
-    // an area can change the *picture* — which needs **Model global illumination** on, because
-    // §7.0's texture is the only channel by which anything darkens below global light.
+    // questions this feature generates: whether the behaviour is on offer at all (`declared` is the
+    // module.json half and needs a world relaunch, not an F5), and whether an area can change the
+    // picture — which needs Model global illumination on, §7.0's texture being the only channel by
+    // which anything darkens below global light.
     areas: {
       status: areas.status,
       list: areas.areas,
@@ -394,9 +393,9 @@ Hooks.once("ready", () => {
       config: spillConfig.open,
     },
 
-    // §3.4.1's geometry — geodesic distance, and **live since 2026-08-28**: `spill` above now
-    // contours these fields, so this is the same arithmetic the map is lit by rather than a probe
-    // beside it. What it adds is the ability to *see* the field the contour was cut from.
+    // §3.4.1's geometry — geodesic distance, live since 2026-08-28: `spill` above now contours these
+    // fields, so this is the same arithmetic the map is lit by rather than a probe beside it. What it
+    // adds is the ability to see the field the contour was cut from.
     //
     //   game.pf1Lighting.geodesic.draw()                       // the ladder, flat per tier
     //   game.pf1Lighting.geodesic.draw({ mode: "distance" })   // the raw field the contour cuts
@@ -404,9 +403,9 @@ Hooks.once("ready", () => {
     //   game.pf1Lighting.geodesic.draw({ widths: { bright: 40, normal: 20, dim: 10 } })
     //   game.pf1Lighting.geodesic.clear()
     //
-    // It still marches one aperture at a time, where `spill` marches one room. That is deliberate:
-    // per-window is what you want when the question is "what is *this* window doing", and the two
-    // agree wherever a room has one window.
+    // It still marches one aperture at a time where `spill` marches one room, deliberately:
+    // per-window is the right granularity for asking what one window is doing, and the two agree
+    // wherever a room has one window.
     //
     // Red is the severed cell-to-cell links. Look there first — a continuous hatch along a wall is
     // that wall sealed, and a break in the hatch is somewhere light gets through.
@@ -420,8 +419,8 @@ Hooks.once("ready", () => {
     },
 
     // The read-through cache over `game.settings.get`. `hitRate` well below 1, or `invalidations`
-    // climbing while nobody is touching settings, is the failure worth being able to see — either
-    // turns the cache into pure overhead and neither shows up in a timing.
+    // climbing while nobody touches settings, is the failure worth seeing — either turns the cache
+    // into pure overhead, and neither shows up in a timing.
     //
     //   game.pf1Lighting.settingsCache()            // hit rate, keys held, invalidations
     //   game.pf1Lighting.settingsCache.invalidate() // drop it; the next read re-fetches
@@ -447,17 +446,17 @@ Hooks.once("ready", () => {
       // The model's tiers, painted into Foundry's darkness-level texture (DESIGN.md §7.0).
       // Takes an optional point; defaults to the cursor and reads the level back.
       texture: darknessTexture.status,
-      // Which mesh claims a point, and what the **rendered texture** says there. The two can
-      // disagree — the JS query is a ring test, the shaders sample the rasterised result.
+      // Which mesh claims a point, and what the rendered texture says there. The two can disagree —
+      // the JS query is a ring test, the shaders sample the rasterised result.
       meshAt: darknessTexture.meshAt,
-      // **Is this edge hard in the brightness field, or is another layer drawing over it?** Hover
-      // the edge and call it: a ramp means the field is smooth and the culprit is elsewhere (a
-      // light's coloration, a darkness source's own disc, the visibility mask); a step means the
-      // blur is not reaching that boundary.
+      // Is this edge hard in the brightness field, or is another layer drawing over it? Hover the
+      // edge and call it: a ramp means the field is smooth and the culprit is elsewhere — a light's
+      // coloration, a darkness source's own disc, the visibility mask — while a step means the blur
+      // is not reaching that boundary.
       transect: darknessTexture.transect,
-      // **Which layer owns a visible edge**, once `transect` has shown the field is smooth. Toggles
-      // one layer's visibility: "coloration", "darkness", "lights", "visibility". No argument
-      // restores everything. Nothing is recomputed, so it leaves no trace.
+      // Which layer owns a visible edge, once `transect` has shown the field is smooth. Toggles one
+      // layer's visibility: "coloration", "darkness", "lights", "visibility". No argument restores
+      // everything. Nothing is recomputed, so it leaves no trace.
       isolate: darknessTexture.isolate,
       // The observer-relative half: cells clamped where this observer looks through a
       // darkness, then painted (DESIGN.md §4.3). `shadows > 0, split: 0` means the umbra is
@@ -467,8 +466,8 @@ Hooks.once("ready", () => {
 
       // §3.4's falloffs as one interpolated mesh each (DESIGN.md §7.0 step 5). `ramps` below
       // `spill.stats().windows` means a window failed to triangulate and is being painted flat;
-      // `sortLevels` proves each mesh landed *below* the ordinary ground cells, which is what
-      // lets the umbra clamp overpaint it instead of having to cut it.
+      // `sortLevels` proves each mesh landed below the ordinary ground cells, which is what lets the
+      // umbra clamp overpaint it instead of cutting it.
       gradient: gradient.stats,
       regradient: () => gradient.sync([], { force: true }),
       // §6.4.3 — the one transition width every brightness boundary fades over.
@@ -480,9 +479,9 @@ Hooks.once("ready", () => {
       // §6.4.7 on its own — the segments the blur is held off, and how wide the band is.
       walls: wallMask.status,
 
-      // §6.2.9 — what each light's zones actually resolved to, in luminance, against the ladder
-      // they should be landing on. The one readout that answers "is Normal the same brightness in
-      // a dim room as in a dark one", which the map itself cannot be asked.
+      // §6.2.9 — what each light's zones resolved to, in luminance, against the ladder they should
+      // land on. The one readout answering whether Normal is the same brightness in a dim room as in
+      // a dark one, which the map itself cannot be asked.
       zones: clip.zones,
 
       // Whether darkness sources are being withheld outside the viewer's vision. `applied: true`
@@ -492,36 +491,36 @@ Hooks.once("ready", () => {
 
       // §6.2.11 — greyscale taken over: Foundry's five desaturation routes zeroed, one pass on
       // `canvas.environment` in their place. Takes a point (defaults to the cursor) and reports
-      // `pixel`, the **rasterised** level the filter itself samples there — which is what
-      // separates "the greyscale is wrong" from "the field is wrong". Every entry under `routes`
-      // should read zero or empty; anything else is a second thing desaturating.
+      // `pixel`, the rasterised level the filter itself samples there, which separates a wrong
+      // greyscale from a wrong field. Every entry under `routes` should read zero or empty; anything
+      // else is a second thing desaturating.
       greyscale: greyscale.status,
 
 
-      // Soft edges on **sources** — the light-polygon inset and a darkness disc's rim — and
-      // whether Foundry is honouring them. `softEdgesAvailable: false` means the performance mode
-      // is below Medium and the light half does nothing whatever the setting says.
+      // Soft edges on sources — the light-polygon inset and a darkness disc's rim — and whether
+      // Foundry is honouring them. `softEdgesAvailable: false` means the performance mode is below
+      // Medium and the light half does nothing whatever the setting says.
       //
-      // The **ground** is a different mechanism entirely since §6.4.4 and is not reported here:
-      // one blur of the whole brightness field, driven by `transitionWidth`. See `render.blur()`.
+      // The ground is a different mechanism entirely since §6.4.4 and is not reported here: one blur
+      // of the whole brightness field, driven by `transitionWidth`. See `render.blur()`.
       soften: soften.status,
 
-      // **Every gate between a darkness source and its animation reaching the screen**, plus the
-      // observer's senses. Written for a report that two senses taking the same code path
-      // behaved differently — run it with each token selected and compare; the field that
-      // differs is the answer.
+      // Every gate between a darkness source and its animation reaching the screen, plus the
+      // observer's senses. Written for a report that two senses taking the same code path behaved
+      // differently — run it with each token selected and compare; the field that differs is the
+      // answer.
       darknessGates: probe.darknessGates,
 
 
-      // A/B for a hard-rimmed *darkness* disc on an otherwise soft map. Every region darker
-      // than Dim also gets an `ERASE` mesh in the **visibility** mask, whose boundary is binary
-      // and is in a different container from the brightness — so §6.4.1's blur cannot reach it.
-      // Turn it off and repaint: if the rim softens, that boundary is the cause.
+      // A/B for a hard-rimmed darkness disc on an otherwise soft map. Every region darker than Dim
+      // also gets an `ERASE` mesh in the visibility mask, whose boundary is binary and sits in a
+      // different container from the brightness, so §6.4.1's blur cannot reach it. Turn it off and
+      // repaint: if the rim softens, that boundary is the cause.
       //
       //   game.pf1Lighting.render.noErase(true)    // then look
       //   game.pf1Lighting.render.noErase(false)   // put it back
       //
-      // Not a setting: with it off, a *darkness* on a globally-lit map stops being dark.
+      // Not a setting: with it off, a darkness on a globally-lit map stops being dark.
       noErase: (off = true) => {
         darknessTexture.setEraseDisabled(off);
         tierPaint.repaint({ force: true });
@@ -537,10 +536,10 @@ Hooks.once("ready", () => {
       //   game.pf1Lighting.render.levels("even")    // Supernatural Dark gets its own level
       //   game.pf1Lighting.render.levels(null)      // back to the four saved settings
       //
-      // Rebuilds immediately and persists **nothing** — this is for trying a table against a
-      // real map. The four `tierLevel*` world settings are the stored answer (§10.5), and
-      // `null` here reloads them, so an experiment is always one call from being undone.
-      // Changing any of those settings also overwrites whatever was tried here.
+      // Rebuilds immediately and persists nothing — for trying a table against a real map. The four
+      // `tierLevel*` world settings are the stored answer (§10.5), and `null` here reloads them, so
+      // an experiment is always one call from being undone. Changing any of those settings also
+      // overwrites whatever was tried here.
       levels: (next) => {
         const table = next == null ? levels.applyTierTable() : levels.setDarknessTable(next);
         // The light weights are solved from the table, so they move with it.
@@ -552,9 +551,9 @@ Hooks.once("ready", () => {
       },
       presets: () => levels.DARKNESS_PRESETS,
 
-      // Which scenes carry a light-level tier, and whether their stored darkness still matches
-      // it. `matches: false` on a scene that is not `locked` means the sync did not run — the
-      // usual reason is that this client was not the active GM when the setting changed.
+      // Which scenes carry a light-level tier, and whether their stored darkness still matches it.
+      // `matches: false` on a scene that is not `locked` means the sync did not run, usually because
+      // this client was not the active GM when the setting changed.
       scenes: sceneConfig.status,
       resyncScenes: sceneConfig.syncAllScenes,
       // What the four lighting-control buttons do, callable from a macro:
@@ -572,17 +571,17 @@ Hooks.once("ready", () => {
 
     // Debug overlay drawing the field's cells on the canvas
     overlay: {
-      // **The brightness map** — the ground regions and tiers the renderer is drawing from.
-      // Every boundary here is a real one in the model; a transition on screen that is not on a
-      // line in this overlay was invented by the renderer.
+      // The brightness map — the ground regions and tiers the renderer draws from. Every boundary
+      // here is a real one in the model; a transition on screen that is not on a line in this
+      // overlay was invented by the renderer.
       levels: cellOverlay.levels,
-      // **The field's own cell decomposition**, as against `levels()` above, which shows what the
-      // renderer painted. Comparing the two is how you tell a model fault from a drawing one —
-      // a tier present here and absent there was lost between the field and the picture.
+      // The field's own cell decomposition, as against `levels()` above, which shows what the
+      // renderer painted. Comparing the two separates a model fault from a drawing one — a tier
+      // present here and absent there was lost between the field and the picture.
       //
-      // **Same signature as `levels` above**: bare call toggles, `draw(true)` / `draw(false)` are
-      // explicit. It is a persisted *setting* underneath, unlike `levels()`, which is why calling
-      // it with the setting off used to draw nothing and return nothing.
+      // Same signature as `levels` above: bare call toggles, `draw(true)` / `draw(false)` are
+      // explicit. It is a persisted setting underneath, unlike `levels()`, which is why calling it
+      // with the setting off used to draw nothing and return nothing.
       draw: cellOverlay.show,
       clear: cellOverlay.clear,
       toggle: cellOverlay.toggle,
@@ -625,8 +624,8 @@ Hooks.once("ready", () => {
       refresh: perception.refresh,
       blinds: blindness.modelBlinds,
       darkSightRange: perception.darkSightRange,
-      // The tier as the current *view* sees it — `max` over active observers per §5.3, or
-      // null in god's eye. What the readout reports.
+      // The tier as the current view sees it — `max` over active observers per §5.3, or null in
+      // god's eye. What the readout reports.
       viewerTier: perception.viewerTier,
     },
 
@@ -673,8 +672,8 @@ Hooks.once("ready", () => {
       // Which of `field()`'s cells cover a point — the picture's answer, next to
       // `evaluate()`'s. `at()` reports both and marks the point it sampled.
       cellsAt: probe.cellsAt,
-      // Which of Foundry's reveal paths is painting a point for each observer — the readout
-      // for "this terrain is the wrong colour / brightness" as against "the wrong tier".
+      // Which of Foundry's reveal paths is painting a point for each observer — the readout for
+      // wrong-colour or wrong-brightness terrain, as against a wrong tier.
       reveals: probe.reveals,
       mark: probe.mark,
       clearMark: probe.clearMark,

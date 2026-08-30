@@ -1,11 +1,9 @@
 /**
- * A light's brightness as a **region in the darkness-level texture**. DESIGN.md §7.0 step 6.
+ * A light's brightness as a region in the darkness-level texture. DESIGN.md §7.0 step 6.
  *
- * ## Why a light cannot hold a fixed brightness while a light source draws it
- *
- * §6.2.9 made a light's *zone colours* absolute and Hamilcarbarcas reported it still was not right. It
- * was not, and the reason is one line further down the same shader. `FALLOFF` and `FRAGMENT_END`
- * (`base-lighting.mjs:347`, `illumination-lighting.mjs:13`):
+ * A light cannot hold a fixed brightness while a light source draws it. §6.2.9 made a light's zone
+ * colours absolute and it still was not right, for a reason one line further down the same shader —
+ * `FALLOFF` and `FRAGMENT_END` (`base-lighting.mjs:347`, `illumination-lighting.mjs:13`):
  *
  * ```glsl
  * if ( attenuation != 0.0 ) depth *= smoothstep(1.0, 1.0 - attenuation, dist);
@@ -13,39 +11,34 @@
  * ```
  *
  * plus `SWITCH_COLOR`, which blends the two zones across 72% of the ratio at the default
- * attenuation. **A Foundry light is a radial falloff by construction.** Its nominal level is
- * reached only at the very centre; everywhere else is an interpolation toward the background. So
- * "each level has a fixed brightness" is not a thing that can be true of a rendered light source,
- * however exactly its endpoint colours are pinned — which is what §6.2.9 pinned.
+ * attenuation. A Foundry light is a radial falloff by construction: its nominal level is reached
+ * only at the centre, everywhere else an interpolation toward the background. So a fixed brightness
+ * per level cannot be true of a rendered light source, however exactly its endpoint colours are
+ * pinned — which is what §6.2.9 pinned.
  *
- * The model has always known the answer: a light has two zones, each at a tier. This file draws
- * that instead, in the one place the module already expresses brightness as a number.
+ * The model has always known the answer: a light has two zones, each at a tier. This file draws that
+ * instead, in the one place the module already expresses brightness as a number.
  *
- * ## The geometry, and why it needs no Clipper in the common case
+ * The geometry needs no Clipper in the common case. A `ClockwiseSweepPolygon` is star-shaped about
+ * its own origin — the property §3.4 leans on for its corner probes — so scaling every boundary
+ * vertex toward the origin stays inside the polygon, and a set of scale factors gives a radial grid:
+ * consecutive rings share a vertex count and an index correspondence, so each band is a quad strip
+ * and each quad two triangles. No boolean ops, no triangulator.
  *
- * A `ClockwiseSweepPolygon` is **star-shaped about its own origin** — the property §3.4 already
- * leans on for its corner probes. So scaling every boundary vertex toward the origin stays inside
- * the polygon, and a set of scale factors gives a radial grid: consecutive rings share a vertex
- * count and an index correspondence, so each band is a quad strip and each quad is two triangles.
- * No boolean ops, no triangulator.
+ * The level per vertex is analytic — `|v − origin|` through {@link levelAtRadius} — which is the
+ * difference from §3.4's ramp and the reason this file is short. Spill has to recover the distance
+ * to an arbitrary polygon from the iso-lines that produced it; a light's distance field is a closed
+ * form, so any vertex can be asked directly however it was produced.
  *
- * The level per vertex is **analytic** — `|v − origin|` through {@link levelAtRadius} — which is
- * the difference from §3.4's ramp and the reason this file is short. Spill has to recover the
- * distance to an arbitrary polygon from the iso-lines that produced it; a light's distance field
- * is a closed form, so any vertex, however it was produced, can be asked directly.
+ * That also makes the clipped case cheap. A light with a darkness cut out of it is no longer
+ * star-shaped, so the strip has to be intersected with the cell, but the levels still come from the
+ * same closed form with nothing to look up. `cell.clipped` selects the path, and is false for every
+ * light not standing in a suppressor's way, which is nearly all of them.
  *
- * That last point is what makes the clipped case cheap too. A light with a *darkness* cut out of
- * it is no longer star-shaped, so the strip has to be intersected with the cell — but the levels
- * still come from the same closed form, with nothing to look up. `cell.clipped` selects the path,
- * and it is false for every light that is not standing in a suppressor's way, which is nearly all
- * of them.
- *
- * ## What the light source still does
- *
- * Colour, animation, and revealing. Only the *illumination* contribution is withheld, by handing
- * the source zone tiers equal to the ground it stands on (§6.2.9's `UNLIT` case, which already
- * paints exactly the background). `canvas.visibility` reads a light's **polygon**, not its
- * illumination mesh, so what a creature can see by is untouched.
+ * The light source still does colour, animation and revealing. Only the illumination contribution is
+ * withheld, by handing the source zone tiers equal to the ground it stands on (§6.2.9's `UNLIT`
+ * case, which already paints exactly the background). `canvas.visibility` reads a light's polygon,
+ * not its illumination mesh, so what a creature can see by is untouched.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -71,13 +64,13 @@ export const SETTING_LIGHT_TEXTURE = "lightsInTexture";
  *
  * @remarks
  * The tessellation has to be fine enough that a linear interpolation between two rings tracks the
- * profile's curvature, and the profile's tightest feature is a transition — one
- * `transition.width()`, three quarters of a square by default. Sixteen puts several rings inside
- * it on any light worth drawing.
+ * profile's curvature, and the profile's tightest feature is a transition — one `transition.width()`,
+ * three quarters of a square by default. Sixteen puts several rings inside it on any light worth
+ * drawing.
  *
- * Cost is linear and small: a light with 60 boundary vertices costs 16 × 60 vertices and twice
- * that many triangles, all built by arithmetic. It is the *clipped* path that is worth counting,
- * and that one is bounded by how many lights stand inside a darkness.
+ * Cost is linear and small: a light with 60 boundary vertices costs 16 × 60 vertices and twice that
+ * many triangles, all arithmetic. The clipped path is the one worth counting, and it is bounded by
+ * how many lights stand inside a darkness.
  */
 const RADIAL_STEPS = 16;
 
@@ -91,11 +84,11 @@ export function isEnabled() {
  * Are band overlaps drawn? `render/renderer.mjs` owns the setting.
  *
  * @remarks
- * **Read by key rather than by import, and that is a deliberate ugliness.** `render/renderer.mjs`
- * imports this file, so importing `SETTING_SHOW_STACKS` back would make a cycle between peers —
- * the thing every seam in this module (`soften.setGroundRefresh`, `transition.setRefresh`,
- * `perception.setUmbraModel`) exists to avoid. A one-line injector for a boolean read would be more
- * machinery than the duplication costs, so the string is repeated and both ends say so.
+ * Read by key rather than by import, a deliberate ugliness. `render/renderer.mjs` imports this file,
+ * so importing `SETTING_SHOW_STACKS` back would make a cycle between peers — the thing every seam in
+ * this module (`soften.setGroundRefresh`, `transition.setRefresh`, `perception.setUmbraModel`)
+ * exists to avoid. A one-line injector for a boolean read is more machinery than the duplication
+ * costs, so the string is repeated and both ends say so.
  */
 function stacksEnabled() {
   // Owner: `SETTING_SHOW_STACKS` in `render/renderer.mjs`. Cached — asked once per `stack` cell.
@@ -131,11 +124,10 @@ export function registerSettings() {
  *
  * @remarks
  * A thin wrapper now: §6.4.3 moved the profile into `render/transition.mjs` so a light's zone
- * boundary, a spill band and a room's edge all fade over the same distance. What is left here is
- * the one thing that is specific to a light — `trailing`, which finishes the outermost ramp *at*
- * the rim instead of straddling it, because there is no geometry past it to carry the other half.
- * That is also what makes the mesh's own silhouette invisible: it hands back exactly the ground
- * level at its edge.
+ * boundary, a spill band and a room's edge all fade over the same distance. What is left is the one
+ * thing specific to a light — `trailing`, which finishes the outermost ramp at the rim instead of
+ * straddling it, there being no geometry past it to carry the other half. That also makes the mesh's
+ * own silhouette invisible: it hands back exactly the ground level at its edge.
  *
  * @param {number} r - Distance from the origin, scene pixels
  * @param {{r0: number, r1: number, level: number}[]} zones
@@ -148,15 +140,13 @@ export function levelAtRadius(r, zones) {
  * A light's two zones as radii and levels, plus the ground it hands back to.
  *
  * @remarks
- * Radii come from `source.radius` and `source.ratio` rather than from `emission.inner`/`outer`,
- * which are the authored values in scene *distance* units. Those two are what the shader itself
- * uses — `dist` is normalised against `radius` and `ratio` is the switch point — so taking them
- * keeps this in step with the light Foundry would have drawn, with no unit conversion to get
- * wrong.
+ * Radii come from `source.radius` and `source.ratio` rather than from `emission.inner`/`outer`, which
+ * are the authored values in scene distance units. Those two are what the shader itself uses —
+ * `dist` is normalised against `radius` and `ratio` is the switch point — so taking them keeps this
+ * in step with the light Foundry would have drawn, with no unit conversion to get wrong.
  *
- * `max` against the ground tier throughout, because a light may not darken (§3.2.1). A torch at
- * noon collapses to three zones all at the ground's level, which draws nothing visible and is the
- * right answer.
+ * `max` against the ground tier throughout, because a light may not darken (§3.2.1). A torch at noon
+ * collapses to three zones all at the ground's level, which draws nothing visible and is right.
  */
 function zonesFor(source, emission, base) {
   const outer = source.radius;
@@ -187,18 +177,17 @@ function zonesFor(source, emission, base) {
  * The light's boundary pulled in to an absolute radius, clamped per spoke.
  *
  * @remarks
- * **Absolute radii, not a fraction of each spoke** (Hamilcarbarcas, 2026-08-27: *"odd behavior when the
- * gradient occurs over a wall"*). Scaling every boundary vertex by the same factor is the obvious
- * construction and it puts the ring boundaries in the wrong place: on a wall-cut sweep, a spoke
- * that stops short at a wall and one that runs the full radius get their `m`th sample at very
- * different distances, so a "ring" is not an iso-radius line at all. The level is still exact at
- * each vertex — it comes from the true distance — but the triangle *between* two such vertices
- * spans a large range of radius and interpolates linearly across it, which is what drew the
- * straight-edged bands running parallel to the wall.
+ * Absolute radii, not a fraction of each spoke (2026-08-27: odd gradient behaviour over a wall).
+ * Scaling every boundary vertex by the same factor is the obvious construction and puts the ring
+ * boundaries in the wrong place: on a wall-cut sweep a spoke that stops short at a wall and one that
+ * runs the full radius get their `m`th sample at very different distances, so a ring is not an
+ * iso-radius line at all. The level is still exact at each vertex, coming from the true distance,
+ * but the triangle between two such vertices spans a large range of radius and interpolates linearly
+ * across it — which drew the straight-edged bands running parallel to the wall.
  *
- * Sampling at `min(m · step, spokeLength)` makes every ring a true circle wherever there is room
- * for one, and collapses the surplus samples onto the wall where there is not. Those collapsed
- * quads are degenerate and rasterise to nothing, which is cheaper than the branch to avoid them.
+ * Sampling at `min(m · step, spokeLength)` makes every ring a true circle wherever there is room for
+ * one, and collapses the surplus samples onto the wall where there is not. Those collapsed quads are
+ * degenerate and rasterise to nothing, cheaper than the branch to avoid them.
  */
 function ringAt(points, origin, radius) {
   const n = points.length / 2;
@@ -218,9 +207,9 @@ function ringAt(points, origin, radius) {
  * Emit the radial grid of a star-shaped polygon directly as triangles.
  *
  * @remarks
- * The fast path, and it is the common one: no Clipper, no triangulator, no distance lookup. Ring
- * `m` is {@link ringAt} at `m · step`; consecutive rings share an index, so a band is a quad strip
- * and the innermost is a fan.
+ * The fast path, and the common one: no Clipper, no triangulator, no distance lookup. Ring `m` is
+ * {@link ringAt} at `m · step`; consecutive rings share an index, so a band is a quad strip and the
+ * innermost is a fan.
  */
 function emitStar(points, origin, out, levelAt, step) {
   const n = points.length / 2;
@@ -253,19 +242,19 @@ function emitStar(points, origin, out, levelAt, step) {
  * The same grid, cut to a cell that is no longer star-shaped.
  *
  * @remarks
- * Reached only when a suppressor has taken a bite out of the light (`cell.clipped`), which is why
- * it is allowed to cost `RADIAL_STEPS` boolean ops.
+ * Reached only when a suppressor has taken a bite out of the light (`cell.clipped`), which is why it
+ * is allowed to cost `RADIAL_STEPS` boolean ops.
  *
- * **The rings are annuli and must be triangulated as annuli.** This is where a light overlapping a
- * *darkness* lost its gradient entirely and came back as concentric hard steps (Hamilcarbarcas,
- * 2026-08-27, who located it by moving the light off the darkness and watching the gradient
- * return). `difference` hands back an outer ring *and* its inner boundary as a separately-wound
- * path; earcutting each on its own — with no hole indices — turns the hole into a **solid disc**,
- * so every band filled itself in from the centre. Each of those discs is flat, because all of its
- * vertices sit at one radius, and `MIN` over a stack of flat discs is a staircase.
+ * The rings are annuli and must be triangulated as annuli. This is where a light overlapping a
+ * darkness lost its gradient entirely and came back as concentric hard steps (2026-08-27, located by
+ * moving the light off the darkness and watching the gradient return). `difference` hands back an
+ * outer ring and its inner boundary as a separately-wound path; earcutting each on its own, with no
+ * hole indices, turns the hole into a solid disc, so every band filled itself in from the centre.
+ * Each disc is flat, all its vertices sitting at one radius, and `MIN` over a stack of flat discs is
+ * a staircase.
  *
- * `groupRings` pairs each outer with its holes, which is the same call `render/halo.mjs` and the
- * clamp meshes already make. The levels were never wrong; the triangles were.
+ * `groupRings` pairs each outer with its holes, the same call `render/halo.mjs` and the clamp meshes
+ * already make. The levels were never wrong; the triangles were.
  */
 function emitClipped(points, origin, cellPaths, out, levelAt, step) {
   const n = points.length / 2;
@@ -321,14 +310,14 @@ function emitClipped(points, origin, cellPaths, out, levelAt, step) {
  * The two zones as flat regions — the §6.4.4 path.
  *
  * @remarks
- * The inner zone is a circle cut to whatever the light covers; the band is the rest of it. Both are
+ * The inner zone is a circle cut to whatever the light covers; the band is the rest. Both are
  * constant, so the mesh carries one level per vertex only because that is the buffer layout this
  * pool speaks.
  *
  * `density: 120` on the circle rather than the sweep's own resolution: the sweep is subdivided for
- * *occlusion*, which is a different question from how round a bright zone needs to look, and it is
- * the one number that decides whether the inner boundary reads as a circle. It is cheap — the ring
- * is generated, intersected once and triangulated once.
+ * occlusion, a different question from how round a bright zone needs to look, and this is the one
+ * number deciding whether the inner boundary reads as a circle. Cheap — the ring is generated,
+ * intersected once and triangulated once.
  */
 function emitFlat(cell, source, zones, out) {
   const region = [];
@@ -351,8 +340,8 @@ function emitFlat(cell, source, zones, out) {
       : [];
 
   // The band is everything the light covers that the inner zone does not. Cut rather than drawn
-  // underneath, so the two do not overlap and the blur sees one boundary at each radius instead of
-  // a hidden second one.
+  // underneath, so the two do not overlap and the blur sees one boundary at each radius instead of a
+  // hidden second one.
   const band = disc.length ? difference(region, disc) : region;
 
   const add = (paths, level) => {
@@ -384,10 +373,10 @@ function emitFlat(cell, source, zones, out) {
  * One light's brightness as a ramp payload, in `render/gradient.mjs`'s own shape.
  *
  * @remarks
- * **Levels, not distances.** §3.4's payload carries distances and lets the renderer map them,
- * because a spill's geometry is expensive and its mapping is a slider. A light is the other way
- * round: the geometry is cheap arithmetic and gets rebuilt whenever the light moves anyway, so
- * there is nothing to gain by keeping the mapping separate and the buffer can be final.
+ * Levels, not distances. §3.4's payload carries distances and lets the renderer map them, because a
+ * spill's geometry is expensive and its mapping is a slider. A light is the other way round: the
+ * geometry is cheap arithmetic and gets rebuilt whenever the light moves anyway, so there is nothing
+ * to gain by keeping the mapping separate and the buffer can be final.
  *
  * @returns {object|null}
  */
@@ -405,8 +394,8 @@ export function rampFor(cell, base) {
     return reject(`no brighter than its ground (tier ${base})`);
   }
 
-  // **The source's own shape, not the cell's**, so the grid is built on something star-shaped.
-  // The cell is what it is then cut to, and only when the two differ.
+  // The source's own shape, not the cell's, so the grid is built on something star-shaped. The cell
+  // is what it is then cut to, and only when the two differ.
   const shape = source.shape;
   const points = shape?.points;
   if (!(points?.length >= 6)) return reject("source has no polygon");
@@ -415,21 +404,20 @@ export function rampFor(cell, base) {
   const levelAt = (r) => levelAtRadius(r, zones);
 
   // One step of radius per ring, in scene pixels, so a ring is an iso-radius line rather than a
-  // fraction of however far each spoke happens to reach.
+  // fraction of however far each spoke reaches.
   const step = source.radius / RADIAL_STEPS;
 
   const out = { vertices: [], levels: [], indices: [] };
 
-  // §6.4.4 — with the field blur doing the softening, a light does not need a ramp of its own.
-  // **Two flat zones and let the blur find both boundaries.** That is not merely cheaper; it is
-  // what removes the faceting (Hamilcarbarcas, 2026-08-27: *"with bigger light sources the polygons start
-  // to show"*). The radial grid subdivides by `radius / RADIAL_STEPS`, so a band's thickness grows
-  // with the light — and between two rings the level interpolates along the **chords** of a
-  // polygonalised circle rather than along its radius, which turns the iso-level contours into a
-  // polygon whose facets widen with the light. Exactly the two-ring failure `render/halo.mjs` hit,
-  // scaled by radius. Flat zones have no interior interpolation at all, so there is nothing to
-  // facet, and the circle they are cut from can be generated at whatever density we like rather
-  // than inherited from the wall sweep.
+  // §6.4.4 — with the field blur doing the softening, a light needs no ramp of its own: two flat
+  // zones, and the blur finds both boundaries. Not merely cheaper, it also removes the faceting
+  // (2026-08-27: polygons showing on bigger light sources). The radial grid subdivides by `radius /
+  // RADIAL_STEPS`, so a band's thickness grows with the light — and between two rings the level
+  // interpolates along the chords of a polygonalised circle rather than along its radius, turning
+  // the iso-level contours into a polygon whose facets widen with the light. The two-ring failure
+  // `render/halo.mjs` hit, scaled by radius. Flat zones have no interior interpolation, so there is
+  // nothing to facet, and the circle they are cut from can be generated at any density rather than
+  // inherited from the wall sweep.
   if (fieldBlur.isEnabled()) {
     emitFlat(cell, source, zones, out);
     if (out.indices.length < 3) return reject("triangulated to nothing");
@@ -451,36 +439,32 @@ export function rampFor(cell, base) {
   return {
     id: `${MODULE_ID}.light.${source.sourceId ?? source.object?.id ?? "?"}.${cell.index ?? 0}`,
     kind: "light",
-    // **`MIN_COLOR` is *half* of §3.2.1, and the comment here used to claim it was all of it.**
-    // The channel holds a darkness level, so `min` is brightest-wins per fragment, which is
-    // exactly the `A = max(every covering inner zone)` half — set levels contend, light does not
-    // stack (§4.2). Correct, and it is why two torches can overlap at all.
+    // `MIN_COLOR` is half of §3.2.1. The channel holds a darkness level, so `min` is brightest-wins
+    // per fragment, which is the `A = max(every covering inner zone)` half — set levels contend,
+    // light does not stack (§4.2). That is why two torches can overlap at all.
     //
-    // What it cannot express is the other half. Relative **bands sum**:
+    // It cannot express the other half. Relative bands sum:
     //
     //     result = max(A, min(A + Σsteps, max(caps)))
     //
-    // and a blend equation that takes the brightest of two inputs can never produce a result
-    // brighter than either. Hamilcarbarcas, 2026-08-27: *"overlapping lights can create an area of
-    // brighter light... they provide +1 to the light level, to the maximum of normal, so 2 dim
-    // overlaps should be rendered to normal."* Two Dim bands sum to +2 capped at Normal; this
-    // draws them as Dim.
+    // and a blend equation taking the brightest of two inputs can never produce a result brighter
+    // than either. Overlapping lights give +1 to the light level up to a maximum of Normal, so two
+    // Dim bands sum to +2 capped at Normal; this draws them as Dim.
     //
-    // **Which is why the summing does not live here.** `model/field.mjs` emits a `stack` cell for
-    // every band overlap and `render/renderer.mjs` draws it — one clone per participating emitter,
-    // at that emitter's own origin and attenuation, with the band raised to the resolved tier.
-    // That work exists and is complete; it is gated behind `showStackedOverlaps`, which defaults
-    // to **false**. So the missing brightening is a switch, not a gap.
+    // Which is why the summing does not live here. `model/field.mjs` emits a `stack` cell for every
+    // band overlap and `render/renderer.mjs` draws it — one clone per participating emitter, at that
+    // emitter's own origin and attenuation, with the band raised to the resolved tier. That work is
+    // complete and gated behind `showStackedOverlaps`, so the missing brightening is a switch rather
+    // than a gap.
     //
-    // Open, and the reason this note is here rather than only in the design doc: those clones
-    // still draw on the **illumination** layer with a constant tier colour, which is the exact
-    // path §6.4.6's `withheld()` finding identified as re-lighting a region and cutting off hard
-    // at the clip boundary. They were not revisited when §7.0 step 6 moved every other light into
-    // the texture. If turning the switch on produces a flat plateau or a hard rim, the fix is to
-    // route the overlap through this file like everything else.
+    // Still open: those clones draw on the illumination layer with a constant tier colour, the exact
+    // path §6.4.6's `withheld()` finding identified as re-lighting a region and cutting off hard at
+    // the clip boundary. They were not revisited when §7.0 step 6 moved every other light into the
+    // texture. If turning the switch on produces a flat plateau or a hard rim, the fix is to route
+    // the overlap through this file like everything else.
     blendMode: "MIN_COLOR",
     sortLevel: LIGHT_SORT,
-    // What `getDarknessLevel` reports inside this light. The inner zone, which is the one a caller
+    // What `getDarknessLevel` reports inside this light: the inner zone, which is what a caller
     // asking about a torch means.
     nominal: zones[0].level,
     vertices: new Float32Array(out.vertices),
@@ -489,10 +473,9 @@ export function rampFor(cell, base) {
     bounds: new PIXI.Rectangle(bounds.x, bounds.y, bounds.width, bounds.height),
     // A point query answers from the light's own polygon, which is exactly the ground it covers.
     outline: [shape],
-    // **For `ui/cell-overlay.levels` and nothing else.** A light is a brightness region since
-    // §7.0 step 6, so an overlay that shows the ground and not the lights is showing half the map
-    // — which is exactly what it did, and what sent this round of diagnosis at the geometry
-    // instead of at the tool (Hamilcarbarcas, 2026-08-27).
+    // For `ui/cell-overlay.levels` and nothing else. A light is a brightness region since §7.0 step
+    // 6, so an overlay showing the ground and not the lights shows half the map — which is what it
+    // did, sending a round of diagnosis at the geometry instead of at the tool (2026-08-27).
     debug: {
       x: origin.x,
       y: origin.y,
@@ -527,11 +510,11 @@ let reuses = 0;
  * Why lights produced no mesh, counted by reason.
  *
  * @remarks
- * **Added after `lights: 0` cost a round of guessing** (2026-08-27). Every rejection in
- * {@link rampFor} is legitimate on its own terms — a torch at noon *should* draw nothing — so a
- * count of zero is indistinguishable from a fault without knowing which branch produced it. The
- * reasons are strings rather than codes because the useful one carries a number with it: *"no
- * brighter than its ground (tier 3)"* names the bug and the value in the same breath.
+ * Added after `lights: 0` cost a round of guessing (2026-08-27). Every rejection in {@link rampFor}
+ * is legitimate on its own terms — a torch at noon should draw nothing — so a count of zero is
+ * indistinguishable from a fault without knowing which branch produced it. The reasons are strings
+ * rather than codes because the useful one carries a number: "no brighter than its ground (tier 3)"
+ * names the bug and the value at once.
  */
 let rejects = {};
 
@@ -544,17 +527,17 @@ function reject(reason) {
  * Everything a ramp's geometry and levels depend on, as one comparable key.
  *
  * @remarks
- * **This is what keeps a token drag affordable.** `paint.repaint` runs whenever the field or any
- * observer's line of sight changes, which during a drag is every frame; without this, every light
- * on the map would rebuild its grid on each of them to produce the identical buffers.
+ * What keeps a token drag affordable. `paint.repaint` runs whenever the field or any observer's line
+ * of sight changes, which during a drag is every frame; without this, every light on the map would
+ * rebuild its grid on each of them to produce identical buffers.
  *
- * `source.shape` is compared by **identity**, not by value — `_createShapes` replaces it rather
- * than mutating it, which is the same trick `field.currentSignature` and the umbra cache already
- * use. So a torch that moved gets a new shape and rebuilds; a torch that did not, does not, even
- * though the observer walking past it re-ran the whole pass.
+ * `source.shape` is compared by identity, not by value — `_createShapes` replaces it rather than
+ * mutating it, the same trick `field.currentSignature` and the umbra cache use. So a torch that
+ * moved gets a new shape and rebuilds; one that did not, does not, even though the observer walking
+ * past it re-ran the whole pass.
  *
  * `darknessTable()` likewise: `setDarknessTable` swaps the object, so a retune invalidates every
- * light without anyone having to remember to.
+ * light with nothing to remember.
  */
 function cacheKey(cell, base, shape) {
   const e = cell.emission ?? {};
@@ -599,37 +582,32 @@ function offsetPaths(paths, delta) {
  * A band overlap, as a region in the brightness field. §3.2.1's `Σn` half.
  *
  * @remarks
- * Hamilcarbarcas, 2026-08-27: *"I want those areas to be incorporated into `render.texture` and rendered
- * that way rather than illuminated individually."*
+ * 2026-08-27: these areas belong in `render.texture` rather than being illuminated individually.
  *
- * ## Why the flat fill is right now, having been wrong before
+ * The flat fill is right now, having been wrong before. `render/renderer.mjs` drew these by cloning
+ * every participating light — same origin, radii and attenuation, band raised to the resolved tier —
+ * and its note says why a flat fill was tried first and rejected: a Foundry light is very nearly all
+ * gradient (`SWITCH_COLOR` blends the two zones across 72% of the ratio, `FALLOFF` ramps the outer
+ * half on top), so a plateau butted against it reads as a step however accurate its value.
  *
- * `render/renderer.mjs` drew these by **cloning** every participating light — same origin, radii
- * and attenuation, band raised to the resolved tier — and its note says why a flat fill was tried
- * first and rejected: a Foundry light is very nearly all gradient (`SWITCH_COLOR` blends the two
- * zones across 72% of the ratio, `FALLOFF` ramps the outer half on top), so *"a plateau butted
- * against that reads as a step however accurate its value"*.
+ * That premise died with §7.0 step 6. A light in this file is not a falloff any more; with the field
+ * blur on it is {@link emitFlat}'s two flat zones. A flat overlap butted against flat zones is the
+ * same kind of thing as its neighbours, and the blur finds this boundary exactly as it finds theirs.
+ * The clones were solving a problem the takeover had removed.
  *
- * **That premise died with §7.0 step 6.** A light in this file is not a falloff any more; with the
- * field blur on it is {@link emitFlat}'s two flat zones. A flat overlap butted against flat zones
- * is the same kind of thing as its neighbours, and the blur finds this boundary exactly as it finds
- * theirs. The clones were solving a problem that the takeover had already removed.
+ * It also puts the overlap where every other brightness lives. One field, one blur, one point query
+ * — and `getDarknessLevel` inside an overlap reports the tier the model says is there instead of the
+ * brighter of the two lights under it.
  *
- * It also puts the overlap where every other brightness lives. One field, one blur, one point
- * query — and `getDarknessLevel` inside an overlap now reports the tier the model says is there
- * instead of the brighter of the two lights under it.
+ * The collar: with the blur off there is nothing else to soften the region's rim, so it gets one of
+ * its own — the interior at the resolved level, a `transition.width()` band fading to 1.0 at the
+ * edge. One is the darkest value the channel holds and `min(x, 1)` is `x`, so the collar's outer end
+ * contributes nothing and whatever light lies beneath comes back through: the `MIN` mirror of the
+ * `MAX` trick `render/paint.mjs`'s `clampRamps` plays, same construction.
  *
- * ## The collar, and when it is drawn
- *
- * With the blur off there is nothing else to soften the region's rim, so it gets a collar of its
- * own: the interior at the resolved level, a `transition.width()` band fading to **1.0** at the
- * edge. One is the darkest value the channel holds and `min(x, 1)` is `x`, so the collar's outer
- * end contributes nothing and whatever light lies beneath comes back through — the `MIN` mirror of
- * the `MAX` trick `render/paint.mjs`'s `clampRamps` plays, and the same construction.
- *
- * With the blur **on** the collar is skipped, or the boundary would be softened twice at two
- * different widths — the state §6.4.3 exists to end, and the reason `render/halo.mjs` emits
- * nothing in that mode.
+ * With the blur on the collar is skipped, or the boundary would be softened twice at two different
+ * widths — the state §6.4.3 exists to end, and the reason `render/halo.mjs` emits nothing in that
+ * mode.
  *
  * @param {object} cell - A `stack` cell: `polygon`, `tier`, `base`, `holes`
  * @param {number} base - The ground tier beneath it
@@ -644,7 +622,7 @@ function stackRampFor(cell, base, index) {
   const ground = table[base] ?? table[TIER.DARK];
 
   // Nothing to draw: the overlap resolved no brighter than the ground it sits on. Two torches at
-  // noon, and the common case on a lit map.
+  // noon, the common case on a lit map.
   if (!(level < ground)) return reject(`overlap no brighter than its ground (tier ${base})`);
 
   const region = [toClipperPath(cell.polygon, CLIPPER_SCALE)];
@@ -688,10 +666,10 @@ function stackRampFor(cell, base, index) {
 
   if (out.indices.length < 3) return reject("stack triangulated to nothing");
 
-  // **Computed from the vertices, not asked of the polygon.** A cell's `polygon` is a plain
-  // `PIXI.Polygon` — Clipper output, not a sweep — so it has neither `getBounds()` nor `bounds`,
-  // and the `?? shape.bounds` idiom `rampFor` uses above would hand the pool `undefined` and cull
-  // the mesh out of existence.
+  // Computed from the vertices, not asked of the polygon. A cell's `polygon` is a plain
+  // `PIXI.Polygon` — Clipper output, not a sweep — so it has neither `getBounds()` nor `bounds`, and
+  // the `?? shape.bounds` idiom `rampFor` uses above would hand the pool `undefined` and cull the
+  // mesh out of existence.
   let minX = Infinity;
   let minY = Infinity;
   let maxX = -Infinity;
@@ -728,9 +706,9 @@ function stackRampFor(cell, base, index) {
       bandTier: cell.tier,
       stack: true,
     },
-    // **Every other ramp producer returns this and this one did not**, so `gradient.stats()`
-    // summed `undefined` into its triangle count and reported `triangles: NaN` on any scene with a
-    // band overlap. Found while profiling, 2026-08-28.
+    // Every other ramp producer returns this and this one did not, so `gradient.stats()` summed
+    // `undefined` into its triangle count and reported `triangles: NaN` on any scene with a band
+    // overlap. Found while profiling, 2026-08-28.
     triangles: out.indices.length / 3,
   };
 }
@@ -745,28 +723,27 @@ function stackRampFor(cell, base, index) {
  * Band-overlap ramps, keyed on the cell's own polygon.
  *
  * @remarks
- * **This file used to say an overlap could not be cached, and the reason was right about the wrong
- * clock.** The note at {@link rampsFrom} argued that *"the region's shape changes whenever either
- * light moves, which is precisely when the cache would have to be invalidated anyway"* — true, and
- * it does not follow that the ramp must be rebuilt every **pass**. `paint.repaint` reruns whenever
- * any observer's `los` is replaced, which during a walk is several times a second, and the field is
- * unchanged on almost all of them.
+ * This file used to say an overlap could not be cached, and the reason was right about the wrong
+ * clock. The note at {@link rampsFrom} argued that the region's shape changes whenever either light
+ * moves, which is when the cache would have to be invalidated anyway — true, and it does not follow
+ * that the ramp must be rebuilt every pass. `paint.repaint` reruns whenever any observer's `los` is
+ * replaced, several times a second during a walk, and the field is unchanged on almost all of them.
  *
- * Measured on Hamilcarbarcas's scene: 173 repaints in one drag, **173 of them with the field object
- * identical**, and 117 stack cells rebuilt on every one — 6.05 ms of a 7.4 ms pass, against 0.83 ms
- * for the two stages that genuinely depend on the point of view. It was the whole cost of the pass
- * and it was recomputing an answer it already had.
+ * Measured: 173 repaints in one drag, 173 of them with the field object identical, and 117 stack
+ * cells rebuilt on every one — 6.05 ms of a 7.4 ms pass, against 0.83 ms for the two stages that
+ * genuinely depend on the point of view. The whole cost of the pass, recomputing an answer it
+ * already had.
  *
- * **Keyed on the polygon object, not on an index**, which is what makes this safe where the id
- * scheme was not. `rampsFrom`'s own comment explains the hazard: a light's cache id is
+ * Keyed on the polygon object, not on an index, which is what makes this safe where the id scheme
+ * was not. `rampsFrom`'s own comment explains the hazard: a light's cache id is
  * `${sourceId}.${index}`, so if stack cells consumed values from that counter, an overlap appearing
  * or vanishing would shift every id and miss the whole scene on exactly the frame a token walks two
- * torches together. A `WeakMap` on the polygon has no ordinal at all — a cell either is the same
- * geometry object as last pass or it is not — and entries for cells the field has dropped are
- * collected with the polygons themselves, so there is no eviction pass either.
+ * torches together. A `WeakMap` on the polygon has no ordinal — a cell either is the same geometry
+ * object as last pass or it is not — and entries for cells the field has dropped are collected with
+ * the polygons, so there is no eviction pass either.
  *
- * When either light *does* move, `field.compute` allocates fresh polygons and every key misses,
- * which is the correct and unavoidable rebuild the original note was describing.
+ * When either light does move, `field.compute` allocates fresh polygons and every key misses, the
+ * correct and unavoidable rebuild the original note described.
  */
 let stackCache = new WeakMap();
 
@@ -804,31 +781,31 @@ export function rampsFrom(cells, sceneTier) {
   stackRamps = 0;
 
   for (const cell of cells) {
-    // **Band overlaps, in the same field as everything else** (§3.2.1's `Σn`), and **cached on
-    // their own polygon** since 2026-08-28 — see {@link stackCache} for the measurement that
-    // reversed the "rebuilt each pass" note this comment used to carry.
+    // Band overlaps, in the same field as everything else (§3.2.1's `Σn`), and cached on their own
+    // polygon since 2026-08-28 — see {@link stackCache} for the measurement that reversed the
+    // rebuilt-each-pass note this comment used to carry.
     if (cell.kind === "stack") {
       stackCells++;
       if (!stacksEnabled()) {
-        // **Recorded, not skipped silently.** A `stack` cell present in the field and absent from
-        // the picture is exactly the state that cost this project two wrong diagnoses; the switch
-        // being off has to be as visible as any other reason a ramp was not built.
+        // Recorded, not skipped silently. A `stack` cell present in the field and absent from the
+        // picture is the state that cost two wrong diagnoses; the switch being off has to be as
+        // visible as any other reason a ramp was not built.
         reject("showStackedOverlaps is off");
         continue;
       }
 
       const base = cell.base ?? sceneTier;
-      // **The polygon is the key, so `stackIndex` is only an id.** It still advances on every
-      // stack cell, hit or miss, so a reused ramp keeps the same `id` it had last pass as long as
-      // the cell list is unchanged — which is exactly when the cache hits. Nothing reads a stack
-      // ramp's id (`gradient.remap` only matches spill), so a shift on a genuine rebuild is
-      // harmless; it is kept stable because a churning id is a diagnostic nuisance, not a bug.
+      // The polygon is the key, so `stackIndex` is only an id. It still advances on every stack
+      // cell, hit or miss, so a reused ramp keeps the `id` it had last pass as long as the cell list
+      // is unchanged — which is when the cache hits. Nothing reads a stack ramp's id
+      // (`gradient.remap` only matches spill), so a shift on a genuine rebuild is harmless; it is
+      // kept stable because a churning id is a diagnostic nuisance.
       const key = stackCacheKey(cell, base);
       const hit = cell.polygon ? stackCache.get(cell.polygon) : null;
       if (hit?.key === key) {
-        // **Its own counters, not `builds`/`reuses`.** Those are the light cache's, and it was a
-        // 98% hit rate against a 6 ms pass that proved the cost was *here* rather than there —
-        // pooling the two would have hidden exactly the signal that found this.
+        // Its own counters, not `builds`/`reuses`. Those are the light cache's, and a 98% hit rate
+        // against a 6 ms pass is what proved the cost was here rather than there — pooling the two
+        // would have hidden the signal that found this.
         stackReuses++;
         stackIndex++;
         if (hit.ramp) {
@@ -840,8 +817,8 @@ export function rampsFrom(cells, sceneTier) {
 
       stackBuilds++;
       const ramp = stackRampFor(cell, base, stackIndex++);
-      // `null` is cached like the light path caches it: "this overlap is no brighter than its
-      // ground" is the common answer on a lit map and is worth not recomputing.
+      // `null` is cached like the light path caches it: an overlap no brighter than its ground is
+      // the common answer on a lit map and is worth not recomputing.
       if (cell.polygon) stackCache.set(cell.polygon, { key, ramp });
       if (ramp) {
         stackRamps++;
@@ -868,8 +845,8 @@ export function rampsFrom(cells, sceneTier) {
 
     builds++;
     const ramp = rampFor({ ...cell, index }, base);
-    // `null` is cached too: "this light contributes nothing" is an answer worth not recomputing,
-    // and it is the common one at noon.
+    // `null` is cached too: a light contributing nothing is an answer worth not recomputing, and the
+    // common one at noon.
     cache.set(id, { key, ramp });
     if (ramp) out.push(ramp);
   }
@@ -892,28 +869,28 @@ export function stats() {
     cached: cache.size,
     builds,
     reuses,
-    // **§3.2.1's `Σn`, as it stands in the picture.** `stackCells` above `stacks` means the field
-    // found band overlaps that did not become ramps, and `rejects` below says why — most often
-    // the switch, which defaulted to `false` until 2026-08-27 and is therefore stored as `false`
-    // in any world whose settings form has ever been saved.
+    // §3.2.1's `Σn`, as it stands in the picture. `stackCells` above `stacks` means the field found
+    // band overlaps that did not become ramps, and `rejects` below says why — most often the switch,
+    // which defaulted to `false` until 2026-08-27 and is therefore stored as `false` in any world
+    // whose settings form has ever been saved.
     stackCells,
     stacks: stackRamps,
-    // **`stackBuilds` staying flat during a token drag is the 2026-08-28 fix doing its job**, and
-    // it is the counter to read if the paint's `stage.lights` climbs again. A build per cell per
-    // pass is the state that cost 6.05 ms of a 7.4 ms repaint.
+    // `stackBuilds` staying flat during a token drag is the 2026-08-28 fix doing its job, and the
+    // counter to read if the paint's `stage.lights` climbs again. A build per cell per pass is the
+    // state that cost 6.05 ms of a 7.4 ms repaint.
     stackBuilds,
     stackReuses,
     stacksEnabled: stacksEnabled(),
     radialSteps: RADIAL_STEPS,
-    // **The line to read when `lights` is 0.** Empty with a cache full of entries means every one
-    // was reused from a previous pass, so the reasons belong to that pass — force a repaint first.
+    // The line to read when `lights` is 0. Empty with a cache full of entries means every one was
+    // reused from a previous pass, so the reasons belong to that pass — force a repaint first.
     rejected: { ...rejects },
   };
 }
 
 export function invalidate() {
   cache.clear();
-  // A `WeakMap` has no `clear`, so dropping the map is the only way — and it is the cheaper one
-  // anyway, since the old entries go with their polygons.
+  // A `WeakMap` has no `clear`, so dropping the map is the only way — and the cheaper one anyway,
+  // since the old entries go with their polygons.
   stackCache = new WeakMap();
 }

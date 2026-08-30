@@ -1,37 +1,30 @@
 /**
  * The preset editor — a sub-window off the module settings. DESIGN.md §10.2.
  *
- * `model/presets.mjs` holds PF1's vocabulary: a GM places a *deeper darkness*, not `level: 3`
- * plus `reduce 2` plus a Supernatural floor, correct and in agreement with each other. This is
- * where that vocabulary stops being the module's and becomes the world's — new entries for
- * whatever a table actually uses, and the shipped ones retuned to house numbers.
+ * `model/presets.mjs` holds PF1's vocabulary: a GM places a deeper darkness, not `level: 3` plus
+ * `reduce 2` plus a Supernatural floor, correct and in agreement with each other. This is where that
+ * vocabulary stops being the module's and becomes the world's — new entries for whatever a table
+ * uses, and the shipped ones retuned to house numbers.
  *
- * ## One preset at a time, not all of them at once
+ * One preset at a time. A preset has two mutually exclusive halves, and rendering every entry's
+ * fields down one page means rendering both halves of each — twelve fields per row, most
+ * inapplicable. So the window edits one preset, chosen from a select, with the same branch-switching
+ * the light sheet uses. Same shape and labels, deliberately: editor and sheet must not develop two
+ * vocabularies for one model.
  *
- * A preset has two mutually exclusive halves, and rendering every entry's fields down one page
- * means rendering both halves of each — twelve fields per row, most of them inapplicable. So the
- * window edits **one** preset, chosen from a select, with the same branch-switching the light
- * sheet uses. Same shape, same labels, deliberately: the editor and the sheet must not develop
- * two vocabularies for one model.
+ * What is edited is a working copy. Nothing reaches the setting until Save. Switching between
+ * presets harvests the visible pane into that copy first, so a half-finished edit survives a look at
+ * another entry, and Close without saving discards the lot. Both are what a GM assumes without being
+ * told, at the cost of one field of state.
  *
- * ## What is edited is a working copy
+ * The key is identity and the label is not. A document records where its numbers came from in
+ * `config.preset`, which is history — so renaming a preset keeps its key and the documents
+ * referencing it stay attached, while deleting one leaves those documents holding a dead key, which
+ * reports as Custom and changes nothing, nothing in the model reading `preset` at all. See §10.2.
  *
- * Nothing reaches the setting until *Save*. Switching between presets harvests the visible pane
- * into that copy first, so a half-finished edit survives a look at another entry, and *Close*
- * without saving discards the lot. Both are what a GM will assume without being told, and the
- * cost is one field of state.
- *
- * ## The key is identity; the label is not
- *
- * A document records **where its numbers came from** in `config.preset`, which is history. So
- * renaming a preset keeps its key and the documents that reference it stay attached; deleting
- * one leaves those documents holding a dead key, which reports as Custom and changes nothing,
- * because nothing in the model reads `preset` at all. See §10.2.
- *
- * Editing a preset does **not** reach back into lights already placed from it — `applyPreset`
- * writes values at the moment it is chosen and nothing re-reads the table afterwards. That is
- * the one-way sync seen from the far side, and the window says so rather than leaving it to be
- * discovered.
+ * Editing a preset does not reach back into lights already placed from it: `applyPreset` writes
+ * values when it is chosen and nothing re-reads the table afterwards. The one-way sync seen from the
+ * far side, and the window says so rather than leaving it to be discovered.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -53,8 +46,8 @@ export const MENU_KEY = "presetEditor";
 /* -------------------------------------------- */
 
 /**
- * **Functions, not constants.** These were module-level arrays, which is evaluated at import —
- * before `game.i18n` has loaded a single translation (see `i18n.mjs`). A `const` built from
+ * Functions rather than constants. These were module-level arrays, evaluated at import — before
+ * `game.i18n` has loaded a single translation (see `i18n.mjs`) — so a `const` built from
  * {@link tierLabel} would freeze the keys into the dropdowns for the session. Called from
  * `_renderHTML`, which is late enough.
  */
@@ -68,8 +61,8 @@ const clampChoices = () => [TIER.SUPERNATURAL_DARK, TIER.DARK, TIER.DIM].map(tie
 /**
  * Scene light levels a light may be switched on at, brightest first.
  *
- * Mirrors `ui/light-config.ACTIVATION_TIERS` and for its reason: the test is against the
- * *ambient*, and Supernatural Dark is not somewhere ambient light can be.
+ * Mirrors `ui/light-config.ACTIVATION_TIERS`, for its reason: the test is against the ambient, and
+ * Supernatural Dark is not somewhere ambient light can be.
  */
 const ACTIVATION_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
 
@@ -122,7 +115,7 @@ function select(name, options, value) {
   return `<select name="${esc(name)}">${body}</select>`;
 }
 
-/** A blank entry, so *New* lands on something that already works. */
+/** A blank entry, so New lands on something that already works. */
 const blankPreset = () => ({
   label: t("Presets.New"),
   negative: false,
@@ -145,8 +138,8 @@ const blankPreset = () => ({
  * @remarks
  * Built by hand rather than through `HandlebarsApplicationMixin`. The module has no `templates/`
  * directory and this would be the only thing in it, so a template would put half of one window's
- * markup in a second file and a second language for the sake of a list and a form. §10.6's
- * settings menu is the point at which that trade changes.
+ * markup in a second file and a second language for the sake of a list and a form. §10.6's settings
+ * menu is where that trade changes.
  */
 class PresetEditor extends foundry.applications.api.ApplicationV2 {
   static DEFAULT_OPTIONS = {
@@ -174,7 +167,7 @@ class PresetEditor extends foundry.applications.api.ApplicationV2 {
     },
   };
 
-  /** The working copy. Nothing here is stored until *Save*. */
+  /** The working copy. Nothing here is stored until Save. */
   #working = foundry.utils.deepClone(presetTable());
 
   /** @type {string|null} */
@@ -256,13 +249,12 @@ ${
 
 <div data-branch="light"${negative ? ' class="pf1-lighting-off"' : ""}>
   <!--
-    **Magical is inside the light branch, and that is the model rather than tidiness** (§10.1).
-    Nothing reads a *suppressor's* \`kind\`: \`breaks()\` and the eligibility preset both test
-    \`emitter.kind\`, and a darkness's umbra comes from \`castsUmbra\`, which is \`level >= 1\`.
-    So for a darkness this checkbox moved nothing, and its hint used to claim otherwise.
-    \`ui/light-config.mjs\` has always had it here; this pane was the one that did not
-    (Hamilcarbarcas, 2026-08-29: *"is the magical checkbox superfluous for darkness sources?"* — it
-    was). On the emitter side the two axes are genuinely independent, which is why it stays.
+    Magical sits inside the light branch, which is the model rather than tidiness (§10.1). Nothing
+    reads a suppressor's \`kind\`: \`breaks()\` and the eligibility preset both test
+    \`emitter.kind\`, and a darkness's umbra comes from \`castsUmbra\`, which is \`level >= 1\`. So
+    for a darkness this checkbox moved nothing while its hint claimed otherwise.
+    \`ui/light-config.mjs\` has always had it here; this pane was the one that did not (2026-08-29).
+    On the emitter side the two axes are genuinely independent, which is why it stays.
   -->
   <div class="form-group">
     <label>${esc(t("Presets.Magical"))}</label>
@@ -273,13 +265,13 @@ ${
   </div>
 
   <!--
-    **Both are withheld entirely when the light is mundane, not merely disabled**
-    (Hamilcarbarcas, 2026-08-29). A mundane light has no spell level — \`breaks()\` and the
-    eligibility preset gate every use of \`level\` on \`kind === "magical"\` — and \`#harvest\`
-    already forces \`cancelsDarkness\` to false for one, so a visible checkbox there is a control
-    whose value is overruled on save. \`ui/light-config.mjs\` greys them instead of hiding them,
-    which is the right call on a sheet whose rows must not reflow under the cursor; a window that
-    re-renders on the toggle anyway can just take them away.
+    Both are withheld entirely when the light is mundane rather than merely disabled (2026-08-29). A
+    mundane light has no spell level — \`breaks()\` and the eligibility preset gate every use of
+    \`level\` on \`kind === "magical"\` — and \`#harvest\` already forces \`cancelsDarkness\` false
+    for one, so a visible checkbox there is a control whose value is overruled on save.
+    \`ui/light-config.mjs\` greys them instead of hiding them, the right call on a sheet whose rows
+    must not reflow under the cursor; a window that re-renders on the toggle anyway can take them
+    away.
   -->
   <div data-needs="magical"${off(!magical)}>
     <div class="form-group">
@@ -316,8 +308,8 @@ ${
       <input type="number" name="dim" value="${esc(light.dim ?? 40)}" min="0" step="any">
       <label>${esc(t("Presets.Steps"))}</label>
       <input type="number" name="steps" value="${esc(config.steps ?? 1)}" min="0" max="4" step="1">
-      <!-- Forced, not left to wrapping. Three controls do not fit and the natural break fell
-           *between* "Maximum" and its dropdown, stranding the label on the row above. -->
+      <!-- Forced rather than left to wrapping. Three controls do not fit, and the natural break
+           fell between "Maximum" and its dropdown, stranding the label on the row above. -->
       <span class="pf1-lighting-break"></span>
       <label>${esc(t("Presets.Maximum"))}</label>
       ${select("cap", tierChoices(), config.cap ?? config.emitTier ?? TIER.NORMAL)}
@@ -336,18 +328,18 @@ ${
   </div>
 
   <!--
-    **One group, two rows — *Effect* owns the radius and the floor** (Hamilcarbarcas, 2026-08-29).
-    Neither is a decision separate from what the darkness does: the floor is the bottom of the
-    same transform, and a darkness has exactly one radius. Laid out like *Increase Brightness*
-    above — what the control does on the first line, what bounds it on the second.
+    One group, two rows: Effect owns the radius and the floor (2026-08-29). Neither is a decision
+    separate from what the darkness does — the floor is the bottom of the same transform, and a
+    darkness has exactly one radius. Laid out like Increase Brightness above: what the control does
+    on the first line, what bounds it on the second.
 
-    The break is a \`flex-basis: 100%\` spacer rather than natural wrapping, for the same reason
-    as up there: left to itself the row breaks wherever it runs out of width, which is usually
-    between a label and the field it names.
+    The break is a \`flex-basis: 100%\` spacer rather than natural wrapping, for the reason given
+    above: left to itself the row breaks wherever it runs out of width, usually between a label and
+    the field it names.
 
-    \`Floor\` keeps \`data-effect="reduce"\` — under *set level to* the target **is** the floor
-    (\`#harvest\` writes \`floor: max\` on that branch), so offering a second control for it would
-    be offering one that contradicts itself. Its own hint is folded into the group's.
+    \`Floor\` keeps \`data-effect="reduce"\` — under set-level-to the target is the floor
+    (\`#harvest\` writes \`floor: max\` on that branch), so a second control for it would contradict
+    itself. Its hint is folded into the group's.
   -->
   <div class="form-group slim">
     <label>${esc(t("Presets.Effect"))}</label>
@@ -381,14 +373,14 @@ ${this.#activation(config)}`;
    * The activation range — §10.4.1's control, as a preset can carry it.
    *
    * @remarks
-   * **Outside both branches**, because Foundry gates a darkness source on the same field
+   * Outside both branches, because Foundry gates a darkness source on the same field
    * (`light.mjs:148-159` runs before the source is built), exactly as `ui/light-config.mjs` has it.
    *
-   * **The full ladder means *always*, and is stored by storing nothing.** `activationRange`
-   * resolves Bright→Dark to `{min: 0, max: 1}`, which is Foundry's own default — so a preset
-   * showing the whole range is a preset with no opinion, and {@link #harvest} omits the pair.
-   * That is what keeps every built-in preset from acquiring a range it never had and overwriting
-   * one a GM set by hand on a light. Narrow it and it starts being written.
+   * The full ladder means always, and is stored by storing nothing. `activationRange` resolves
+   * Bright→Dark to `{min: 0, max: 1}`, Foundry's own default, so a preset showing the whole range
+   * has no opinion and {@link #harvest} omits the pair. That keeps every built-in preset from
+   * acquiring a range it never had and overwriting one a GM set by hand on a light. Narrow it and it
+   * starts being written.
    */
   #activation(config) {
     const from = storedTier(config.activeFrom) ?? TIER.BRIGHT;
@@ -418,10 +410,10 @@ ${this.#activation(config)}`;
    * the branch and a per-control listener would have to be re-bound on every re-render.
    *
    * @remarks
-   * A stable bound field, removed before it is added. `_onRender` fires on **every** render and
-   * `this.element` survives them — only the content inside it is replaced — so an anonymous
-   * handler would stack one copy per render, and each copy would harvest and re-render, which is
-   * the shape of bug that looks like the window getting slower the longer it is open.
+   * A stable bound field, removed before it is added. `_onRender` fires on every render and
+   * `this.element` survives them, only the content inside being replaced, so an anonymous handler
+   * would stack one copy per render and each copy would harvest and re-render — the shape of bug
+   * that looks like the window getting slower the longer it is open.
    */
   #onChange = (event) => {
     const name = event.target?.name;
@@ -436,10 +428,10 @@ ${this.#activation(config)}`;
 
     this.#harvest();
 
-    // Only two fields change what is *shown*. Everything else has already been recorded by the
+    // Only two fields change what is shown. Everything else has already been recorded by the
     // harvest above, and re-rendering for it would rebuild the pane under the GM's cursor.
-    // `magical` joined the list on 2026-08-29, when *Spell Level* and *Counts as Daylight*
-    // started being withheld rather than greyed for a mundane light.
+    // `magical` joined the list on 2026-08-29, when Spell Level and Counts as Daylight started being
+    // withheld rather than greyed for a mundane light.
     if (name === "negative" || name === "transformOp" || name === "magical") this.render();
   };
 
@@ -469,20 +461,19 @@ ${this.#activation(config)}`;
     const op = value("transformOp")?.value === "clamp" ? "clamp" : "reduce";
     const max = num("transformMax", TIER.DARK);
 
-    // **A darkness's `kind` is derived from its level, not from the checkbox.** The checkbox is
+    // A darkness's `kind` is derived from its level rather than from the checkbox. The checkbox is
     // in the light branch now and a hidden branch keeps its DOM, so reading it here would write
-    // whatever the *light* half happened to be left at. Nothing consumes a suppressor's `kind`
-    // (§10.1), so this is only about the flag being coherent to read — and `level >= 1` is
-    // exactly what `castsUmbra` means by magical. Still written rather than omitted, because
-    // `applyPreset` writes the keys it has and an absent one would leave a light's stale value
-    // behind when a darkness preset is chosen over it.
+    // whatever the light half was left at. Nothing consumes a suppressor's `kind` (§10.1), so this
+    // is only about the flag being coherent to read, and `level >= 1` is what `castsUmbra` means by
+    // magical. Still written rather than omitted: `applyPreset` writes the keys it has, and an
+    // absent one would leave a light's stale value behind when a darkness preset is chosen over it.
     const darkKind = num("darkLevel", 2) >= 1 ? "magical" : "mundane";
 
-    // **The full ladder is stored as nothing at all.** Bright→Dark resolves to `{min: 0, max: 1}`
-    // — Foundry's own default — so a preset showing the whole range has no opinion about
-    // activation, and one with no opinion must not write the fields: `applyPreset` would then
-    // reset a range the GM had set by hand on the light it is applied to. Narrowing either end
-    // starts writing both. See `#activation`.
+    // The full ladder is stored as nothing at all. Bright→Dark resolves to `{min: 0, max: 1}`,
+    // Foundry's own default, so a preset showing the whole range has no opinion about activation —
+    // and one with no opinion must not write the fields, or `applyPreset` would reset a range the GM
+    // set by hand on the light it is applied to. Narrowing either end starts writing both. See
+    // `#activation`.
     const activeFrom = num("activeFrom", TIER.BRIGHT);
     const activeTo = num("activeTo", TIER.DARK);
     const gated = !(activeFrom >= TIER.BRIGHT && activeTo <= TIER.DARK);
@@ -495,10 +486,10 @@ ${this.#activation(config)}`;
         ? {
             kind: darkKind,
             level: num("darkLevel", 2),
-            // Under `clamp` the target **is** the floor: `applyTransform` ignores `floor` on that
-            // branch while `resolveTier` applies it separately, so a mismatch would quietly raise
-            // a *set* darkness back up. The sheet does the same thing in `sync()`; doing it here
-            // as well means a preset cannot be authored inconsistent in the first place. §10.4.
+            // Under `clamp` the target is the floor: `applyTransform` ignores `floor` on that
+            // branch while `resolveTier` applies it separately, so a mismatch would quietly raise a
+            // set darkness back up. The sheet does the same in `sync()`; doing it here as well means
+            // a preset cannot be authored inconsistent in the first place. §10.4.
             transform:
               op === "clamp" ? { op, max } : { op, steps: num("transformSteps", 1) },
             floor: op === "clamp" ? max : num("floor", TIER.DARK),
@@ -507,17 +498,17 @@ ${this.#activation(config)}`;
         : {
             kind,
             level: num("level", 0),
-            // `&& magical` for `model/contest.mjs:235`'s reason: `breaks()` reads this flag
-            // without first checking `kind`, so a mundane *daylight* would go on annihilating.
+            // `&& magical` for `model/contest.mjs:235`'s reason: `breaks()` reads this flag without
+            // first checking `kind`, so a mundane daylight would go on annihilating.
             cancelsDarkness: kind === "magical" && checked("cancelsDarkness"),
             emitTier: num("emitTier", TIER.NORMAL),
             steps: num("steps", 1),
             cap: num("cap", TIER.NORMAL),
             ...activation,
           },
-      // A darkness's two radii are collapsed to their maximum by
-      // `PointDarknessSource#_initialize`, so authoring anything but `bright: 0` here would
-      // write a number that cannot mean what it says.
+      // A darkness's two radii are collapsed to their maximum by `PointDarknessSource#_initialize`,
+      // so authoring anything but `bright: 0` here would write a number that cannot mean what it
+      // says.
       light: negative ? { bright: 0, dim: num("darkRadius", 20) } : {
         bright: num("bright", 20),
         dim: num("dim", 40),
@@ -579,10 +570,10 @@ ${this.#activation(config)}`;
 
   /**
    * @remarks
-   * The visible pane is harvested first. `FormDataExtended` would not do it: the fields are typed
-   * by hand here — `negative` is a select of two words, a darkness's radius is one field standing
-   * for two, and `transform` is a nested object whose shape depends on another control — so
-   * building the entry is exactly the work {@link #harvest} already does on every change.
+   * The visible pane is harvested first. `FormDataExtended` would not do it: the fields are typed by
+   * hand — `negative` is a select of two words, a darkness's radius is one field standing for two,
+   * and `transform` is a nested object whose shape depends on another control — so building the
+   * entry is exactly the work {@link #harvest} already does on every change.
    */
   static async #onSubmit() {
     this.#harvest();

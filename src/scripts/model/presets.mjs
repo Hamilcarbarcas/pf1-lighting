@@ -1,48 +1,43 @@
 /**
  * Named light and darkness configurations. DESIGN.md §10.2.
  *
- * **Model, not UI**, for two reasons. The table is PF1's vocabulary rather than a widget's
- * convenience — a GM places a *deeper darkness*, not `level: 3` plus `reduce 2` plus a
- * Supernatural floor, correct and in agreement with each other. And `field.explain` and `probe`
- * should eventually be able to say *"this is a Darkness"* instead of reciting four flags.
+ * Model, not UI, for two reasons. The table is PF1's vocabulary rather than a widget's convenience
+ * — a GM places a deeper darkness, not `level: 3` plus `reduce 2` plus a Supernatural floor,
+ * correct and in agreement with each other. And `field.explain` and `probe` should eventually be
+ * able to name a Darkness instead of reciting four flags.
  *
- * ## The sync is one way, and the preset is stored
+ * The sync is one way, and the preset is stored. Selecting a preset pre-fills the fields and
+ * nothing more. Changing any field the preset governs flips the record to `custom` immediately, and
+ * it never flips back — setting the values to a preset's exact numbers leaves it Custom until the
+ * preset is chosen again.
  *
- * Selecting a preset **pre-fills** the fields and nothing more. Changing any field the preset
- * governs flips the record to `custom`, immediately, and it never flips back — setting the
- * values back to a preset's exact numbers leaves it Custom until the preset is chosen again.
+ * So there is an {@link applyPreset} and deliberately no matcher. The stored name answers where the
+ * numbers came from, a fact about history that cannot be recovered by looking at them. Deriving it
+ * on render would answer what the numbers currently resemble — a different and worse question,
+ * which makes a hand-tuned light silently claim to be a torch and changes the label under a GM who
+ * never touched the select.
  *
- * So there is an {@link applyPreset} and there is deliberately **no matcher**. The stored name
- * answers *"where did these numbers come from"*, which is a fact about history and cannot be
- * recovered by looking at the numbers. Deriving it on render would answer *"what do these
- * numbers currently resemble"* — a different and worse question, which makes a hand-tuned light
- * silently claim to be a torch and changes the label under a GM who never touched the select.
+ * Nothing in the model reads `preset`. It is provenance for the sheet, so it cannot go stale in a
+ * way that changes what anything renders.
  *
- * **Nothing in the model reads `preset`.** It is provenance for the sheet, so it cannot go stale
- * in a way that changes what anything renders.
+ * The table is data and the built-ins are its default. {@link BUILT_IN} is what ships; {@link table}
+ * is what the sheet reads, a world setting the GM edits through `ui/preset-editor.mjs`.
  *
- * ## The table is data, and the built-ins are its default
+ * The setting stores the whole table rather than a diff against the built-ins, and is empty until
+ * the editor is saved. Both halves matter:
  *
- * {@link BUILT_IN} is what ships. {@link table} is what the sheet reads, and it is a world
- * setting the GM edits through `ui/preset-editor.mjs` — so the numbers below stopped being
- * placeholders-pending-Hamilcarbarcas's-own the moment there was somewhere to type them.
- *
- * **The setting stores the whole table, not a diff against the built-ins**, and it is empty
- * until the editor is saved. Both halves of that matter:
- *
- * - *Empty until saved* means a world that never opens the editor tracks the module's built-ins
- *   as they change, and `resetTable` puts a world back into that state rather than writing the
- *   current defaults out as a snapshot.
- * - *Whole table, not a diff* means that once a world does edit, it owns the lot. A diff would
- *   merge a later change to *Deeper darkness*'s floor into an entry a GM had already retuned,
+ * - Empty until saved means a world that never opens the editor tracks the module's built-ins as
+ *   they change, and `resetTable` returns a world to that state rather than writing the current
+ *   defaults out as a snapshot.
+ * - Whole table rather than a diff means that once a world edits, it owns the lot. A diff would
+ *   merge a later change to Deeper darkness's floor into an entry a GM had already retuned,
  *   producing a preset with no author. Overriding one field and inheriting the rest reads as
- *   convenient and behaves as unpredictable, which is the same argument §10.2 makes against a
- *   preset matcher.
+ *   convenient and behaves as unpredictable — the argument §10.2 makes against a preset matcher.
  *
- * Editing a preset does **not** reach back into lights already placed from it. That is the
- * one-way sync above, seen from the other side: `applyPreset` writes values at the moment it is
- * chosen, and nothing re-reads the table afterwards. Deleting one is equally harmless — a
- * document left holding a dead key reports Custom, because nothing in the model reads `preset`.
+ * Editing a preset does not reach back into lights already placed from it: the one-way sync seen
+ * from the other side. `applyPreset` writes values when it is chosen and nothing re-reads the table
+ * afterwards. Deleting one is equally harmless — a document left holding a dead key reports Custom,
+ * nothing in the model reading `preset`.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -56,10 +51,10 @@ export const CUSTOM = "custom";
  * Which config keys a preset governs, and therefore which ones flip the select to Custom.
  *
  * @remarks
- * Radii are **not** here even though a preset writes them. A torch is 20/40 feet, so applying
- * the preset should fill those in — but a GM who drags the radius out to light a bigger room has
- * not stopped placing a torch, and demoting the label for it would be pedantry. The rule that
- * results is worth stating plainly: **a preset writes more than it governs.**
+ * Radii are absent even though a preset writes them. A torch is 20/40 feet, so applying the preset
+ * fills those in — but a GM dragging the radius out to light a bigger room has not stopped placing
+ * a torch, and demoting the label for it would be pedantry. The resulting rule: a preset writes
+ * more than it governs.
  */
 export const GOVERNED = Object.freeze([
   "kind",
@@ -84,9 +79,9 @@ export const GOVERNED = Object.freeze([
  * The table as shipped. Keys are stored verbatim in `config.preset`.
  *
  * @remarks
- * The default for {@link table}, and what {@link resetTable} returns a world to. Not read
- * directly anywhere else — a caller reaching for this instead of `table()` would silently
- * ignore everything the GM configured.
+ * The default for {@link table}, and what {@link resetTable} returns a world to. Not read directly
+ * anywhere else: a caller reaching for this instead of `table()` would silently ignore everything
+ * the GM configured.
  *
  * @type {Record<string, Preset>}
  */
@@ -98,14 +93,14 @@ export const BUILT_IN = Object.freeze({
       kind: "mundane",
       level: 0,
       cancelsDarkness: false,
-      // **`emitTier` never applies and is set to match the cap anyway.** The inner radius is
-      // zero, so `contributionAt` only reaches the inner zone at the origin point itself
-      // (`ramp.mjs:86`) — a candle sets no light level, it only raises whatever is there.
+      // `emitTier` never applies and matches the cap anyway. The inner radius is zero, so
+      // `contributionAt` reaches the inner zone only at the origin point itself (`ramp.mjs:86`) —
+      // a candle sets no light level, it only raises whatever is there.
       //
-      // It used to matter that the two agreed, because `normaliseEmission` floored `cap` at
-      // `tier` and a higher `emitTier` would silently raise the ceiling. That floor is gone as of
-      // 2026-08-28 — `cap` now means what it says — so this is redundancy rather than a
-      // constraint. Left matching because a preset that reads oddly invites someone to "fix" it.
+      // It used to matter that the two agreed, `normaliseEmission` having floored `cap` at `tier`
+      // so a higher `emitTier` silently raised the ceiling. That floor went on 2026-08-28 and `cap`
+      // now means what it says, so this is redundancy rather than a constraint. Left matching
+      // because a preset that reads oddly invites a fix.
       emitTier: TIER.NORMAL,
       steps: 1,
       cap: TIER.NORMAL,
@@ -153,12 +148,12 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    // **Radii only — the cone is not expressed.** PF1's bullseye lantern lights a 60-foot
-    // *cone*, and a preset could write `angle` here since `applyPreset` copies whatever
-    // `light` holds. It deliberately does not: `angle` written by one preset and not the
-    // others would leave a light re-presetted from bullseye to torch stuck in a cone. Either
-    // every preset carries an angle or none does, and which number a "cone" is worth is a
-    // table decision. Set the Angle field by hand after applying this one.
+    // Radii only; the cone is not expressed. PF1's bullseye lantern lights a 60-foot cone, and a
+    // preset could write `angle` here since `applyPreset` copies whatever `light` holds. It
+    // deliberately does not: `angle` written by one preset and not the others would leave a light
+    // re-presetted from bullseye to torch stuck in a cone. Either every preset carries an angle or
+    // none does, and what a cone is worth is a table decision. Set Angle by hand after applying
+    // this one.
     light: { bright: 60, dim: 120 },
   },
 
@@ -194,10 +189,10 @@ export const BUILT_IN = Object.freeze({
     label: "Continual flame",
     negative: false,
     config: {
-      // **Level 2, and split from *light* since 2026-08-26.** The two used to share one entry
-      // labelled "Light / continual flame", which was wrong in the only way that matters here:
-      // `level` is what the §4.1 contest weighs against a darkness, so a *continual flame* at
-      // level 0 lost to a *darkness* it should out-level.
+      // Level 2, split from light on 2026-08-26. The two shared one entry labelled Light /
+      // continual flame, wrong in the way that matters here: `level` is what the §4.1 contest
+      // weighs against a darkness, so a continual flame at level 0 lost to a darkness it should
+      // out-level.
       kind: "magical",
       level: 2,
       cancelsDarkness: false,
@@ -228,8 +223,8 @@ export const BUILT_IN = Object.freeze({
     config: {
       kind: "magical",
       level: 3,
-      // The whole point of the preset: *daylight* annihilates with a darkness of its own level
-      // or lower rather than merely out-levelling it (§4.1.2).
+      // The point of the preset: daylight annihilates with a darkness of its own level or lower
+      // rather than merely out-levelling it (§4.1.2).
       cancelsDarkness: true,
       emitTier: TIER.BRIGHT,
       steps: 1,
@@ -274,8 +269,8 @@ export const TABLE_CHANGED_HOOK = `${MODULE_ID}.presetsChanged`;
 
 export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_TABLE, {
-    // Never in the flat list: this is a table, and its control surface is the editor. §10.6's
-    // menu gets a button to it rather than a row for it.
+    // Never in the flat list: this is a table, and its control surface is the editor. §10.6's menu
+    // gets a button to it rather than a row for it.
     scope: "world",
     config: false,
     type: Object,
@@ -288,14 +283,14 @@ export function registerSettings() {
  * The table in force.
  *
  * @remarks
- * Validated on the way out rather than on the way in, because the stored value is a plain object
- * that a macro or a botched merge can reach as easily as the editor can, and a malformed entry
- * must cost a missing row in a select rather than a sheet that fails to render. An entry needs a
- * label and a `config` object; everything else has a defensible default.
+ * Validated on the way out rather than the way in: the stored value is a plain object a macro or a
+ * botched merge can reach as easily as the editor can, and a malformed entry must cost a missing
+ * row in a select rather than a sheet that fails to render. An entry needs a label and a `config`
+ * object; everything else has a defensible default.
  *
- * Not cached. It is read on sheet render and on `applyPreset`, both of which are rare, and a
- * cache here would need invalidating from a setting whose `onChange` does not fire on the client
- * that wrote it in every Foundry version.
+ * Not cached. It is read on sheet render and on `applyPreset`, both rare, and a cache would need
+ * invalidating from a setting whose `onChange` does not fire on the writing client in every Foundry
+ * version.
  *
  * @returns {Record<string, Preset>}
  */
@@ -339,10 +334,10 @@ export const resetTable = () => setTable(null);
  * A key that is not taken, derived from a label.
  *
  * @remarks
- * **The key is identity and the label is not.** Renaming a preset must not orphan the documents
- * that recorded where their numbers came from, so this runs once, at creation, and never again
- * on edit. That also means a key can end up reading nothing like its label, which is correct and
- * invisible — the key is never shown.
+ * The key is identity and the label is not. Renaming a preset must not orphan the documents that
+ * recorded where their numbers came from, so this runs once at creation and never again on edit.
+ * That means a key can end up reading nothing like its label, which is correct and invisible — the
+ * key is never shown.
  *
  * @param {string} label
  * @param {Record<string, unknown>} existing
@@ -376,11 +371,11 @@ export function newKey(label, existing = {}) {
  * @returns {{value: string, label: string}[]}
  */
 export function presetChoices(negative) {
-  // **`Custom` is translated and the preset labels are not**, and the line between them is
-  // storage. This entry is chrome — it means *not from a preset* and is never written anywhere.
-  // A preset's label is seed data for an editable world setting: translate it and the first GM
-  // to press Save in the editor persists a translation into their world's table, where it stops
-  // following the language. See `BUILT_IN`.
+  // `Custom` is translated and the preset labels are not, and the line between them is storage.
+  // This entry is chrome — it means not-from-a-preset and is never written anywhere. A preset's
+  // label is seed data for an editable world setting: translate it and the first GM to press Save
+  // in the editor persists a translation into their world's table, where it stops following the
+  // language. See `BUILT_IN`.
   const out = [{ value: CUSTOM, label: t("Presets.Custom") }];
   for (const [value, preset] of Object.entries(table())) {
     if (negative !== undefined && preset.negative !== negative) continue;
@@ -393,14 +388,13 @@ export function presetChoices(negative) {
  * The update a preset expands to, ready for `document.update` or `FormDataExtended`.
  *
  * @remarks
- * Returns **flat, dotted paths** rather than a nested object, because both consumers want that:
+ * Returns flat dotted paths rather than a nested object, because both consumers want that:
  * `document.update` treats `flags.pf1-lighting.config.level` as a merge into the existing flag
- * rather than a replacement of it, and the sheet's field names are the same strings. Nesting
- * would replace the whole `config` object and silently drop anything the preset does not
- * mention.
+ * rather than a replacement, and the sheet's field names are the same strings. Nesting would
+ * replace the whole `config` object and silently drop anything the preset does not mention.
  *
- * Radii come back in **scene units**, matching `LightData`, not the pixels the model reads —
- * the conversion is Foundry's and happens well downstream of here.
+ * Radii come back in scene units, matching `LightData`, not the pixels the model reads — the
+ * conversion is Foundry's and happens well downstream.
  *
  * @param {string} name - A key of {@link table}, or {@link CUSTOM}
  * @param {object} [options]
@@ -418,9 +412,9 @@ export function applyPreset(name, { prefix = "config", radii = true } = {}) {
     update[`flags.pf1-lighting.config.${key}`] = value;
   }
 
-  // `negative` decides which source class the document becomes, so it is not optional the way
-  // the radii are — a *darkness* preset on a light that stays positive would configure a
-  // suppressor nothing ever reads.
+  // `negative` decides which source class the document becomes, so it is not optional the way the
+  // radii are — a darkness preset on a light that stays positive would configure a suppressor
+  // nothing ever reads.
   update[`${prefix}.negative`] = preset.negative;
 
   if (radii && preset.light) {
@@ -429,16 +423,16 @@ export function applyPreset(name, { prefix = "config", radii = true } = {}) {
     }
   }
 
-  // **The activation range is stored as two tiers and written as two raw numbers** (§10.4.1).
-  // `activeFrom`/`activeTo` above are only a memo, so the sheet's dropdowns can be restored to
-  // what was chosen; what Foundry actually gates the source on is `darkness.min`/`max`. Deriving
-  // them here rather than storing them means a preset follows the tier table if the GM retunes
-  // how bright each level is.
+  // The activation range is stored as two tiers and written as two raw numbers (§10.4.1).
+  // `activeFrom`/`activeTo` are only a memo, so the sheet's dropdowns can be restored to what was
+  // chosen; what Foundry gates the source on is `darkness.min`/`max`. Deriving them here rather
+  // than storing them means a preset follows the tier table when the GM retunes how bright each
+  // level is.
   //
-  // **Absence means "always", and is therefore left alone.** A preset that carries no range —
-  // every built-in one — writes neither field, so applying it does not disturb a range the GM
-  // set by hand on that light. The editor expresses *always* by omitting the pair rather than by
-  // storing the full ladder, which would resolve to `{min: 0, max: 1}` and overwrite.
+  // Absence means always, and is left alone. A preset carrying no range — every built-in one —
+  // writes neither field, so applying it does not disturb a range the GM set by hand on that light.
+  // The editor expresses always by omitting the pair rather than storing the full ladder, which
+  // would resolve to `{min: 0, max: 1}` and overwrite.
   const { activeFrom, activeTo } = preset.config ?? {};
   if (Number.isFinite(activeFrom) && Number.isFinite(activeTo)) {
     const { min, max } = activationRange(Math.max(activeFrom, activeTo), Math.min(activeFrom, activeTo));

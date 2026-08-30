@@ -1,26 +1,25 @@
 /**
- * **The geodesic spill probe.** DESIGN.md §3.4.1.
+ * The geodesic spill probe. DESIGN.md §3.4.1.
  *
  * Draws `model/geodesic.mjs`'s distance field straight onto the canvas, one rectangle per cell,
- * before any of it is wired into `model/spill.mjs`. Hamilcarbarcas, 2026-08-27: *"Go ahead and build the
- * rasteriser and let's resolve these uncertainties."*
+ * before any of it is wired into `model/spill.mjs`.
  *
  * It exists for the reason `ui/cell-overlay.mjs` exists — geometry is the one thing a console
- * readout is bad at — but it has a second job that overlay does not. Three of the open questions
- * are settled by *looking at the raster*, not by looking at the result:
+ * readout is bad at — with a second job that overlay does not have. Three of the open questions are
+ * settled by looking at the raster rather than at the result:
  *
- * - **The obstacles.** Red is the set of severed cell-to-cell links — see {@link paintLinks}. A
- *   continuous hatch along a wall is that wall sealed; a break in the hatch is somewhere light can
- *   get through, which is a doorway when you meant one and a bug when you did not.
- * - **The cone.** `graze` is anisotropy, not a boundary (see `geodesic.coneSpeed`), so its effect is
- *   only visible as a change in *contour shape* near the window. Two draws at different `graze` are
- *   the comparison; the number alone says nothing.
- * - **The ladder.** Per-tier band widths make the contour spacing uneven by design. Whether that
- *   reads as three brightnesses or as an arbitrary gradient is an eye question.
+ * - The obstacles. Red is the set of severed cell-to-cell links — see {@link paintLinks}. A
+ *   continuous hatch along a wall is that wall sealed; a break in the hatch is somewhere light gets
+ *   through, which is a doorway when intended and a bug when not.
+ * - The cone. `graze` is anisotropy rather than a boundary (see `geodesic.coneSpeed`), so its effect
+ *   shows only as a change in contour shape near the window. Two draws at different `graze` are the
+ *   comparison; the number alone says nothing.
+ * - The ladder. Per-tier band widths make the contour spacing uneven by design. Whether that reads
+ *   as three brightnesses or an arbitrary gradient is an eye question.
  *
- * Deliberately **not** hooked to anything. It draws when called and clears when told; nothing
- * invalidates it, because a probe that redraws itself during a wall drag is a probe you cannot hold
- * still and compare against.
+ * Deliberately hooked to nothing. It draws when called and clears when told; nothing invalidates it,
+ * a probe that redraws itself during a wall drag being one that cannot be held still and compared
+ * against.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -33,9 +32,9 @@ import { ambientTier as sceneAmbientTier } from "../model/registry.mjs";
  * Colour per tier.
  *
  * @remarks
- * Warm to cool down the ladder, and **not** `cell-overlay`'s palette: that one colours by *kind*
- * (ambient, clip, reduced), and two overlays using one colour for different meanings on the same
- * canvas is how a debugging session goes wrong. Blocked cells are the only red on either.
+ * Warm to cool down the ladder, and deliberately not `cell-overlay`'s palette: that one colours by
+ * kind (ambient, clip, reduced), and two overlays using one colour for different meanings on the
+ * same canvas is how a debugging session goes wrong. Blocked cells are the only red on either.
  */
 const TIER_COLOUR = {
   [TIER.BRIGHT]: 0xffd94a,
@@ -47,17 +46,17 @@ const TIER_COLOUR = {
 const BLOCKED_COLOUR = 0xff3355;
 
 /**
- * Speed at 90° off the window's normal. **1 means no cone at all.**
+ * Speed at 90° off the window's normal. 1 means no cone at all.
  *
  * @remarks
- * Hamilcarbarcas, 2026-08-27, after looking at both: *"let's leave graze out this time around (so set to
- * 1)"*. So the shipped falloff is pure geodesic distance, and `spillAngle` has no consumer.
+ * Set to 1 on 2026-08-27 after comparing both, so the shipped falloff is pure geodesic distance and
+ * `spillAngle` has no consumer.
  *
- * The mechanism is kept rather than deleted, and it is worth being clear about why that is not
- * hedging. `coneSpeed` is the only place in the module that can express *direction* at all: it is
- * the `F` term of `|∇d| = 1/F`, so it charges travel rather than clipping geometry, and the
- * marcher's refraction toward fast ground comes free with it. Deleting it would delete the lever,
- * not the setting. Nothing calls it while this is 1 — the speed array is never even allocated.
+ * The mechanism is kept rather than deleted, and not as hedging. `coneSpeed` is the only place in
+ * the module that can express direction at all: it is the `F` term of `|∇d| = 1/F`, charging travel
+ * rather than clipping geometry, and the marcher's refraction toward fast ground comes free with it.
+ * Deleting it would delete the lever, not the setting. Nothing calls it while this is 1 — the speed
+ * array is never allocated.
  *
  * For comparison, `game.pf1Lighting.geodesic.draw({ graze: 0.45 })` is roughly a 105° plateau
  * tapering to half reach along the wall face.
@@ -93,15 +92,13 @@ const read = (key, fallback) => {
  * Band widths per tier, in feet.
  *
  * @remarks
- * **Reading `spillRadius*` under §3.4.1's meaning rather than §3.4's** (Hamilcarbarcas, 2026-08-27:
- * *"rather than a straight band width, the value of each brightness can tell you how large the band
- * of that brightness is"*). The same three stored numbers; what changes is that 40 now means
- * *bright light carries forty feet before it reads as normal* instead of *a bright spill's cone is
- * forty feet long*.
+ * Reads `spillRadius*` under §3.4.1's meaning rather than §3.4's (2026-08-27): each brightness's
+ * value gives the size of that brightness's band. The same three stored numbers; what changes is
+ * that 40 now means bright light carries forty feet before it reads as normal, rather than a bright
+ * spill's cone being forty feet long.
  *
- * The window labels and hints still describe the old meaning and are deliberately left alone until
- * the swap lands — relabelling now would make *Configure Light Spill* lie about the feature that is
- * still running.
+ * The window labels and hints still describe the old meaning and are left alone until the swap
+ * lands — relabelling now would make Configure Light Spill lie about the feature still running.
  */
 function widthTable(overrides = null) {
   const table = {};
@@ -121,9 +118,9 @@ function widthTable(overrides = null) {
  * @param {object} [options]
  * @param {number} [options.graze=1] - Speed at 90° off the normal. `1` is no cone at all — pure
  *   geodesic distance, which is what ships. Below 1 tapers the reach toward the wall face.
- * @param {number} [options.angle=105] - Cone angle in degrees. Only consulted when `graze < 1`; the
- *   `spillAngle` setting it used to read was deleted with the old construction, so this is now a
- *   probe argument and nothing else.
+ * @param {number} [options.angle=105] - Cone angle in degrees. Consulted only when `graze < 1`; the
+ *   `spillAngle` setting it used to read went with the old construction, so this is now a probe
+ *   argument and nothing else.
  * @param {Record<string|number, number>} [options.widths] - Per-tier band widths in feet, e.g.
  *   `{bright: 40, normal: 20, dim: 10}`. Defaults to the three stored radii.
  * @param {"tier"|"distance"} [options.mode="tier"] - `tier` paints the ladder flat; `distance`
@@ -197,8 +194,8 @@ export function draw({
     };
 
     if (!result.dist) {
-      // The failure that matters, and the one the probe exists to make visible rather than to
-      // report as a zero: the opening was narrower than the wall raster's own erosion.
+      // The failure that matters, and the one the probe exists to make visible rather than report
+      // as a zero: the opening was narrower than the wall raster's own erosion.
       row.reason = result.reason;
       report.apertures.push(row);
       if (walls) paintLinks(root, result, alpha);
@@ -222,8 +219,8 @@ export function draw({
  *
  * @remarks
  * Grouped by colour rather than drawn cell by cell in field order: a `Graphics` starts a new batch
- * on every `beginFill`, so per-cell fills would produce one draw call per cell and ten thousand of
- * them will drop a frame. Grouped, it is one batch per tier however many cells there are.
+ * on every `beginFill`, so per-cell fills produce one draw call per cell, and ten thousand of them
+ * drop a frame. Grouped, it is one batch per tier however many cells there are.
  */
 function paintField(root, result, { mode, alpha }) {
   const { grid, dist, steps, feetToPixels } = result;
@@ -231,8 +228,8 @@ function paintField(root, result, { mode, alpha }) {
   const byTier = {};
 
   if (mode === "distance") {
-    // The raw field, as a continuous ramp over the whole ladder. This is what marching squares will
-    // cut, so a contour that is going to come out ragged is already visible here as noise.
+    // The raw field as a continuous ramp over the whole ladder. This is what marching squares cuts,
+    // so a contour about to come out ragged is already visible here as noise.
     const g = new PIXI.Graphics();
     const reach = result.reach || 1;
     for (let i = 0; i < grid.size; i++) {
@@ -274,15 +271,15 @@ function paintField(root, result, { mode, alpha }) {
  * The severed links — what the marcher was actually told it may not do.
  *
  * @remarks
- * **The most useful thing on the overlay, and the reason it is on by default.** Everything else
- * shows what the algorithm decided; this shows what it was given, and reading a bad input off the
- * output is exactly the mistake §6.4.2 records.
+ * The most useful thing on the overlay, and why it is on by default. Everything else shows what the
+ * algorithm decided; this shows what it was given, and reading a bad input off the output is the
+ * mistake §6.4.2 records.
  *
- * Drawn as the link itself, centre to centre, rather than as a filled cell. That is not decoration:
- * under blocked cells the red was a *strip of ground the fill had lost*, and it was right to draw it
- * as area because area is what it cost. A cut link costs no ground — it is a severed connection —
- * and drawing it as a stroke across the wall line says so. A continuous red hatch along a wall is
- * the wall sealed; a break in the hatch is a gap light can pass, whether that is a doorway or a bug.
+ * Drawn as the link itself, centre to centre, rather than as a filled cell. Not decoration: under
+ * blocked cells the red was a strip of ground the fill had lost, and area was the right
+ * representation because area is what it cost. A cut link costs no ground — it is a severed
+ * connection — and a stroke across the wall line says so. A continuous red hatch along a wall is the
+ * wall sealed; a break in the hatch is a gap light can pass, doorway or bug.
  */
 function paintLinks(root, result, alpha) {
   const { grid, links } = result;
@@ -317,9 +314,9 @@ function paintLinks(root, result, alpha) {
  * The two draws worth comparing, side by side in the console.
  *
  * @remarks
- * `graze: 1` is the honest control. Pure geodesic distance is a complete answer on its own, and the
- * cone is a *quality* adjustment on top of it — so the question "is the cone worth its knob" is
- * answered by drawing without it first and seeing whether the wall beside the window looks wrong.
+ * `graze: 1` is the honest control. Pure geodesic distance is a complete answer on its own and the
+ * cone is a quality adjustment on top, so whether the cone earns its knob is answered by drawing
+ * without it first and seeing whether the wall beside the window looks wrong.
  */
 export function compare(options = {}) {
   console.error(`${MODULE_ID} | geodesic — no cone (graze: 1), which is the shipped behaviour`);

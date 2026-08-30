@@ -1,13 +1,12 @@
 /**
  * `evaluate(point)` — the model's single point query. DESIGN.md §1 and §4.
  *
- * Thin by design: the registry resolves *what is there* and the contest resolves *what
- * wins*. This file only stitches them together and names the answer.
+ * Thin by design: the registry resolves what is there, the contest resolves what wins. This file
+ * stitches them together and names the answer.
  *
- * Not implemented yet (§8.2 steps 4-5): low-light vision (§4.4), umbra (§4.3),
- * darkvision (§4.5), and observer filtering (§5). `evaluate` currently answers the
- * god's-eye question only — which per §5.4 is the mode with no observer terms in it, so
- * it is the right half to have working first.
+ * Not implemented yet (§8.2 steps 4-5): low-light vision (§4.4), umbra (§4.3), darkvision (§4.5),
+ * observer filtering (§5). `evaluate` answers the god's-eye question only — per §5.4 the mode with
+ * no observer terms, so the right half to have working first.
  */
 
 import { emittersAt, suppressorsAt } from "./registry.mjs";
@@ -25,7 +24,7 @@ export { ELIGIBILITY_PRESETS, contest } from "./contest.mjs";
  * @property {number} baselineTier - The tier that `baseline` falls in
  * @property {object[]} emitters - Those reaching the point, with their contributions
  * @property {object[]} suppressors - Those covering the point
- * @property {object|null} winner - The strongest suppressor **present**, if any
+ * @property {object|null} winner - The strongest suppressor present, if any
  * @property {boolean} applied - Whether that suppressor changed the outcome. A darkness
  *   over a daylight is present but ineligible, so `winner` is set and `applied` false.
  * @property {object[]} negated - Suppressors struck out by a *daylight*-style canceller
@@ -41,28 +40,27 @@ export function evaluate(point) {
   const reaching = emittersAt(point);
   const suppressors = suppressorsAt(point);
 
-  // The contest wants brightness alongside the rules fields, and the registry keeps them
-  // apart — an entry is a source, `B` is what it happens to contribute here.
+  // The contest wants brightness alongside the rules fields; the registry keeps them apart, an
+  // entry being a source and `B` what it contributes here.
   //
-  // Spread rather than naming fields. An earlier version copied `kind`, `level` and
-  // `source` by hand, so when `cancelsDarkness` was added the contest silently never saw
-  // it and *daylight* did nothing. Every config field a suppressor might test has to
-  // survive this boundary, and listing them is a standing invitation to forget one.
+  // Spread rather than naming fields. An earlier version copied `kind`, `level` and `source` by
+  // hand, so when `cancelsDarkness` arrived the contest never saw it and daylight did nothing.
+  // Every config field a suppressor might test has to survive this boundary, and an explicit list
+  // is an invitation to forget one.
   //
-  // `...rest` carries the resolved zone (`zone`, `tier`, `steps`, `cap`) as well as `B`, and
-  // must: `contest.stack` sums bands and maxes set levels, so an emitter that arrived here as
-  // a bare brightness would be silently treated as absolute (§3.2.1).
+  // `...rest` must carry the resolved zone (`zone`, `tier`, `steps`, `cap`) as well as `B`:
+  // `contest.stack` sums bands and maxes set levels, so a bare brightness arriving here would be
+  // treated as absolute (§3.2.1).
   const emitters = reaching.map(({ entry, ...rest }) => ({ ...entry, entry, ...rest }));
 
   const { B, baseline, winner, applied, negated } = contest(emitters, suppressors);
 
-  // Thresholding cannot distinguish Dark from Supernatural Dark — both are B = 0 — so
-  // the distinction comes from *why* it is 0, and how low this suppressor is allowed to
-  // reach. Most cannot reach Supernatural Dark at all; `floor` defaults to Dark and only
-  // a source explicitly configured for it goes lower. DESIGN.md §3.1.
+  // Thresholding cannot separate Dark from Supernatural Dark — both are B = 0 — so the
+  // distinction comes from why it is 0 and how low the suppressor may reach. `floor` defaults to
+  // Dark; only a source explicitly configured for it goes lower. DESIGN.md §3.1.
   //
-  // Gated on `applied`, not on `winner`: ground already unlit before any darkness
-  // arrived is ordinary Dark, not supernatural.
+  // Gated on `applied`, not `winner`: ground already unlit before any darkness arrived is
+  // ordinary Dark, not supernatural.
   const tier = resolveTier(B, { suppressed: applied, floor: winner?.floor });
 
   return {

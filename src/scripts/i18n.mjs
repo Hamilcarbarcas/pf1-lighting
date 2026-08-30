@@ -1,22 +1,12 @@
 /**
- * `t()`, and the one ordering rule that decides where you can call it. DESIGN.md §10.11.
+ * `t()`, and the ordering rule that decides where it can be called. DESIGN.md §10.11.
  *
- * ## `game.i18n` is empty during `init`
+ * `game.i18n` is empty during `init`: `Game#initialize` calls the `init` hook, then
+ * `registerSettings()`, and only then awaits `i18n.initialize()`. A `localize` call from a
+ * `registerSettings` function therefore returns its key verbatim — deterministically, not as a
+ * race. Nothing in this module localises at registration time.
  *
- * `Game#initialize` calls the `init` hook and *then* awaits `i18n.initialize()`:
- *
- * ```js
- * Hooks.callAll("init");
- * this.registerSettings();
- * await this.i18n.initialize();   // ← the translations load here
- * ```
- *
- * So a `localize` call made from a `registerSettings` function returns the key it was given,
- * verbatim, and the settings list would read `PF1LIGHTING.Setting.readoutEnabled.Name`. This is
- * not a race that sometimes works — it is deterministic. **Nothing in this module localises at
- * registration time.**
- *
- * Foundry's answer is that registration takes a **key** and Foundry localises it at render:
+ * Registration takes a key instead, localised by Foundry at render:
  *
  * | Registered | Localised by |
  * | --- | --- |
@@ -27,35 +17,28 @@
  * | an `ApplicationV2`'s `window.title` | `ApplicationV2#title` |
  * | a `DataField`'s `label` / `hint` | the form-group helper |
  *
- * Those sites hold a literal `"PF1LIGHTING.…"` string, which is what makes a key greppable from
- * the JSON entry to its one consumer. {@link t} is for everything else — window markup, dialogs,
- * notifications, the readout chip — all of which runs long after `ready`.
+ * Those sites hold a literal `"PF1LIGHTING.…"`, keeping a key greppable from JSON entry to
+ * consumer. {@link t} covers everything else — window markup, dialogs, notifications, the readout
+ * chip — all of which runs long after `ready`.
  *
- * A `DataField`'s `choices` is the one thing a key does not solve: Foundry localises a choice
- * label only when the caller passes `localize: true`, which `RegionBehaviorConfig` does not.
- * `choices` accepts a **function**, evaluated at render. See `model/areas.mjs`.
+ * A `DataField`'s `choices` is the exception a key does not solve: Foundry localises choice labels
+ * only when passed `localize: true`, which `RegionBehaviorConfig` does not. `choices` accepts a
+ * function, evaluated at render — see `model/areas.mjs`.
  *
- * ## What is deliberately not translated
+ * Not translated: the console. `game.pf1Lighting.*` readouts, `console.error` diagnostics, and
+ * `TIER_NAME` (what `api.tierName()` hands other modules) stay English as developer output.
  *
- * **The console.** `game.pf1Lighting.*` readouts, every `console.error` diagnostic, and
- * `TIER_NAME` — which is what `api.tierName()` hands another module — stay English. Those are
- * identifiers and developer output.
- *
- * That rule reaches further than it looks: **32 of the module's 38 settings are `config: false`**
- * (§10.6 took their rows out of the menu), so the only thing that ever prints their name is
- * `game.pf1Lighting.settings()`. Their `name` and `hint` are therefore plain English strings at
- * the registration site, not keys — putting them in `lang/en.json` would have asked a translator
- * for 32 paragraphs that no user can reach (Hamilcarbarcas, 2026-08-28). Only the six with a
- * rendered row are keyed.
- *
- * The two debug overlays keep their English for the same reason. `ui.notifications` is the
- * exception and is always translated: a toast is UI whatever provoked it.
+ * That reaches further than it looks. 32 of the module's 38 settings are `config: false` (§10.6),
+ * so only `game.pf1Lighting.settings()` ever prints their names; those are plain English at the
+ * registration site rather than keys, since translating 32 unreachable paragraphs helps nobody
+ * (2026-08-28). Only the six with a rendered row are keyed. The two debug overlays likewise.
+ * `ui.notifications` is always translated — a toast is UI whatever provoked it.
  */
 
 const ROOT = "PF1LIGHTING";
 
 /**
- * A localised string, **at render time only**.
+ * A localised string, at render time only.
  *
  * @param {string} path - Below `PF1LIGHTING.`, e.g. `"Visuals.Levels.Legend"`
  * @param {object} [data] - Interpolation values; switches to `game.i18n.format`

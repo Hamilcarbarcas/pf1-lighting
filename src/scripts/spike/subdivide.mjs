@@ -1,40 +1,36 @@
 /**
  * Subdivision measurement — DESIGN.md §6.1, §6.2, §9.1.
  *
- * The last unmeasured piece of the renderer. Every churn measurement (§9.2-9.5) timed
- * source *construction*; none of them touched the polygon boolean algebra that decides
- * which source applies where. That algebra is now the largest unbudgeted slice.
+ * The last unmeasured piece of the renderer. Every churn measurement (§9.2-9.5) timed source
+ * construction; none touched the polygon boolean algebra deciding which source applies where. That
+ * algebra is now the largest unbudgeted slice.
  *
- * ## What the subdivision actually computes
+ * §6.2 says cuts come from suppressor and umbra geometry only, never tier boundaries. With `U` =
+ * union of suppressors and `S_k` = one suppressor band, the cells are:
  *
- * §6.2 says cuts come from suppressor and umbra geometry only, never tier boundaries.
- * With `U` = union of suppressors and `S_k` = one suppressor band, the cells are:
- *
- *   1. `E \ U`      per emitter — the unsuppressed part, rendered by clipping the real
- *                   source so its falloff and animation survive (§6.1 step 2).
+ *   1. `E \ U`      per emitter — the unsuppressed part, rendered by clipping the real source so
+ *                   its falloff and animation survive (§6.1 step 2).
  *   2. `E ∩ S_k`    per emitter per band — the reduced-tier part.
  *   3. `U \ ∪E`     one cell — Supernatural Dark fill, a synthetic source (§6.1 step 3).
  *
- * Cell 3 is the one to watch. It needs a union of *every* emitter polygon on the scene,
- * and those are swept polygons with real vertex counts, not circles.
+ * Cell 3 is the one to watch. It needs a union of every emitter polygon on the scene, and those are
+ * swept polygons with real vertex counts rather than circles.
  *
- * ## Two things this harness exists to catch
+ * Two things this harness exists to catch.
  *
- * **Multi-path results.** `PIXI.Polygon#intersectPolygon` returns `solution[0]` and
- * discards the rest (`polygon-extension.mjs:196`). A difference against a suppressor
- * routinely yields several paths, so the convenience wrapper is unusable here and
- * everything below goes through `ClipperLib` directly. The harness counts extra paths
- * so we know how often it would have mattered.
+ * Multi-path results: `PIXI.Polygon#intersectPolygon` returns `solution[0]` and discards the rest
+ * (`polygon-extension.mjs:196`). A difference against a suppressor routinely yields several paths,
+ * so the convenience wrapper is unusable here and everything below goes through `ClipperLib`
+ * directly. The harness counts extra paths to record how often it would have mattered.
  *
- * **Annular cells.** If a suppressor sits wholly inside an emitter, `E \ S` is an
- * annulus: two paths, the inner one a hole. A source shape cannot express that —
- * `PolygonMesher` takes a single flat ring (`polygon-mesher.mjs:23`) and only generates
- * holes internally during offsetting. And we cannot dodge it by leaving `E` whole,
- * because `MAX_COLOR` would let the bright ring win over the reduced-tier cell inside
- * it. So annuli must be split, and this counts how often that is needed.
+ * Annular cells: a suppressor sitting wholly inside an emitter makes `E \ S` an annulus — two paths,
+ * the inner one a hole. A source shape cannot express that, `PolygonMesher` taking a single flat
+ * ring (`polygon-mesher.mjs:23`) and generating holes only internally during offsetting. Leaving `E`
+ * whole does not dodge it either, since `MAX_COLOR` would let the bright ring win over the
+ * reduced-tier cell inside. So annuli must be split, and this counts how often that is needed.
  *
- * Budget from §9.1: the whole field recompute under 16 ms, of which construction now
- * costs ~3 ms for 60 pooled sources. Call ~8 ms the ceiling for subdivision alone.
+ * Budget from §9.1: the whole field recompute under 16 ms, of which construction costs ~3 ms for 60
+ * pooled sources. Call ~8 ms the ceiling for subdivision alone.
  */
 
 import { isSynthetic } from "../constants.mjs";
@@ -61,9 +57,9 @@ function toPath(poly) {
 }
 
 /**
- * Run one boolean op over path arrays, returning **all** solution paths.
+ * Run one boolean op over path arrays, returning all solution paths.
  *
- * This is the whole reason we don't use `intersectPolygon` — see the file header.
+ * The reason `intersectPolygon` is unusable here — see the file header.
  *
  * @param {ClipperLib.IntPoint[][]} subject
  * @param {ClipperLib.IntPoint[][]} clip
@@ -85,9 +81,9 @@ function boolOp(subject, clip, clipType) {
 /**
  * Union a batch of paths in one Execute rather than folding pairwise.
  *
- * Core does the same for region shapes (`documents/region.mjs:224-244`). Pairwise
- * folding re-scales and re-sorts the accumulated result on every step; a single
- * `AddPaths` lets Clipper sweep them all together.
+ * Core does the same for region shapes (`documents/region.mjs:224-244`). Pairwise folding re-scales
+ * and re-sorts the accumulated result on every step; a single `AddPaths` lets Clipper sweep them all
+ * together.
  */
 function unionAll(paths) {
   if (paths.length === 0) return [];
@@ -98,8 +94,8 @@ function unionAll(paths) {
 /**
  * Classify a solution: how many rings, and how many of them are holes.
  *
- * A hole runs opposite to its parent. `ClipperLib.Clipper.Orientation` is the same test
- * core uses, so this matches what the renderer would see.
+ * A hole runs opposite to its parent. `ClipperLib.Clipper.Orientation` is the test core uses, so
+ * this matches what the renderer would see.
  */
 function classify(solution) {
   if (solution.length <= 1) return { paths: solution.length, holes: 0 };
@@ -139,9 +135,9 @@ function boundsOf(path) {
 /**
  * Real emitter polygons from the live scene.
  *
- * Deliberately the real swept shapes rather than generated circles — vertex count is
- * the input that drives Clipper cost, and a wall-heavy scene produces shapes nothing
- * synthetic would imitate. Synthetic sources of our own are excluded (§6.6).
+ * Deliberately the real swept shapes rather than generated circles: vertex count drives Clipper
+ * cost, and a wall-heavy scene produces shapes nothing synthetic would imitate. This module's own
+ * synthetic sources are excluded (§6.6).
  */
 export function emitterPaths() {
   const out = [];
@@ -173,8 +169,8 @@ export function suppressorPaths({ count = 2, vertices = 24, radius = 4 } = {}) {
   }
   if (real.length) return { paths: real, generated: false };
 
-  // Place generated suppressors on top of real lights where possible — overlap is the
-  // expensive case and the only one that produces interesting cells.
+  // Place generated suppressors on top of real lights where possible: overlap is the expensive case
+  // and the only one producing interesting cells.
   const lights = [...canvas.effects.lightSources].filter((s) => !isSynthetic(s) && s.active);
   const grid = canvas.grid.size;
   const r = grid * radius;
@@ -205,8 +201,8 @@ export function suppressorPaths({ count = 2, vertices = 24, radius = 4 } = {}) {
  * @param {ClipperLib.IntPoint[][]} options.suppressors
  * @param {number} options.bands - Suppressor bands per §3.3.1. Each band is an
  *   independent intersection against every overlapping emitter.
- * @param {"none"|"union"|"tight"} options.filter - How hard to pre-filter before doing
- *   any Clipper work. See {@link run} for what each level means.
+ * @param {"none"|"union"|"tight"} options.filter - How hard to pre-filter before any Clipper work.
+ *   See {@link run} for what each level means.
  * @returns {object} Cell counts, annulus counts, and a per-phase timing breakdown
  */
 function subdivide({ emitters, suppressors, bands, filter }) {
@@ -225,26 +221,23 @@ function subdivide({ emitters, suppressors, bands, filter }) {
   let pairsTested = 0;
   let pairsClipped = 0;
 
-  // Measured 2026-08-21: every Clipper op on these polygons costs ~0.055 ms regardless
-  // of what is being clipped against what. So op count *is* the cost model, and every
-  // optimisation here is really an op-count reduction. Reported so we can check that
-  // the model still holds as the inputs change.
+  // Measured 2026-08-21: every Clipper op on these polygons costs ~0.055 ms regardless of what is
+  // clipped against what. So op count is the cost model, and every optimisation here is an op-count
+  // reduction. Reported so the model can be checked as the inputs change.
   opCount = 0;
 
   // --- Union the suppressors. Small N; expected cheap, measured anyway. ---
   const union = t("unionSuppressors", () => unionAll(suppressors));
   if (!union.length) return { cells, annuli, extraPaths, outVertices, pairsTested, pairsClipped, timings };
 
-  // One box around everything (the `union` filter level) versus one box per ring (the
-  // `tight` level). With two suppressors at opposite ends of a map the single box also
-  // covers the entire gap between them, so every emitter in that gap passes the filter
-  // and then clips against nothing.
+  // One box around everything (the `union` filter level) versus one box per ring (`tight`). With two
+  // suppressors at opposite ends of a map the single box also covers the gap between them, so every
+  // emitter in that gap passes the filter and then clips against nothing.
   const unionBounds = boundsOf(union.flat());
   const unionRingBounds = union.map(boundsOf);
 
-  // Bands are concentric fractions of each suppressor. Real bands come from §3.3.1
-  // geometry; scaling here keeps the op count and overlap pattern honest without
-  // needing the model layer to exist yet.
+  // Bands are concentric fractions of each suppressor. Real bands come from §3.3.1 geometry; scaling
+  // here keeps the op count and overlap pattern honest without needing the model layer to exist.
   const bandPaths = [];
   const bandBounds = [];
   for (let b = 0; b < bands; b++) {
@@ -276,8 +269,8 @@ function subdivide({ emitters, suppressors, bands, filter }) {
     pairsTested++;
     const eb = boundsOf(emitter);
 
-    // The pre-filter under test: on a real scene most emitters are nowhere near a
-    // suppressor, and a rectangle test is free next to a Clipper sweep.
+    // The pre-filter under test: on a real scene most emitters are nowhere near a suppressor, and a
+    // rectangle test is free next to a Clipper sweep.
     const near =
       filter === "none" ||
       (filter === "union" ? boundsOverlap(eb, unionBounds) : touchesAny(eb, unionRingBounds));
@@ -298,9 +291,8 @@ function subdivide({ emitters, suppressors, bands, filter }) {
       outVertices += vertexCount(remainder);
     }
 
-    // Cell 2 — one per band. Intersections are two thirds of all ops, so this is where
-    // the count lives: bands are concentric, and an emitter clipping the outer one very
-    // often misses the inner.
+    // Cell 2 — one per band. Intersections are two thirds of all ops, so the count lives here: bands
+    // are concentric, and an emitter clipping the outer one very often misses the inner.
     for (let b = 0; b < bandPaths.length; b++) {
       const band = bandPaths[b];
       if (filter === "tight" && !touchesAny(eb, bandBounds[b])) continue;
@@ -337,8 +329,8 @@ const stats = (samples) => {
   const sum = sorted.reduce((a, b) => a + b, 0);
   return {
     min: +sorted[0].toFixed(2),
-    // Median, not mean — one GC spike inverted a ranking in the churn harness and
-    // produced a wrong headline. Same guard here.
+    // Median, not mean: one GC spike inverted a ranking in the churn harness and produced a wrong
+    // headline. Same guard here.
     median: +sorted[Math.floor(sorted.length / 2)].toFixed(2),
     max: +sorted[sorted.length - 1].toFixed(2),
     mean: +(sum / sorted.length).toFixed(2),
@@ -348,9 +340,9 @@ const stats = (samples) => {
 /**
  * Measure the subdivision on the current scene.
  *
- * Modes, in increasing order of how hard they pre-filter. All three must produce the
- * same cell count — a mode that is faster *and* produces fewer cells is dropping real
- * geometry, not saving work.
+ * Modes, in increasing order of how hard they pre-filter. All three must produce the same cell
+ * count: a mode that is faster and produces fewer cells is dropping real geometry rather than saving
+ * work.
  *
  *   naive     No pre-filter. Every emitter clipped against the suppressor union, and the
  *             Supernatural Dark fill unioned over every emitter on the scene.
@@ -361,17 +353,16 @@ const stats = (samples) => {
  *
  * @param {object} [options]
  * @param {number} [options.iterations=20]
- * @param {number} [options.warmup=5] - Untimed iterations before each mode.
- *   Measured 2026-08-21: without this, whichever mode runs first absorbs the JIT
- *   warm-up for the rest, and a second invocation in the same page session came in
- *   1.9× faster than the first on byte-identical geometry. That swing was larger than
- *   every difference between modes, so the comparison was worthless without it.
+ * @param {number} [options.warmup=5] - Untimed iterations before each mode. Measured 2026-08-21:
+ *   without this, whichever mode runs first absorbs the JIT warm-up for the rest, and a second
+ *   invocation in the same page session came in 1.9× faster than the first on byte-identical
+ *   geometry. That swing was larger than every difference between modes.
  * @param {number} [options.suppressors=2] - Generated only if the scene has no real ones
  * @param {number} [options.bands=2] - §3.3.1
  * @param {number} [options.vertices=24] - Ring density for generated suppressors
- * @param {number} [options.radius=4] - Generated suppressor radius, in grid squares.
- *   A *deeper darkness* is 60 ft — 12 squares on a 5 ft grid — and a large suppressor
- *   overlapping most of the scene's lights is the worst case, so measure there too.
+ * @param {number} [options.radius=4] - Generated suppressor radius, in grid squares. A deeper
+ *   darkness is 60 ft — 12 squares on a 5 ft grid — and a large suppressor overlapping most of the
+ *   scene's lights is the worst case, so measure there too.
  * @param {("naive"|"filtered"|"tight")[]} [options.modes]
  * @returns {object|null} Timing summary, also printed
  */
@@ -435,10 +426,9 @@ export function run({
       clipped: `${shape.pairsClipped}/${shape.pairsTested}`,
       ops: shape.ops,
       msPerOp: +(stats(totals).median / Math.max(shape.ops, 1)).toFixed(3),
-      // Cells are geometry, so no pre-filter reduces them — but each one still has to
-      // become a source. At the pooled ~0.05 ms/source from §9.5 the cell count is a
-      // budget line of its own, and on a wide-suppressor scene it outweighs the
-      // subdivision that produced it.
+      // Cells are geometry, so no pre-filter reduces them, but each still has to become a source.
+      // At the pooled ~0.05 ms/source from §9.5 the cell count is a budget line of its own, and on a
+      // wide-suppressor scene it outweighs the subdivision that produced it.
       estConstructionMs: +(shape.cells * 0.05).toFixed(1),
       estFrameMs: +(stats(totals).median + shape.cells * 0.05).toFixed(1),
       withinBudget: stats(totals).median + shape.cells * 0.05 <= 16,
@@ -470,8 +460,8 @@ export function run({
   );
 
   for (const r of Object.values(results)) {
-    // Plain text alongside the table: console.table renders as a widget that does not
-    // survive a copy-paste, and the cell/annulus counts are the point of the run.
+    // Plain text alongside the table: console.table renders as a widget that does not survive a
+    // copy-paste, and the cell/annulus counts are the point of the run.
     console.error(
       `PF1 Lighting | ${r.mode}: median ${r.totalMs.median} ms (mean ${r.totalMs.mean}, ` +
         `max ${r.totalMs.max}) — ${r.cells} cells, ${r.annuli} annuli, ` +
@@ -493,8 +483,8 @@ export function run({
         `PF1 Lighting | ${r.mode} is ${factor}× faster than naive (by median), ` +
           `on ${opFactor}× fewer ops`
       );
-      // A pre-filter may only remove *work*, never geometry. Faster with fewer cells is
-      // a correctness bug wearing an optimisation's clothes.
+      // A pre-filter may only remove work, never geometry. Faster with fewer cells is a correctness
+      // bug wearing an optimisation's clothes.
       if (r.cells !== base.cells) {
         console.error(
           `PF1 Lighting | WARNING — ${r.mode} produced ${r.cells} cells vs naive's ` +

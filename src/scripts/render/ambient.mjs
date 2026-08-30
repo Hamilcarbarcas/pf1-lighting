@@ -3,25 +3,23 @@
  *
  * The one missing piece behind three separate visible defects:
  *
- *   1. a *darkness* on a lit map is computed correctly and **drawn not at all** (§6.2.3);
- *   2. an umbra shadows what lies beyond it but **does not paint it** (§4.3 stage B);
- *   3. an ordinary darkness has no mesh, so its **animation does nothing** (§6.2.6).
+ *   1. a darkness on a lit map is computed correctly and drawn not at all (§6.2.3);
+ *   2. an umbra shadows what lies beyond it but does not paint it (§4.3 stage B);
+ *   3. an ordinary darkness has no mesh, so its animation does nothing (§6.2.6).
  *
- * All three reduce to: global illumination is unconditional, so nothing can be darkened below
- * it. Illumination composites with `MAX_COLOR`, so a dimmer fill painted on top *loses* to the
- * ambient underneath. The global contribution has to be **absent** from the region, not
- * outvoted.
+ * All three reduce to one cause: global illumination is unconditional, so nothing can be darkened
+ * below it. Illumination composites with `MAX_COLOR`, so a dimmer fill painted on top loses to the
+ * ambient underneath. The global contribution has to be absent from the region, not outvoted.
  *
- * ## This used to be a geometry problem, and it is not one
- *
- * The first build cut the ambient out by handing `GlobalLightSource` a `customPolygon` — the
- * scene rect with the darkness subtracted — and paying pooled stand-in light sources to fill
- * whatever the singleton could no longer reach. `customPolygon` holds **one closed ring, no
- * holes** (`polygon-mesher.mjs:22-26`, `visibility.mjs:639`), and "scene minus a darkness in
- * the middle" is exactly the shape that is not. Everything that followed — annulus splitting
- * across the whole scene, seam overlap, and four bugs that were each one un-cloned
- * `GlobalLightSource` property (`level`, then `dim`/`bright`, then the `darkness` band, then
- * the `globalLight` uniform) — was the cost of expressing a *number* as an *object*.
+ * This used to be a geometry problem and is not one. The first build cut the ambient out by handing
+ * `GlobalLightSource` a `customPolygon` — the scene rect with the darkness subtracted — and paying
+ * pooled stand-in light sources to fill whatever the singleton could no longer reach.
+ * `customPolygon` holds one closed ring and no holes (`polygon-mesher.mjs:22-26`,
+ * `visibility.mjs:639`), and scene-minus-a-darkness-in-the-middle is exactly the shape that is not.
+ * Everything that followed — annulus splitting across the whole scene, seam overlap, and four bugs
+ * that were each one un-cloned `GlobalLightSource` property (`level`, then `dim`/`bright`, then the
+ * `darkness` band, then the `globalLight` uniform) — was the cost of expressing a number as an
+ * object.
  *
  * The shader has the number already:
  *
@@ -30,24 +28,19 @@
  *                   || (computedDarknessLevel > globalLightThresholds[1])) ) discard;
  * ```
  *
- * `base-lighting.mjs:383`, and `computedDarknessLevel` is **per fragment**, sampled from the
- * darkness-level texture that `render/darkness-texture.mjs` now writes the model into. So
- * narrowing the upper threshold to {@link globalLightCutoff} makes global light discard
- * itself everywhere the model says the ground is darker than Dim — holes, islands and all,
- * with no polygon anywhere in the mechanism.
+ * `base-lighting.mjs:383`, and `computedDarknessLevel` is per fragment, sampled from the
+ * darkness-level texture `render/darkness-texture.mjs` writes the model into. So narrowing the
+ * upper threshold to {@link globalLightCutoff} makes global light discard itself everywhere the
+ * model says the ground is darker than Dim — holes, islands and all, with no polygon anywhere in
+ * the mechanism. What is left of this file is one uniform.
  *
- * What is left of this file is one uniform.
- *
- * ## Why the threshold and not the source's own data
- *
- * `data.darkness` looks like the natural place, and it is the wrong one.
- * `#refreshDynamicIllumination` tests the **scene's** darkness level against that same band to
- * decide whether to draw the global source into the visibility mask at all
- * (`visibility.mjs:637-640`). Narrowing it there would stop global light *revealing* the map
- * whenever the scene's slider sat above our cutoff, which has nothing to do with the question
- * being asked. The uniform reaches only the fragment test, which is the only test that should
- * change; the reveal half is handled per region, by the erasing meshes in
- * `render/darkness-texture.mjs`.
+ * The threshold rather than the source's own data. `data.darkness` looks like the natural place and
+ * is the wrong one: `#refreshDynamicIllumination` tests the scene's darkness level against that
+ * same band to decide whether to draw the global source into the visibility mask at all
+ * (`visibility.mjs:637-640`). Narrowing it there would stop global light revealing the map whenever
+ * the scene's slider sat above the cutoff, which is a different question. The uniform reaches only
+ * the fragment test, the only test that should change; the reveal half is handled per region by the
+ * erasing meshes in `render/darkness-texture.mjs`.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -80,11 +73,10 @@ const PATCH_MARK = "pf1LightingAmbientPatched";
  * Is the takeover active?
  *
  * @remarks
- * **Its own setting, separate from the renderer's, and default off.** Same reasoning as
- * `umbraPerception` against `perceptionEnabled`: this is the change that makes the *whole
- * map* render through this module rather than only the parts near a darkness, so its failure
- * mode is "the map looks slightly wrong" rather than "the darkness looks wrong". That is a
- * much worse thing to debug, and one toggle turns it back into a one-minute bisection.
+ * Its own setting, separate from the renderer's. Same reasoning as `umbraPerception` against
+ * `perceptionEnabled`: this makes the whole map render through this module rather than only the
+ * parts near a darkness, so its failure mode is a slightly wrong map rather than a wrong darkness.
+ * Much worse to debug, and one toggle turns it back into a one-minute bisection.
  */
 export function isEnabled() {
   // Cached — `paint.active()` and `light-ramps.isEnabled()` both reach it every pass.
@@ -100,9 +92,8 @@ export function registerSettings() {
       "including under true seeing and god's eye. Quantises ambient brightness to the five " +
       "tiers. Requires the renderer.",
     scope: "world",
-    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
-    // switch was a development bisection aid and the module is past needing one in the menu.
-    // Reachable from the console — see `game.pf1Lighting.settings`.
+    // No control surface (2026-08-26): the switch was a development bisection aid.
+    // Functionality stays, reachable from the console — see `game.pf1Lighting.settings`.
     config: false,
     type: Boolean,
     // Flipped from `false` with the control. See `suppression.mjs` for the reasoning.
@@ -110,8 +101,8 @@ export function registerSettings() {
     onChange: () => {
       if (!canvas?.ready) return;
       syncLightWeights();
-      // The threshold is a uniform, so a refresh is enough for the lighting half; the meshes
-      // are dropped by the renderer's own rebuild, which the perception update provokes.
+      // The threshold is a uniform, so a refresh covers the lighting half; the meshes are dropped
+      // by the renderer's own rebuild, which the perception update provokes.
       canvas.perception.update({ initializeLighting: true, refreshLighting: true, refreshVision: true });
     },
   });
@@ -121,14 +112,14 @@ export function registerSettings() {
  * Put light sources on the same brightness ladder as the ambient, or take them off it.
  *
  * @remarks
- * Tied to this setting rather than to the renderer, because it is the same claim: *every area
- * reads at the tier the model says it is*, and a light whose zones are anchored somewhere else
- * breaks that claim exactly as a stand-in fill did. See `levels.deriveWeights` — with the stock
- * `weights.bright` of 1 a light's bright zone is `ambientBrightest` outright, immune to the
- * scene's darkness, our tier field and any umbra over it.
+ * Tied to this setting rather than the renderer, being the same claim — every area reads at the
+ * tier the model says it is — and a light whose zones are anchored elsewhere breaks that claim
+ * exactly as a stand-in fill did. See `levels.deriveWeights`: with the stock `weights.bright` of 1
+ * a light's bright zone is `ambientBrightest` outright, immune to the scene's darkness, the tier
+ * field and any umbra over it.
  *
- * Restoring is not optional housekeeping: `CONFIG.Canvas.lightLevels` is global and affects
- * every module on the canvas, so switching the setting off has to give it back untouched.
+ * Restoring is not optional housekeeping: `CONFIG.Canvas.lightLevels` is global and affects every
+ * module on the canvas, so switching the setting off must give it back untouched.
  */
 export function syncLightWeights() {
   if (isEnabled()) applyLightWeights();
@@ -136,8 +127,8 @@ export function syncLightWeights() {
 }
 
 export function registerHooks() {
-  // Ambient colours are per scene, and the weights are solved against them — so they have to be
-  // re-derived on every canvas, not once at startup.
+  // Ambient colours are per scene and the weights are solved against them, so they re-derive on
+  // every canvas rather than once at startup.
   Hooks.on("canvasReady", () => syncLightWeights());
 }
 
@@ -149,16 +140,14 @@ export function registerHooks() {
  * Mix over whatever global light source class is installed.
  *
  * @remarks
- * **Applied at `init`, unlike every other mixin in this module, and the difference is
- * load-bearing.** `EnvironmentCanvasGroup` builds its source in the constructor as a
- * non-writable value property (`environment.mjs:29-30`), and the canvas groups are created in
- * `Canvas#initialize()` (`board.mjs:582`) — long before `canvasInit` (`board.mjs:1024`). A
- * later patch changes the CONFIG slot and nothing else: the live singleton stays an instance
- * of the stock class and cannot be replaced.
+ * Applied at `init`, unlike every other mixin here, and the difference is load-bearing.
+ * `EnvironmentCanvasGroup` builds its source in the constructor as a non-writable value property
+ * (`environment.mjs:29-30`), and the canvas groups are created in `Canvas#initialize()`
+ * (`board.mjs:582`), long before `canvasInit` (`board.mjs:1024`). A later patch changes the CONFIG
+ * slot and nothing else: the live singleton stays an instance of the stock class, unreplaceable.
  *
- * That failure is silent in the worst way — the mixin reports itself installed and the source
- * simply behaves as before. {@link status} therefore reports the CONFIG slot and the
- * *instance* separately.
+ * That failure is silent — the mixin reports itself installed and the source behaves as before — so
+ * {@link status} reports the CONFIG slot and the instance separately.
  */
 export function applyMixin() {
   const Base = CONFIG.Canvas.globalLightSourceClass;
@@ -171,12 +160,12 @@ export function applyMixin() {
      * @override
      * @remarks
      * `super` sets both thresholds from `this.data.darkness` every time
-     * (`global-light-source.mjs:74-80`), so this can only ever narrow them, never leak: with
-     * the setting off, or on a frame where the base writes first, the stock band is what
-     * stands. Nothing needs restoring when the takeover is switched off.
+     * (`global-light-source.mjs:74-80`), so this can only narrow them, never leak: with the setting
+     * off, or on a frame where the base writes first, the stock band stands. Nothing needs
+     * restoring when the takeover is switched off.
      *
-     * Only the **upper** bound moves. The lower one is the GM's "this light is for dark
-     * scenes" control and means something we have no view on.
+     * Only the upper bound moves. The lower one is the GM's this-light-is-for-dark-scenes control,
+     * which this module has no view on.
      */
     _updateCommonUniforms(shader) {
       super._updateCommonUniforms(shader);
@@ -185,23 +174,23 @@ export function applyMixin() {
       const u = shader.uniforms;
       if (!u.globalLightThresholds) return;
 
-      // **Under §7.0 step 6 it contributes nothing at all**, and this is the second half of
-      // Hamilcarbarcas's report that dark regions still tracked the scene's slider (2026-08-27).
+      // Under §7.0 step 6 it contributes nothing at all — the second half of the 2026-08-27 report
+      // that dark regions still tracked the scene's slider.
       //
-      // Narrowing the upper bound stops global light painting where the model says *darker than
-      // Dim*, which was the whole point while the ground's brightness still came from light
-      // sources. It leaves it painting everywhere else — and what it paints is
-      // `mix(computedBackgroundColor, ambientBrightest, weightBright)`, a wash laid over the tier
-      // the texture just wrote. So a Normal cell rendered brighter than ground at Normal, and the
-      // wash appeared and vanished as the scene's darkness crossed the source's own
-      // `darkness.min/max` band — a brightness change with no model change behind it, which is
-      // exactly what the takeover exists to stop.
+      // Narrowing the upper bound stops global light painting where the model says darker than Dim,
+      // which was the point while the ground's brightness still came from light sources. It leaves
+      // it painting everywhere else, and what it paints is
+      // `mix(computedBackgroundColor, ambientBrightest, weightBright)` — a wash over the tier the
+      // texture just wrote. So a Normal cell rendered brighter than ground at Normal, and the wash
+      // appeared and vanished as the scene's darkness crossed the source's own `darkness.min/max`
+      // band: a brightness change with no model change behind it, which is what the takeover exists
+      // to stop.
       //
-      // An inverted band discards every fragment: `level < 1 || level > 0` is true for all of
-      // `[0, 1]`. **The reveal half is untouched** — `#refreshDynamicIllumination` reads the
-      // source's *shape* into the visibility mask (`visibility.mjs:637-640`), not this uniform, so
-      // global illumination still lights the map for the purpose of what a creature can see. Only
-      // its opinion about brightness is withdrawn, which the texture now owns outright.
+      // An inverted band discards every fragment — `level < 1 || level > 0` is true across `[0, 1]`.
+      // The reveal half is untouched: `#refreshDynamicIllumination` reads the source's shape into
+      // the visibility mask (`visibility.mjs:637-640`), not this uniform, so global illumination
+      // still lights the map for what a creature can see. Only its opinion about brightness is
+      // withdrawn, which the texture now owns outright.
       if (lightsInTexture()) {
         u.globalLightThresholds[0] = 1;
         u.globalLightThresholds[1] = 0;
@@ -222,17 +211,17 @@ export function applyMixin() {
 /* -------------------------------------------- */
 
 /**
- * Is the takeover live, and if it is doing nothing, **why**?
+ * Is the takeover live, and if it is doing nothing, why?
  *
  * @remarks
- * The last fields exist because the switch being on is not the same as it having anything to
- * do, and the difference is invisible on screen. §7.0 only bites where global illumination
- * actually contributes: a scene with global light disabled, or at full darkness, has no
- * ambient to cut and correctly renders exactly as before.
+ * The last fields exist because the switch being on is not the same as it having anything to do,
+ * and the difference is invisible on screen. §7.0 only bites where global illumination contributes:
+ * a scene with global light disabled, or at full darkness, has no ambient to cut and correctly
+ * renders as before.
  *
- * Without this, "I turned it on and nothing changed" has two causes that look identical — the
- * feature is broken, or the scene never needed it. That is the shape of question this project
- * has lost the most time to.
+ * Without this, turning it on and seeing no change has two identical-looking causes — broken
+ * feature, or a scene that never needed it. That is the shape of question this project has lost the
+ * most time to.
  */
 export function status() {
   const source = canvas?.environment?.globalLightSource;
@@ -251,39 +240,38 @@ export function status() {
 
   const report = {
     enabled: isEnabled(),
-    // **Which branch `_updateCommonUniforms` takes, and the field this report was missing.**
-    // `true` inverts the band so global illumination contributes no brightness at all (§6.2.10).
-    // `false` only *narrows* it, which leaves the source washing over every fragment the model
-    // says is Dim or brighter — so anything that raises a dark room above Dim, a §3.4 spill most
-    // obviously, gets that wash on top of whatever else is lighting it. Two lighting passes over
-    // one patch of floor, with the seam following the thing that raised it.
+    // Which branch `_updateCommonUniforms` takes. `true` inverts the band so global illumination
+    // contributes no brightness at all (§6.2.10). `false` only narrows it, leaving the source
+    // washing over every fragment the model says is Dim or brighter — so anything raising a dark
+    // room above Dim, a §3.4 spill most obviously, gets that wash on top of whatever else lights
+    // it: two lighting passes over one patch of floor, seam following the thing that raised it.
     //
     // Added 2026-08-28, after that seam was reported along a spill contour and the report gave no
-    // way to tell the two branches apart. The default is `true`; a world that predates it can have
-    // `false` stored, which is the trap `setting_onchange_fires_on_create` describes.
+    // way to tell the branches apart. The default is `true`; a world predating it can have `false`
+    // stored, the trap `setting_onchange_fires_on_create` describes.
     lightsInTexture: lightsInTexture(),
     cutoff: globalLightCutoff(),
     table: { ...darknessTable() },
-    // The solved light weights. `bright: 1` here means they are **not** installed, and a light's
-    // bright zone is `ambientBrightest` regardless of anything the model says.
+    // The solved light weights. `bright: 1` here means they are not installed, and a light's bright
+    // zone is `ambientBrightest` regardless of what the model says.
     lightLevels: { ...(CONFIG.Canvas.lightLevels ?? {}) },
-    // The CONFIG slot. Necessary and **not sufficient** — see below.
+    // The CONFIG slot. Necessary and not sufficient — see below.
     patched: CONFIG.Canvas.globalLightSourceClass?.[PATCH_MARK] === true,
-    // **The live singleton.** These two can disagree, and when they do nothing works while
-    // everything reports healthy: the group holds its source in a non-writable property built
-    // in its constructor, so a CONFIG patch applied after `Canvas#initialize()` leaves an
-    // instance of the stock class that can never be replaced.
+    // The live singleton. These two can disagree, and when they do nothing works while everything
+    // reports healthy: the group holds its source in a non-writable property built in its
+    // constructor, so a CONFIG patch applied after `Canvas#initialize()` leaves an instance of the
+    // stock class that can never be replaced.
     instancePatched: source?.constructor?.[PATCH_MARK] === true,
     active: source?.active ?? null,
-    // The band as authored. The uniform is what we narrow; this stays the GM's value, and the
+    // The band as authored. The uniform is what gets narrowed; this stays the GM's value, and the
     // two disagreeing is the expected state rather than a fault.
     band: source?.data?.darkness ? { ...source.data.darkness } : null,
 
     // --- Does this scene give the takeover anything to do? ---
     globalLightEnabled: canvas?.scene?.environment?.globalLight?.enabled ?? null,
     darknessLevel: canvas?.environment?.darknessLevel ?? null,
-    // 0 means global illumination contributes nothing, so there is nothing to cut out and
-    // nothing will look different however the setting is set.
+    // 0 means global illumination contributes nothing, so there is nothing to cut out and nothing
+    // looks different however the setting is set.
     ambientB,
     ambientCells,
     darkCells,

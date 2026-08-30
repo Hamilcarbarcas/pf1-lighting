@@ -1,18 +1,17 @@
 /**
  * A benchmark helper that defaults to the right thing.
  *
- * Every timing mistake made on this module so far has been one of three, and each cost a
- * round trip and at least one wrong conclusion:
+ * Every timing mistake made on this module has been one of three, each costing a round trip and a
+ * wrong conclusion:
  *
- *   - **Single-shot measurement.** A lone call includes JIT warm-up and first-touch
- *     allocation. `field.compute()` read 0.9 ms cold for work that does no Clipper ops at
- *     all.
- *   - **Reporting the mean.** One GC spike of 295 ms inverted a ranking in the churn
- *     harness and produced a headline that was exactly backwards.
- *   - **Comparing across warm states.** Whichever variant ran first ate the warm-up for
- *     the rest, making the second look 1.9× faster on byte-identical input.
+ *   - Single-shot measurement. A lone call includes JIT warm-up and first-touch allocation;
+ *     `field.compute()` read 0.9 ms cold for work that does no Clipper ops at all.
+ *   - Reporting the mean. One 295 ms GC spike inverted a ranking in the churn harness and produced
+ *     a headline that was exactly backwards.
+ *   - Comparing across warm states. Whichever variant ran first ate the warm-up for the rest,
+ *     making the second look 1.9× faster on byte-identical input.
  *
- * So: warm up, report the median, and never compare numbers from separate invocations.
+ * So: warm up, report the median, never compare numbers from separate invocations.
  */
 
 const stats = (samples) => {
@@ -59,9 +58,8 @@ export function bench(fn, { iterations = 200, warmup = 50, label = fn.name || "a
 /**
  * Compare several implementations of the same thing.
  *
- * Runs them **round-robin** rather than each to completion, so no variant absorbs the
- * others' warm-up. That ordering bias is what made a pre-filter look 5.7× better than it
- * was, and it is invisible unless you go looking.
+ * Round-robin rather than each to completion, so no variant absorbs the others' warm-up. That
+ * ordering bias made a pre-filter look 5.7× better than it was, and leaves no trace in the output.
  *
  * @param {Record<string, Function>} cases
  * @param {object} [options] - As {@link bench}

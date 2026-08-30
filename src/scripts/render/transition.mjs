@@ -1,34 +1,26 @@
 /**
- * **One gradient, everywhere.** DESIGN.md §6.4.3.
+ * One gradient, everywhere. DESIGN.md §6.4.3.
  *
- * Hamilcarbarcas, 2026-08-27: *"our implementation looks very piecemeal right now. Can we consolidate
- * that to a single gradient system that covers all transitions between brightnesses?"*
- *
- * It was piecemeal, and the reason is that each boundary got a mechanism invented for it at the
- * time, with its own units:
+ * Consolidated 2026-08-27. Before that each boundary had a mechanism invented for it, with its own
+ * units:
  *
  * | Boundary | Was | Width was expressed as |
  * | --- | --- | --- |
  * | region edge, darkness rim, umbra | a `PIXI.BlurFilter` on the mesh | blur strength in world px |
- * | §3.4 spill band | per-vertex ramp | a *fraction of a band* |
- * | §7.0 step 6 light zone | per-vertex ramp | a *fraction of the narrower zone* |
+ * | §3.4 spill band | per-vertex ramp | a fraction of a band |
+ * | §7.0 step 6 light zone | per-vertex ramp | a fraction of the narrower zone |
  *
- * So three different things could be "half a transition" depending on what they were next to, and
- * a blur is not a gradient at all — it fades a mesh's alpha to reveal whatever is beneath, which
- * is why §7.0 step 5 could never make one read as a ramp.
+ * So three different things could be "half a transition" depending on what they sat next to, and a
+ * blur is not a gradient at all — it fades a mesh's alpha to reveal what is beneath, which is why
+ * §7.0 step 5 could never make one read as a ramp.
  *
- * ## The rule
+ * The rule: every brightness boundary ramps over the same distance, centred on the boundary. One
+ * number, in grid squares, meaning the same at a region edge, a darkness rim, a light's zone
+ * boundary and a window's spill. A two-rung boundary is not widened for it — a wider fade would
+ * read as less of a step, and a two-rung boundary is more of one.
  *
- * > **Every brightness boundary ramps over the same distance, centred on the boundary.**
- *
- * One number, in grid squares, and it means the same thing at a region edge, a darkness rim, a
- * light's zone boundary and a window's spill. A boundary two rungs apart is not made wider for it:
- * a wider fade would read as *less* of a step, and a two-rung boundary is more of one.
- *
- * ## What consumes it
- *
- * All three producers call {@link levelAtDistance} with zones in **scene pixels**, and the only
- * thing that differs is where the distance comes from:
+ * All three producers call {@link levelAtDistance} with zones in scene pixels, differing only in
+ * where the distance comes from:
  *
  * | Producer | Distance is |
  * | --- | --- |
@@ -36,10 +28,9 @@
  * | `model/spill.mjs` + `render/gradient.mjs` | distance out from the lit wedge |
  * | `render/light-ramps.mjs` | distance from the light's origin |
  *
- * The old `spillPlateau` control is gone with the fractional widths it expressed. A plateau is no
- * longer a thing to set: it is whatever is left of a zone once its two transitions are taken out,
- * which is the honest relationship and means a zone narrower than a transition simply never
- * reaches its nominal level instead of squeezing one in.
+ * The old `spillPlateau` control went with the fractional widths it expressed. A plateau is not a
+ * thing to set: it is whatever remains of a zone once its two transitions are taken out, so a zone
+ * narrower than a transition never reaches its nominal level rather than squeezing one in.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -48,16 +39,15 @@ import { number } from "../settings-cache.mjs";
 export const SETTING_WIDTH = "transitionWidth";
 
 /**
- * The distance one tier step of brightness fades over, in **scene pixels**.
+ * The distance one tier step of brightness fades over, in scene pixels.
  *
  * @remarks
- * Grid squares rather than pixels in the setting, for the reason `soften.groundSoftness` gives:
- * it is a distance on the map, so it should not change when the GM zooms or when a scene uses a
- * different grid size.
+ * Stored in grid squares rather than pixels, for the reason `soften.groundSoftness` gives: it is a
+ * distance on the map, so it must not change with zoom or grid size.
  */
 export function width() {
-  // **The setting is cached; the product is not.** `canvas.grid.size` is per scene and stays a
-  // live read — only the stored number goes through `settings-cache.mjs`. Worth caching because
+  // The setting is cached, the product is not. `canvas.grid.size` is per scene and stays a live
+  // read; only the stored number goes through `settings-cache.mjs`. Worth caching because
   // `light-ramps.cacheKey` reaches this once per light cell per pass.
   return Math.max(0, number(SETTING_WIDTH, 0.75)) * (canvas?.grid?.size ?? 100);
 }
@@ -71,12 +61,12 @@ const mix = (a, b, t) => a + (b - a) * t;
  * How wide the transition between two levels is, in scene pixels.
  *
  * @remarks
- * {@link width}, and it does not depend on how far apart the two levels are. That is the whole
- * content of "a single gradient system": one distance, so a Normal/Dim edge and a Bright/Dark edge
- * are the same thickness of fade and differ only in how much brightness crosses it.
+ * {@link width}, independent of how far apart the two levels are. That is the content of a single
+ * gradient system: one distance, so a Normal/Dim edge and a Bright/Dark edge are the same
+ * thickness of fade and differ only in how much brightness crosses it.
  *
- * Both arguments are kept in the signature because every call site has them and a future rule that
- * *does* vary with the gap belongs here rather than at four producers.
+ * Both arguments stay in the signature because every call site has them, and a future rule that
+ * does vary with the gap belongs here rather than at four producers.
  */
 export function spanFor(from, to) {
   void from;
@@ -88,16 +78,14 @@ export function spanFor(from, to) {
  * The level at a distance, across a run of contiguous zones.
  *
  * @remarks
- * `zones` are `{r0, r1, level}` in ascending order and in **scene pixels**; the first may start at
- * `-Infinity` and the last may end at it. A transition is centred on each internal boundary and is
- * {@link spanFor} wide, clamped so it can never eat more than half of either neighbour — a zone
- * narrower than its own transitions then simply never reaches its nominal level, which is the
- * honest picture rather than a squeezed-in plateau.
+ * `zones` are `{r0, r1, level}` ascending, in scene pixels; the first may start at `-Infinity` and
+ * the last may end at it. Each internal boundary carries a centred {@link spanFor}-wide transition,
+ * clamped so it never eats more than half of either neighbour — a zone narrower than its own
+ * transitions then never reaches its nominal level, rather than squeezing in a plateau.
  *
- * `trailing` exists for one case and is worth naming: a light's outermost boundary has no geometry
- * past it to carry the other half of a centred ramp, so it finishes *at* the rim instead of
- * straddling it. That is also what makes the mesh's own silhouette invisible — it hands back
- * exactly the ground level at its edge.
+ * `trailing` covers one case: a light's outermost boundary has no geometry past it to carry the
+ * other half of a centred ramp, so it finishes at the rim instead of straddling it. That is also
+ * what hides the mesh's own silhouette — it hands back exactly the ground level at its edge.
  *
  * @param {number} d - Distance, scene pixels
  * @param {{r0: number, r1: number, level: number}[]} zones
@@ -147,8 +135,8 @@ export function registerSettings() {
       "everywhere it happens: the edge of a lit room, the rim of a darkness, a light's zones, and " +
       "a window's spill. 0 makes every brightness boundary a hard edge.",
     scope: "world",
-    // Edited in the *Configure visuals* window (§10.6), where the rest of the appearance numbers
-    // live. Registered here, where every producer reads it.
+    // Edited in the Configure visuals window (§10.6) with the rest of the appearance numbers.
+    // Registered here, where every producer reads it.
     config: false,
     type: Number,
     range: { min: 0, max: 4, step: 0.05 },
@@ -161,10 +149,10 @@ export function registerSettings() {
  * Everything behind {@link width}, separated.
  *
  * @remarks
- * **The product alone is not diagnosable, and that cost a round** (2026-08-27). `transitionPixels:
- * 20` is equally consistent with a stored 0.1 on a 200px grid and a stored 0.75 on a 27px one, and
- * those need opposite responses. It also happened to equal the retired `groundSoftness`, which made
- * an unchanged setting look like a working one.
+ * The product alone is not diagnosable, which cost a round on 2026-08-27. `transitionPixels: 20` is
+ * equally consistent with a stored 0.1 on a 200px grid and a stored 0.75 on a 27px one, needing
+ * opposite responses. It also happened to equal the retired `groundSoftness`, making an unchanged
+ * setting look like a working one.
  */
 export function status() {
   let stored = null;
@@ -184,8 +172,8 @@ export function status() {
     default: 0.75,
     grid,
     scenePixels: Math.round(width()),
-    // What it is on screen right now. **This is the number that decides whether it is visible**,
-    // and at a zoomed-out stage scale it can be a fraction of the scene value.
+    // On screen right now — the number that decides whether it is visible. At a zoomed-out stage
+    // scale it can be a fraction of the scene value.
     screenPixels: Math.round(width() * (canvas?.stage?.scale?.x ?? 1)),
   };
 }
@@ -193,9 +181,8 @@ export function status() {
 /**
  * How to push a changed width onto what is already drawn.
  *
- * Injected rather than imported, the same seam `soften.setGroundRefresh` uses: every producer
- * reads this module, so importing one of them back would make peers depend on each other for a
- * settings callback.
+ * Injected rather than imported, the same seam `soften.setGroundRefresh` uses: every producer reads
+ * this module, so importing one back would make peers depend on each other for a settings callback.
  */
 export function setRefresh(fn) {
   refresh = typeof fn === "function" ? fn : () => {};

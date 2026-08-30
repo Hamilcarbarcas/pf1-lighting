@@ -1,36 +1,33 @@
 /**
- * **Greyscale, taken over.** DESIGN.md §6.2.11.
+ * Greyscale, taken over. DESIGN.md §6.2.11.
  *
- * Hamilcarbarcas, 2026-08-27: *"Rather than hacking together a bunch of rules, I want to do more like what
- * we did with lighting and create one centralized implementation that disables existing routes and
- * implements its own singular application according to our rules."*
+ * One centralised implementation that disables the existing routes and applies its own rule, the
+ * same shape as the lighting takeover (2026-08-27).
  *
- * A creature that sees in black and white falls back on that sense **where there is no light**.
- * Where there is light it uses its eyes, and its eyes see colour. So the boundary between grey and
- * colour is a brightness boundary, and this module already computes, rasterises and blurs exactly
- * one of those.
+ * A creature seeing in black and white falls back on that sense where there is no light. Where
+ * there is light it uses its eyes, and its eyes see colour. So the boundary between grey and colour
+ * is a brightness boundary, and this module already computes, rasterises and blurs exactly one of
+ * those.
  *
- * ## Why the first attempt missed, and it is worth keeping
- *
- * The first build patched the primary sprite's shader and the coloration filter, and produced no
- * visible change inside a darkvision radius. The cause is one line
- * (`base-lighting.mjs:395`), which every vision-source layer begins on:
+ * The first attempt patched the primary sprite's shader and the coloration filter and produced no
+ * visible change inside a darkvision radius. The cause is one line (`base-lighting.mjs:395`), which
+ * every vision-source layer begins on:
  *
  * ```glsl
  * vec4 baseColor = useSampler ? texture2D(primaryTexture, vSamplerUvs) : vec4(1.0);
  * ```
  *
- * with `u.primaryTexture = canvas.primary.renderTexture` (`point-vision-source.mjs:428`) — the
- * **raw** cached terrain, sampled before the primary sprite's shader ever runs. A vision source
- * does precisely what §6.2.5 found a *darkness* source doing: it takes its own copy of the map and
- * repaints it on its own terms. With `background.visibility: REQUIRED`, darkvision does that across
- * its whole field of view, so the sprite's output is overpainted everywhere it would have mattered.
+ * with `u.primaryTexture = canvas.primary.renderTexture` (`point-vision-source.mjs:428`) — the raw
+ * cached terrain, sampled before the primary sprite's shader runs. A vision source does what §6.2.5
+ * found a darkness source doing: it takes its own copy of the map and repaints it on its own terms.
+ * With `background.visibility: REQUIRED`, darkvision does that across its whole field of view, so
+ * the sprite's output is overpainted everywhere it would have mattered.
  *
- * That is the fifth face of §6.2.3's finding, one source class over, and it is the general lesson:
- * **no shader that samples `canvas.primary.renderTexture` can be corrected by changing what the
- * primary sprite does.** Three of the five routes below do exactly that.
+ * The fifth face of §6.2.3's finding, one source class over, and the general lesson: no shader that
+ * samples `canvas.primary.renderTexture` can be corrected by changing what the primary sprite does.
+ * Three of the five routes below do exactly that.
  *
- * ## The five routes greyscale reached the screen by
+ * The five routes greyscale reached the screen by:
  *
  * | # | Route | Applies to | Samples |
  * | --- | --- | --- | --- |
@@ -38,14 +35,13 @@
  * | 2 | vision source **background** layer, `vision.defaults.saturation` | inside the FOV | raw primary texture — **overpaints 1** |
  * | 3 | vision source illumination + coloration layers, same uniform | inside the FOV | — |
  * | 4 | `lighting.*.postProcessingModes: ["SATURATION"]` via `VisualEffectsMaskingFilter` | whole effects layers | — |
- * | 5 | §6.2.5's darkness-shader wrap (ours) | inside a darkness disc | raw primary texture |
+ * | 5 | §6.2.5's darkness-shader wrap | inside a darkness disc | raw primary texture |
  *
  * Five places, four of them core's, three sampling the map independently. Correcting them one at a
- * time is unwinnable, because route 2 wins wherever a vision source paints.
+ * time is unwinnable, route 2 winning wherever a vision source paints.
  *
- * ## The takeover
- *
- * Same shape as §7.0's. **Zero every route, then add one pass nothing can repaint over.**
+ * The takeover has the same shape as §7.0's: zero every route, then add one pass nothing can
+ * repaint over.
  *
  * {@link neutralise} rebuilds PF1's darkvision `VisionMode` with routes 1–4 set to zero, and route
  * 5 falls silent on its own: `desaturate.currentSaturation()` reads
@@ -59,35 +55,29 @@
  * lighting layer). `visibility` and `interface` are its *siblings* under `rendered`, so the fog
  * overlay, the grid, nameplates and the UI are outside it and stay in colour.
  *
- * The filter runs after all of that has composited. It cannot be overpainted, it does not care
- * which source sampled which texture, and it is the last thing to touch those pixels.
+ * The filter runs after all of that has composited. It cannot be overpainted, does not care which
+ * source sampled which texture, and is the last thing to touch those pixels.
  *
- * ## The rule it applies
+ * The rule it applies:
  *
  * ```
  * grey = clamp((level − colourLevel) / (darkLevel − colourLevel), 0, 1) × greyness × fogGate
  * ```
  *
- * `level` is our field, sampled at `vMaskTextureCoord` — the screen UV
- * `AbstractBaseMaskFilter`'s vertex shader exists to provide, and the same basis core samples every
- * screen-sized cached texture on. At or above Dark, fully grey; at or below `colourLevel`, full
- * colour; and **the blurred band between the two rungs is the gradient**, so the greyscale edge is
- * exactly as soft as the brightness edge beside it and moves with `transitionWidth` without reading
- * it. Both rungs come from `darknessTable()`, so retuning the ladder in *Configure Visuals* moves
- * this too.
-
+ * `level` is the field, sampled at `vMaskTextureCoord` — the screen UV `AbstractBaseMaskFilter`'s
+ * vertex shader exists to provide, and the basis core samples every screen-sized cached texture on.
+ * At or above Dark, fully grey; at or below `colourLevel`, full colour; and the blurred band between
+ * the two rungs is the gradient, so the greyscale edge is exactly as soft as the brightness edge
+ * beside it and moves with `transitionWidth` without reading it. Both rungs come from
+ * `darknessTable()`, so retuning the ladder in Configure Visuals moves this too.
  *
- * ## What changes visibly, beyond the intent
+ * Beyond the intent, tokens grey too, being in `primary`. A creature standing in a dark room should
+ * not be in colour to an observer who can only see it by darkvision, so this is a correction — but a
+ * conspicuous one, and the first thing that looks different.
  *
- * **Tokens grey too.** They are in `primary`. A creature standing in a dark room should not be in
- * colour to an observer who can only see it by darkvision, and today it always is — so this is a
- * correction, but it is a conspicuous one and it is the first thing that will look different.
- *
- * ## This corrects a claim in DESIGN.md
- *
- * §"Colour in an umbra is the coloration layer, never the map" (2026-08-23) said a vision mode's
- * desaturation *"physically cannot be grey in one place and coloured in another"*. True of the code
- * as it stood, false as a general claim, and retracted there.
+ * This corrects a claim in DESIGN.md: the section on colour in an umbra (2026-08-23) said a vision
+ * mode's desaturation physically cannot be grey in one place and coloured in another. True of the
+ * code as it stood, false as a general claim, and retracted there.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -97,16 +87,16 @@ export const SETTING_REGIONAL_GREY = "regionalGreyscale";
 export const SETTING_FOG_GREY = "greyscaleInFog";
 
 /**
- * **0 since 2026-08-29** — remembered terrain keeps its colour.
+ * 0 since 2026-08-29 — remembered terrain keeps its colour.
  *
  * @remarks
  * It shipped at 0.5 as a compromise: the boundary this fades across is the viewer's own vision
- * polygon, so at 1 the greyscale edge sweeps the map as they walk. But 0.5 is *also* a moving
- * edge, only a fainter one, and it greys terrain the viewer is remembering rather than seeing —
- * which is the wrong claim. Memory is not a sense with a light level. 0 declines the question.
+ * polygon, so at 1 the greyscale edge sweeps the map as they walk. But 0.5 is also a moving edge,
+ * only fainter, and it greys terrain the viewer is remembering rather than seeing, which is the
+ * wrong claim — memory is not a sense with a light level. 0 declines the question.
  *
  * The dial stays because the shader branch is already written and free (`fogGrey < 1.0`), and
- * because a table that wants fog to read as unlit can still ask for it.
+ * because a table wanting fog to read as unlit can still ask for it.
  */
 const FOG_GREY_DEFAULT = 0;
 
@@ -115,9 +105,9 @@ const FOG_GREY_DEFAULT = 0;
  *
  * @remarks
  * The takeover destroys its own input. `visionModeOverrides.saturation` was how the observer's
- * greyness was read, and after routes 1–4 are zeroed it reports 0 for everyone — so the filter
- * would correctly compute that nobody sees in black and white. Captured by mode id at neutralise
- * time, which is also the honest record of what was taken away.
+ * greyness was read, and once routes 1–4 are zeroed it reports 0 for everyone, so the filter would
+ * correctly compute that nobody sees in black and white. Captured by mode id at neutralise time,
+ * which is also the honest record of what was taken away.
  */
 const greynessByMode = new Map();
 
@@ -154,17 +144,17 @@ export function registerSettings() {
       "light, and colour everywhere else. Off restores Foundry's five routes, which between them " +
       "grey the whole canvas whenever a darkvision token is selected.",
     scope: "world",
-    // No control surface, matching the module's other corrections of core behaviour. The one
-    // number worth tuning is the fog dial below, which does have one.
+    // No control surface, matching the module's other corrections of core behaviour. The one number
+    // worth tuning is the fog dial below, which does have one.
     config: false,
     type: Boolean,
     default: true,
     onChange: () => {
       sync();
-      // **F5 for the off→on direction, and this cannot do it.** `neutralise` runs once at `setup`
-      // and rebuilding the vision mode mid-session would leave every already-initialised vision
-      // source holding the old one. Off→off-looking is handled: the filter detaches and the routes
-      // stay zeroed, which is *no* greyscale rather than Foundry's. Stated in Appendix B.5.
+      // F5 for the off→on direction, which this cannot do. `neutralise` runs once at `setup`, and
+      // rebuilding the vision mode mid-session would leave every already-initialised vision source
+      // holding the old one. The other direction is handled: the filter detaches and the routes stay
+      // zeroed, which is no greyscale rather than Foundry's. Stated in Appendix B.5.
       if (canvas?.ready) canvas.perception.update({ refreshLighting: true, refreshVision: true });
     },
   });
@@ -176,9 +166,9 @@ export function registerSettings() {
       "leaves remembered terrain in full colour; 1 treats it exactly like ground in view. The " +
       "middle exists because the boundary is your vision polygon, which moves with you.",
     scope: "world",
-    // **No control surface since 2026-08-29.** It had a row in *Configure Visuals* and came out
-    // with `darknessAnimationStrength`: the default is now 0, which is *off*, so the row was a
-    // slider whose whole range is a deliberate departure from the shipped answer. Console only —
+    // No control surface since 2026-08-29. It had a row in Configure Visuals and came out with
+    // `darknessAnimationStrength`: the default is now 0, which is off, so the row was a slider whose
+    // whole range departs from the shipped answer. Console only —
     // `game.pf1Lighting.settings("greyscaleInFog", 0.5)`.
     config: false,
     type: Number,
@@ -197,19 +187,18 @@ export function registerSettings() {
  * The two rungs the greyscale ramp spans, in darkness-level units.
  *
  * @remarks
- * Read live: the ladder is four world settings (§10.5) and `render.levels()` can replace the whole
+ * Read live: the ladder is four world settings (§10.5), and `render.levels()` can replace the whole
  * table against a live scene without persisting anything.
  *
- * **The bright end is Dim, and it stays there.** Anchoring it at Normal was tried on 2026-08-27 to
- * suppress a gold halo at a darkness rim and was reverted the same day: Dim in full colour is what
- * darkvision should look like, and the halo was a clamp-geometry fault wearing a colour costume —
- * `render/paint.mjs`'s collar was ramping the umbra open around its own holes. Fixed there. **The
- * lesson is the one worth keeping: a wrong picture in this file is usually a right reading of a
- * wrong field.**
+ * The bright end is Dim and stays there. Anchoring it at Normal was tried on 2026-08-27 to suppress
+ * a gold halo at a darkness rim and reverted the same day: Dim in full colour is what darkvision
+ * should look like, and the halo was a clamp-geometry fault wearing a colour costume —
+ * `render/paint.mjs`'s collar ramping the umbra open around its own holes, fixed there. The lesson
+ * worth keeping: a wrong picture in this file is usually a right reading of a wrong field.
  *
- * Guarded against a degenerate ladder. A world setting the two rungs equal would otherwise divide
- * by zero and get a NaN, which reads as *no greyscale anywhere* — a failure that would be blamed on
- * this rather than on the ladder.
+ * Guarded against a degenerate ladder. A world setting the two rungs equal would divide by zero and
+ * get a NaN, reading as no greyscale anywhere — a failure that would be blamed on this rather than
+ * on the ladder.
  */
 function rungs() {
   const table = darknessTable();
@@ -222,13 +211,13 @@ function rungs() {
  * How grey the current observer's eyes are, 0..1.
  *
  * @remarks
- * Read from the **single vision source** Foundry itself picks for canvas-wide tinting
- * (`visibility.mjs:196`). With two vision sources active core already picks one of them for every
- * canvas-wide effect, and inventing a second answer here would put the greyscale out of step with
- * everything else that follows that choice.
+ * Read from the single vision source Foundry picks for canvas-wide tinting (`visibility.mjs:196`).
+ * With two vision sources active core already picks one for every canvas-wide effect, and inventing
+ * a second answer here would put the greyscale out of step with everything else following that
+ * choice.
  *
- * Keyed on `visionMode.id` rather than on the source's overrides, because {@link neutralise} has
- * set those to zero — see {@link greynessByMode}.
+ * Keyed on `visionMode.id` rather than the source's overrides, {@link neutralise} having set those
+ * to zero — see {@link greynessByMode}.
  */
 export function observerGreyness() {
   if (!isEnabled()) return 0;
@@ -245,33 +234,33 @@ export function observerGreyness() {
  * Zero Foundry's five desaturation routes for darkvision.
  *
  * @remarks
- * **`setup`, and it has to be.** PF1 assigns `CONFIG.Canvas.visionModes.darkvision` during `init`
- * (`pf1.mjs:261`); anything earlier is overwritten. `VisionMode` is a `DataModel` whose fields
+ * At `setup`, and it has to be: PF1 assigns `CONFIG.Canvas.visionModes.darkvision` during `init`
+ * (`pf1.mjs:261`), so anything earlier is overwritten. `VisionMode` is a `DataModel` whose fields
  * validate on assignment, so the mode is rebuilt from `toObject()` rather than mutated — the same
- * round trip PF1 itself uses (`pf1/canvas/vision-modes.mjs:11-15`) — and reconstructed through
+ * round trip PF1 uses (`pf1/canvas/vision-modes.mjs:11-15`) — and reconstructed through
  * `mode.constructor`, so a PF1 subclass survives it.
  *
- * What each line switches off, in the numbering of the table at the top of this file:
+ * What each line switches off, numbered as in the table above:
  *
- * - **1** `canvas.uniforms.saturation` — the primary sprite's whole-canvas adjustment. The shader
- *   is left installed rather than reset to `BaseSamplerShader`: with every adjustment at zero it
- *   is a passthrough, and keeping it preserves the `tint` path, which a source can still set
- *   through `visionModeOverrides.colorRGB` and which is not ours to remove.
- * - **2, 3** `vision.defaults.saturation` — every layer the vision source paints.
- * - **4** `postProcessingModes` on all four lighting channels. Darkvision carries none; cleared
- *   anyway, because "this mode happens not to use route 4" is a fact about today's `config.mjs`.
- * - **5** falls silent by itself. `desaturate.currentSaturation()` reads
+ * - 1: `canvas.uniforms.saturation`, the primary sprite's whole-canvas adjustment. The shader is
+ *   left installed rather than reset to `BaseSamplerShader` — with every adjustment at zero it is a
+ *   passthrough, and keeping it preserves the `tint` path, which a source can still set through
+ *   `visionModeOverrides.colorRGB` and which is not this module's to remove.
+ * - 2, 3: `vision.defaults.saturation`, every layer the vision source paints.
+ * - 4: `postProcessingModes` on all four lighting channels. Darkvision carries none, cleared anyway,
+ *   since this mode happening not to use route 4 is a fact about today's `config.mjs`.
+ * - 5 falls silent by itself. `desaturate.currentSaturation()` reads
  *   `visionModeOverrides.saturation`, which line 2 has just set to 0, so the darkness-shader wrap
- *   mixes by zero. Its *other* half — `observerIgnoresDarkness`, blindsight withholding the mesh —
+ *   mixes by zero. Its other half — `observerIgnoresDarkness`, blindsight withholding the mesh —
  *   reads actor senses and is untouched.
  *
  * `vision.darkness.adaptive` is put back to core's `false`. The first build set it true to reach
- * `background-vision.mjs:11`; with the saturation it was gating now zero, that mix is an identity
- * either way, and false is the smaller deviation.
+ * `background-vision.mjs:11`; with the saturation it gated now zero, that mix is an identity either
+ * way, and false is the smaller deviation.
  *
- * **Darkvision only.** `monochromatic` and `lightAmplification` keep every route they have:
- * monochromatic models an eye that cannot see colour *at all*, which is not a statement about
- * where the light is, and amplification is a different effect wearing the same shader.
+ * Darkvision only. `monochromatic` and `lightAmplification` keep every route they have:
+ * monochromatic models an eye that cannot see colour at all, which is not a statement about where
+ * the light is, and amplification is a different effect wearing the same shader.
  */
 export function neutralise() {
   if (neutralised) return;
@@ -285,7 +274,7 @@ export function neutralise() {
 
   // Captured before it is destroyed. Both routes state the same fact about the eye; the vision
   // source's own default is the one core treats as authoritative, with the canvas uniform as the
-  // fallback for a mode that only carries the sprite half.
+  // fallback for a mode carrying only the sprite half.
   const greyness = Math.clamp(
     -(data.vision?.defaults?.saturation ?? data.canvas?.uniforms?.saturation ?? 0),
     0,
@@ -313,14 +302,14 @@ export function neutralise() {
  *
  * @remarks
  * Built on `AbstractBaseMaskFilter` for its vertex shader alone. `vMaskTextureCoord` is
- * `(vTextureCoord × inputSize.xy + outputFrame.xy) / screenDimensions` — the screen UV of the
- * fragment, correct even when the filter is handed a sub-rect of the screen, which `vTextureCoord`
- * on its own is not. Both textures sampled through it are screen-sized cached ones, which is the
- * case that varying exists for, and `apply` there keeps `screenDimensions` current across a resize.
+ * `(vTextureCoord × inputSize.xy + outputFrame.xy) / screenDimensions` — the fragment's screen UV,
+ * correct even when the filter is handed a sub-rect of the screen, which `vTextureCoord` alone is
+ * not. Both textures sampled through it are screen-sized cached ones, the case that varying exists
+ * for, and its `apply` keeps `screenDimensions` current across a resize.
  *
- * **Unpremultiplied for the luma, repremultiplied after.** A filter's input is premultiplied
- * alpha; taking `perceivedBrightness` of `rgb` without dividing by `a` reads a half-transparent
- * fragment as darker than it is, which shows as a grey halo around anything soft-edged.
+ * Unpremultiplied for the luma, repremultiplied after. A filter's input is premultiplied alpha, so
+ * taking `perceivedBrightness` of `rgb` without dividing by `a` reads a half-transparent fragment as
+ * darker than it is, showing as a grey halo around anything soft-edged.
  */
 function buildFilterClass() {
   const Base = foundry.canvas.rendering.filters.AbstractBaseMaskFilter;
@@ -333,9 +322,9 @@ function buildFilterClass() {
       strength: 0,
       colourLevel: 2 / 3,
       darkLevel: 1,
-      // Overwritten from {@link fogGrey} on the first `apply`; this is only what the filter
-      // holds between construction and that call. Tracks {@link FOG_GREY_DEFAULT} so the two
-      // cannot disagree during that window.
+      // Overwritten from {@link fogGrey} on the first `apply`; this is only what the filter holds
+      // between construction and that call. Tracks {@link FOG_GREY_DEFAULT} so the two cannot
+      // disagree during that window.
       fogGrey: FOG_GREY_DEFAULT,
     };
 
@@ -376,9 +365,9 @@ function buildFilterClass() {
     /**
      * @override
      * @remarks
-     * Every uniform is written per frame, and each for its own reason: the ladder is retunable live,
-     * the fog dial is a slider, which token is selected decides `strength`, and both render textures
-     * are recreated on resize. Nothing here is safe to capture at construction.
+     * Every uniform is written per frame, each for its own reason: the ladder is retunable live, the
+     * fog dial is a slider, which token is selected decides `strength`, and both render textures are
+     * recreated on resize. Nothing here is safe to capture at construction.
      */
     apply(filterManager, input, output, clear, currentState) {
       const u = this.uniforms;
@@ -398,11 +387,10 @@ function buildFilterClass() {
  * The class, built once on first use.
  *
  * @remarks
- * **Lazily, and not as a module-scope `class … extends`.** Both the base class and
- * `PIXI.settings.PRECISION_FRAGMENT` would then be dereferenced at *import* time, which is before
- * `init` — and a module that throws while being imported does not merely fail, it takes its own
- * error handling with it. Every other patch in this module is built inside a function for the same
- * reason.
+ * Lazily, rather than as a module-scope `class … extends`: both the base class and
+ * `PIXI.settings.PRECISION_FRAGMENT` would then be dereferenced at import time, before `init`, and a
+ * module that throws while being imported takes its own error handling with it. Every other patch in
+ * this module is built inside a function for the same reason.
  */
 function filterClass() {
   FilterClass ??= buildFilterClass();
@@ -417,17 +405,17 @@ let FilterClass = null;
  * @remarks
  * `canvas.environment` is rebuilt on every canvas draw, so this runs at `canvasReady` rather than
  * once. Appends rather than assigns: the group carries no filters of its own today — the ambience
- * filter lives on `canvas.primary` (`primary.mjs:180-186`) — but replacing an array we did not
- * create is how a module breaks the next one.
+ * filter lives on `canvas.primary` (`primary.mjs:180-186`) — but replacing an array this module did
+ * not create is how one module breaks the next.
  *
- * **No teardown counterpart, deliberately.** A `PIXI.Filter` is not bound to the container that
- * lists it, so the one instance is reused across canvas draws — one allocation, and `canvasReady`
- * re-attaches it to the new group. The other `dispose` exports in `render/` exist because their
+ * No teardown counterpart, deliberately. A `PIXI.Filter` is not bound to the container listing it,
+ * so the one instance is reused across canvas draws — one allocation, with `canvasReady`
+ * re-attaching it to the new group. The other `dispose` exports in `render/` exist because their
  * subjects are meshes and textures owned by a scene; this one would have nothing to release.
  *
  * `filterArea` is the renderer screen, matching every other full-screen filter Foundry attaches.
  * Without it PIXI derives the area from the group's bounds, which on a scene larger than the
- * viewport is the whole map: the filter would allocate a render target the size of the scene.
+ * viewport is the whole map, and the filter would allocate a render target the size of the scene.
  */
 export function sync() {
   const group = canvas?.environment;
@@ -459,20 +447,18 @@ export function registerHooks() {
  * Debug readout.
  *
  * @remarks
- * Reports **both** halves, because the two failures look nothing alike and each is diagnostic on
- * its own:
+ * Reports both halves, the two failures looking nothing alike and each being diagnostic on its own:
  *
- * - A non-zero value in `routes` means something is still desaturating besides us, and the picture
- *   will be grey where the field says it should not be. That is the takeover leaking.
+ * - A non-zero value in `routes` means something else is still desaturating, and the picture will be
+ *   grey where the field says it should not be. The takeover leaking.
  * - `attached: false`, or `strength: 0` with a darkvision token selected, means the pass is not
- *   running and the picture will be **fully coloured** — which after neutralisation is a different
- *   wrong from what Foundry does, so it cannot be mistaken for "the feature is off".
+ *   running and the picture will be fully coloured — after neutralisation a different wrong from
+ *   what Foundry does, so it cannot be mistaken for the feature being off.
  *
- * `pixel` is the decisive number and is why this readout takes a point. It is the **rasterised**
- * level the filter itself samples, read back from the same texture — not `getDarknessLevel`, which
- * is a JS ring test and can disagree. If `pixel` is low where the ground looks dark, the fault is
- * in the field and no amount of work here will fix it; `render.meshAt()` then says which mesh
- * failed to paint.
+ * `pixel` is the decisive number, and why this readout takes a point. It is the rasterised level the
+ * filter itself samples, read back from the same texture, not `getDarknessLevel`, which is a JS ring
+ * test and can disagree. If `pixel` is low where the ground looks dark the fault is in the field and
+ * no work here will fix it; `render.meshAt()` then says which mesh failed to paint.
  *
  * @param {number} [x] - Defaults to the cursor
  * @param {number} [y]
@@ -496,7 +482,7 @@ export function status(x, y) {
   const report = {
     enabled: isEnabled(),
 
-    // **All five routes should read zero or empty.** Anything else is a second thing desaturating.
+    // All five routes should read zero or empty. Anything else is a second thing desaturating.
     neutralised,
     routes: {
       spriteSaturation: mode?.canvas?.uniforms?.saturation ?? null,
@@ -520,8 +506,8 @@ export function status(x, y) {
     dark,
     fogGrey: fogGrey(),
 
-    // **What the filter actually samples at the point.** See the remarks — this is the one number
-    // that separates "the greyscale is wrong" from "the field is wrong".
+    // What the filter samples at the point. See the remarks — the one number separating a wrong
+    // greyscale from a wrong field.
     point: { x: Math.round(point.x), y: Math.round(point.y) },
     pixel,
     grey: pixel == null ? null : Math.min(1, Math.max(0, (pixel - colour) / (dark - colour))),

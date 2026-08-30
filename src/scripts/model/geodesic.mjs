@@ -1,44 +1,38 @@
 /**
- * **Geodesic distance on a grid** — the quantity §3.4 has been approximating. DESIGN.md §3.4.1.
+ * Geodesic distance on a grid — the quantity §3.4 had been approximating. DESIGN.md §3.4.1.
+ * Replaces a §3.4 construction reported broken on 2026-08-27.
  *
- * Hamilcarbarcas, 2026-08-27: *"the current implementation of determining the regions to brighten and by
- * how much are pretty broken right now, so I want to explore alternative means."*
+ * ## What was wrong
  *
- * ## What was actually wrong
+ * That construction was `band_k = ((white ⊕ k·d) ∩ bend ∩ region) \ band_{k-1}`. A Minkowski dilation
+ * measures Euclidean distance and a sweep union measures reachability, so a band's brightness was
+ * decided by straight-line distance and then merely masked by what could be seen. Light turning a
+ * corner arrived having been charged for the distance through the wall.
  *
- * The built construction is `band_k = ((white ⊕ k·d) ∩ bend ∩ region) \ band_{k-1}`. A Minkowski
- * dilation measures **Euclidean** distance and a sweep union measures **reachability**, so a band's
- * brightness is decided by straight-line distance and then merely *masked* by what can be seen.
- * Light that turns a corner therefore arrives having been charged for the distance **through the
- * wall**.
+ * Every symptom followed from that one substitution. Bands bent around exactly one corner, since a
+ * second bend needed a second visibility union. `MAX_CORNERS` and a relevance heuristic existed to
+ * pick which corners mattered — a hand-rolled shortest-path search with a cap on it. `probeToward`
+ * existed because containment at a sweep's own vertex is degenerate. And the L-shaped-room slivers
+ * were `vis`/`bend` cut against the region outline.
  *
- * Every symptom follows from that one substitution. Bands bend around exactly one corner, because a
- * second bend would need a second visibility union. `MAX_CORNERS` and a relevance heuristic exist to
- * pick which corners matter — a hand-rolled shortest-path search with a cap on it. `probeToward`
- * exists because containment at a sweep's own vertex is degenerate. And the L-shaped-room slivers
- * are `vis`/`bend` being cut against the region outline.
- *
- * The quantity all of that is reaching for is **geodesic distance**: the length of the shortest path
- * from the aperture through open floor. Given it as a field, `tier = spillTier − steps(d)` is the
- * entire rule, and corner bending, corner *selection*, multiple bends and the region clip all stop
- * being cases at all.
+ * The quantity all of that reaches for is geodesic distance: the length of the shortest path from the
+ * aperture through open floor. Given it as a field, `tier = spillTier − steps(d)` is the entire rule,
+ * and corner bending, corner selection, multiple bends and the region clip stop being cases at all.
  *
  * ## Fast marching, not flood fill
  *
  * Flood fill (BFS, uniform cost) and 8-neighbour Dijkstra both measure distance in discrete steps,
  * and it shows two ways:
  *
- * - **Anisotropy.** 8-neighbour chamfer distance is up to 7.6% long on the diagonals, so a 40 ft
- *   contour is off by 3 ft *depending on direction* — a third of a band. The boundary comes out
- *   visibly octagonal, and blurring it leaves an octagon with soft edges.
- * - **The diagonal leak.** A diagonal step between two diagonally-adjacent blocked cells squeezes
- *   through a wall corner. That is light passing through a wall, which is the one failure this
- *   module cannot ship.
+ * - Anisotropy. 8-neighbour chamfer distance is up to 7.6% long on the diagonals, so a 40 ft contour
+ *   is off by 3 ft depending on direction — a third of a band. The boundary comes out visibly
+ *   octagonal, and blurring it leaves an octagon with soft edges.
+ * - The diagonal leak. A diagonal step between two diagonally-adjacent blocked cells squeezes through
+ *   a wall corner. That is light through a wall, the one failure this module cannot ship.
  *
  * {@link march} solves the eikonal equation |∇d| = 1/F by the fast marching method instead. The
- * update is **4-neighbour and upwind**, so there is no diagonal to leak through, and it solves the
- * local quadratic rather than taking a step, so it is more accurate than 16-neighbour Dijkstra for
- * less code.
+ * update is 4-neighbour and upwind, so there is no diagonal to leak through, and it solves the local
+ * quadratic rather than taking a step — more accurate than 16-neighbour Dijkstra, for less code.
  *
  * ## Measured — 2026-08-27
  *
@@ -49,41 +43,40 @@
  * |----------------------------|---------|-------------|
  * | first order                | 0.00%   | 6.92%       |
  * | first order + 8-cell collar| 0.00%   | 1.69%       |
- * | **second order**           | 0.00%   | **2.47%**   |
+ * | second order (used)        | 0.00%   | 2.47%       |
  * | second order + collar      | 0.00%   | 2.23%       |
  *
  * First order is no better than the 8-neighbour Dijkstra it was chosen over — the error is the
- * point-source singularity, not the neighbourhood — and seeding an analytic collar of exact
- * distances only pushes that singularity outward, buying accuracy logarithmically for cells
- * linearly. The second-order one-sided difference gets there in the update instead, and once it is
- * in, **the collar buys 0.24%**. So the seeding stays as simple as it looks: one cell per sample
- * across the opening, no collar, no analytic initialisation. 2.47% of a 70 ft ladder is 1.7 ft,
- * comfortably inside a 10 ft band and inside the field blur.
+ * point-source singularity, not the neighbourhood — and seeding an analytic collar of exact distances
+ * only pushes that singularity outward, buying accuracy logarithmically for cells linearly. The
+ * second-order one-sided difference gets there in the update instead, and once it is in the collar
+ * buys 0.24%. So the seeding stays simple: one cell per sample across the opening, no collar, no
+ * analytic initialisation. 2.47% of a 70 ft ladder is 1.7 ft, comfortably inside a 10 ft band and
+ * inside the field blur.
  *
  * Cost, warm, 70 ft ladder with obstacles, per aperture:
  *
  * | cell size        | grid   | visited | best   |
  * |------------------|--------|---------|--------|
  * | 50 px (2.5 ft)   |  3,596 |   1,623 | 0.25 ms|
- * | **25 px (1.25 ft)** | 13,908 | 8,269 | **1.70 ms** |
+ * | 25 px (1.25 ft), default | 13,908 | 8,269 | 1.70 ms |
  * | 12.5 px          | 54,692 |  38,818 | 8.90 ms|
  *
- * Against ~3.5 ms of `ClockwiseSweepPolygon` per window today (§9.4) that is a factor of two, not
- * the order of magnitude first estimated — the estimate assumed a cheaper per-cell constant than a
- * second-order solve with a heap actually has. It is still the cheaper construction, it is charged
- * on the same clock (rebuild, never per frame), and unlike the sweeps it has **no term that grows
- * with wall count**: `MAX_CORNERS` exists because the old cost did.
+ * Against ~3.5 ms of `ClockwiseSweepPolygon` per window (§9.4) that is a factor of two, not the order
+ * of magnitude first estimated — that estimate assumed a cheaper per-cell constant than a
+ * second-order solve with a heap has. Still the cheaper construction, charged on the same clock
+ * (rebuild, never per frame), and unlike the sweeps it has no term growing with wall count:
+ * `MAX_CORNERS` existed because the old cost did.
  *
  * The 12.5 px row is why {@link DEFAULT_CELL} is 25 and why halving it is a decision rather than a
  * default: four times the cells, five times the time.
  *
  * ## What lives here and what does not
  *
- * Pure model arithmetic: no PIXI, no rendering, no settings beyond the cell size, and no knowledge
- * of what an aperture *is*. `model/spill.mjs` decides which edges are windows and what tier they
- * carry; this turns a segment and a wall set into a distance field. The contour step that turns a
- * field back into polygons for `areas` is deliberately **not** here yet — see the note on
- * {@link ladder}.
+ * Pure model arithmetic: no PIXI, no rendering, no settings beyond the cell size, and no knowledge of
+ * what an aperture is. `model/spill.mjs` decides which edges are windows and what tier they carry;
+ * this turns a segment and a wall set into a distance field. The contour step back to polygons for
+ * `areas` is deliberately not here yet — see the note on {@link ladder}.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -96,16 +89,15 @@ export const SETTING_CELL = "spillCellSize";
  *
  * @remarks
  * 25 px is a quarter of a standard grid square — 1.25 ft at 5 ft/square — so a 10 ft band is eight
- * cells across and a 5 ft doorway is four. Hamilcarbarcas, 2026-08-27: *"Let's start with 25 pixel cells
- * and see how it looks."*
+ * cells across and a 5 ft doorway is four (chosen 2026-08-27).
  *
- * **What this costs is contour precision, not floor.** Walls are cut links rather than blocked cells
+ * What this costs is contour precision, not floor. Walls are cut links rather than blocked cells
  * ({@link cutLinks}), so no ground is eaten at any resolution and there is no minimum passable gap
  * worth speaking of. What remains is that a brightness boundary can only be placed to within half a
- * cell — 0.6 ft here — which is far below the transition width every boundary is drawn with anyway.
+ * cell — 0.6 ft here — far below the transition width every boundary is drawn with anyway.
  *
- * The earlier concern, that a coarse grid closes a narrow doorway, belonged to the blocked-cell
- * design and went with it.
+ * The earlier concern that a coarse grid closes a narrow doorway belonged to the blocked-cell design
+ * and went with it.
  */
 const DEFAULT_CELL = 25;
 
@@ -143,10 +135,10 @@ export function registerSettings() {
  * A cell grid covering `rect`, snapped outward to cell multiples.
  *
  * @remarks
- * Snapped rather than fitted so that two grids built from overlapping rects agree about where the
- * cell boundaries are. Nothing depends on that yet — each aperture gets its own grid — but the
- * moment two apertures in one room share a march (see {@link fill}) they have to be on the same
- * lattice or their fields cannot be compared cell for cell.
+ * Snapped rather than fitted so two grids built from overlapping rects agree about where the cell
+ * boundaries are. Nothing depends on that yet — each aperture gets its own grid — but the moment two
+ * apertures in one room share a march (see {@link fill}) they must be on the same lattice or their
+ * fields cannot be compared cell for cell.
  *
  * @param {{x: number, y: number, width: number, height: number}} rect
  * @param {number} [cell]
@@ -182,10 +174,9 @@ export function indexAt(grid, x, y) {
  * Do two segments cross?
  *
  * @remarks
- * Sign-of-cross-product on both sides, with **`<= 0` rather than `< 0` on purpose**: a wall that
- * merely touches a link, or lies exactly along one, counts as crossing it. Blocking is the safe
- * direction to be wrong in — a spurious block costs one cell of detour and a missed one is light
- * through a wall.
+ * Sign-of-cross-product on both sides, `<= 0` rather than `< 0` on purpose: a wall that merely
+ * touches a link, or lies exactly along one, counts as crossing it. Blocking is the safe direction to
+ * be wrong in — a spurious block costs one cell of detour, a missed one is light through a wall.
  *
  * The case cannot arise from grid alignment anyway. Cell centres sit at half-cell offsets from
  * multiples of the cell size and Foundry snaps walls to multiples of half a grid square, so an exact
@@ -207,10 +198,9 @@ function crosses(ax, ay, bx, by, cx, cy, dx, dy) {
  * Visit every cell a segment passes through.
  *
  * @remarks
- * Amanatides–Woo voxel traversal, which is the *supercover* walk rather than Bresenham's: it visits
- * every cell the segment **enters**, including both cells at a diagonal crossing. Bresenham picks
- * one cell per column and skips a cell at steep diagonals, and a skipped cell is a wall with a hole
- * in it.
+ * Amanatides–Woo voxel traversal — the supercover walk rather than Bresenham's: it visits every cell
+ * the segment enters, both cells at a diagonal crossing included. Bresenham picks one cell per column
+ * and skips a cell at steep diagonals, and a skipped cell is a wall with a hole in it.
  */
 function walkCells(grid, ax, ay, bx, by, visit) {
   const { x0, y0, cols, rows, cell } = grid;
@@ -263,44 +253,39 @@ function walkCells(grid, ax, ay, bx, by, visit) {
  * Cut every cell-to-cell link a segment crosses.
  *
  * @remarks
- * **Links, not cells — and this replaced blocked cells on 2026-08-27.** Hamilcarbarcas: *"my only concern
- * for this is the cells marked as walls leaving black strips where the walls are… is there a way to
- * fill them from their neighbouring cells (and be smart enough to not pull from the neighbour on the
- * wrong side of the wall)?"*
+ * Links, not cells — this replaced blocked cells on 2026-08-27, after cells marked as walls left
+ * black strips along every wall. Worse than the raw number looks: §6.4.7 disables the field blur in a
+ * band centred on every light-blocking wall, so a one-cell strip of unreachable ground lands in the
+ * one place nothing smooths it.
  *
- * The concern was right, and worse than the raw number looks: §6.4.7 disables the field blur in a
- * band centred on every light-blocking wall, so a one-cell strip of unreachable ground would land
- * in the one place nothing smooths it.
- *
- * **Filling from a neighbour cannot fix it, because a blocked cell straddles the wall.** The strip
- * is centred on the wall, so there is no correct side to pull from: take the lit side and brightness
+ * Filling from a neighbour cannot fix it, because a blocked cell straddles the wall. The strip is
+ * centred on the wall, so there is no correct side to pull from: take the lit side and brightness
  * moves half a cell into the dark room, take the dark side and a shadow moves half a cell into the
  * lit one. Either way the wall has moved.
  *
- * So do not block ground at all. A wall is not a place — it is a **barrier between** places, and
- * that is exactly a graph edge. Every cell keeps a value; what a wall removes is the ability to step
- * across it. `h[i]` is the link from cell `i` to `i+1`, `v[i]` from `i` to `i+cols`.
+ * So do not block ground at all. A wall is not a place but a barrier between places, which is exactly
+ * a graph edge. Every cell keeps a value; what a wall removes is the ability to step across it.
+ * `h[i]` is the link from cell `i` to `i+1`, `v[i]` from `i` to `i+cols`.
  *
  * Three things fall out:
  *
- * - **No erosion.** Both sides of a wall get their true distance and the discontinuity lands exactly
- *   on the wall, which is what §6.4.7 wants to keep sharp.
- * - **No leak, provably.** Any 4-connected path from one side of a wall to the other is a continuous
- *   polyline through cell centres, so it must intersect the wall; the intersection lies on some
- *   link; every link the wall crosses is cut. That is a stronger guarantee than supercover cells
- *   gave, which rested on the rasteriser not skipping one.
- * - **Narrow openings survive.** The doorway-erosion failure mode disappears with the erosion: a gap
- *   about a cell wide still leaves an uncut link, where blocked cells needed three.
+ * - No erosion. Both sides of a wall get their true distance and the discontinuity lands exactly on
+ *   the wall, which is what §6.4.7 wants to keep sharp.
+ * - No leak, provably. Any 4-connected path from one side of a wall to the other is a continuous
+ *   polyline through cell centres, so it must intersect the wall; the intersection lies on some link;
+ *   every link the wall crosses is cut. A stronger guarantee than supercover cells gave, which rested
+ *   on the rasteriser not skipping one.
+ * - Narrow openings survive. The doorway-erosion failure mode goes with the erosion: a gap about a
+ *   cell wide still leaves an uncut link, where blocked cells needed three.
  *
  * Testing all four links of each visited cell is deliberately redundant — a link is reachable from
- * either of the two cells it joins — but it is what makes completeness obvious rather than argued:
- * the crossing point lies in some visited cell, and that cell tests the link from its own side.
+ * either cell it joins — but it makes completeness obvious rather than argued: the crossing point
+ * lies in some visited cell, and that cell tests the link from its own side.
  *
  * ## Measured — 2026-08-27, at 25 px cells
  *
- * A solid wall slid across the lattice at eight offsets leaked at **none** of them, and a sealed
- * diamond rotated through thirty angles contained its fill at every one. A gap passes from **two
- * cells** wide:
+ * A solid wall slid across the lattice at eight offsets leaked at none of them, and a sealed diamond
+ * rotated through thirty angles contained its fill at every one. A gap passes from two cells wide:
  *
  * | gap | | passes |
  * |------|--------|--------|
@@ -309,9 +294,9 @@ function walkCells(grid, ax, ay, bx, by, visit) {
  * | 100 px | 5 ft | 8 / 8 |
  *
  * So the practical floor is 2.5 ft at the default resolution — under a door, and under the narrowest
- * arrow slit anyone draws. The 1.25 ft row closing is the conservatism in {@link crosses} biting at
- * the one-cell scale, and it is the right way round: a slot that narrow refusing to pass light is a
- * defensible answer, and a wall that leaks is not.
+ * arrow slit anyone draws. The 1.25 ft row closing is {@link crosses}'s conservatism biting at the
+ * one-cell scale, the right way round: a slot that narrow refusing to pass light is defensible, a
+ * wall that leaks is not.
  *
  * @returns {number} Links newly cut
  */
@@ -356,12 +341,12 @@ export const emptyLinks = (grid) => ({
  * Every light-blocking edge on the scene, cut into the link set.
  *
  * @remarks
- * **`edge.light`, not `edge.sight`** — the same predicate `render/wall-mask.mjs` uses and for the
- * same reason. The field is a *brightness* field, so the question is whether light crosses. A window
- * that blocks sight but passes light must let spill through, which is the entire feature.
+ * `edge.light`, not `edge.sight` — the predicate `render/wall-mask.mjs` uses, for the same reason.
+ * This is a brightness field, so the question is whether light crosses. A window that blocks sight
+ * but passes light must let spill through, which is the entire feature.
  *
- * It is also, necessarily, the same predicate `spill.isAperture` reads, so an aperture can never
- * both seed a fill and block it.
+ * Necessarily also the predicate `spill.isAperture` reads, so an aperture can never both seed a fill
+ * and block it.
  */
 export function blockingLinks(grid, { skip = null, links = emptyLinks(grid) } = {}) {
   const NONE = CONST.WALL_SENSE_TYPES.NONE;
@@ -382,15 +367,14 @@ export function blockingLinks(grid, { skip = null, links = emptyLinks(grid) } = 
  * Cut every link crossing a region outline, so the fill cannot leave the room.
  *
  * @remarks
- * **The region clip becomes a barrier rather than a boolean operation**, and that is where the
- * sliver failure goes. Today the bands are built and then intersected with the region outline, so a
- * band running along a region edge is cut into alternating thin pieces by rounding. A fill that
- * cannot step out of the room produces no sliver, because there is no intersection to produce one.
+ * The region clip becomes a barrier rather than a boolean operation, and that is where the sliver
+ * failure goes. Building the bands and then intersecting with the region outline cuts a band running
+ * along a region edge into alternating thin pieces by rounding. A fill that cannot step out of the
+ * room produces no sliver, because there is no intersection to produce one.
  *
- * Cutting the boundary rather than blocking the cells outside it is the same choice
- * {@link cutLinks} makes and for the same reason: a region outline usually runs along a wall, so
- * blocking by cell would erode floor at the room's own edge — the exact strip this was rewritten to
- * remove.
+ * Cutting the boundary rather than blocking the cells outside it is {@link cutLinks}'s choice, for
+ * its reason: a region outline usually runs along a wall, so blocking by cell would erode floor at
+ * the room's own edge — the exact strip this was rewritten to remove.
  *
  * A ring wholly outside the grid contributes nothing, which is correct: the room then covers the
  * whole grid locally and there is nothing to leak into.
@@ -418,9 +402,9 @@ export function cutRegionBoundary(grid, links, polygons) {
  *
  * @remarks
  * Lazy rather than decrease-key: a cell whose distance improves is pushed again and the stale entry
- * is skipped on pop by comparing against the live `dist`. That trades a bounded amount of memory for
- * not having to maintain a position index, and in a fast march each cell is pushed about 1–2 times
- * because the front only ever moves outward.
+ * is skipped on pop by comparing against the live `dist`. Trades bounded memory for not maintaining a
+ * position index, and in a fast march each cell is pushed about 1–2 times, since the front only ever
+ * moves outward.
  */
 class MinHeap {
   constructor(capacity = 1024) {
@@ -502,18 +486,18 @@ const FROZEN = 2;
  *
  * which has the two branches below: when the neighbours differ by more than `h` the front is
  * effectively one-dimensional and `T = min(a,b) + h`; otherwise the quadratic's larger root applies.
- * That second branch is the whole reason this is not Dijkstra — it interpolates the front's
- * *direction* from two axes instead of stepping along one, which is what removes the anisotropy.
+ * That second branch is why this is not Dijkstra — it interpolates the front's direction from two
+ * axes instead of stepping along one, which removes the anisotropy.
  *
  * ## Occlusion needs no special case
  *
- * A cut link is simply a neighbour that does not exist, handled by the same test that handles the
- * edge of the grid. Nothing about a wall is a *place*, so nothing about a wall needs a value.
+ * A cut link is a neighbour that does not exist, handled by the test that handles the edge of the
+ * grid. Nothing about a wall is a place, so nothing about a wall needs a value.
  *
- * **The second-order reach is gated too, and forgetting that is a light leak.** The `t₂` term reads
- * two cells upwind, so it must check the link between the first and second neighbour as well as the
- * one it stepped over — otherwise a cell against a wall would take a derivative through it and
- * brighten from the far side.
+ * The second-order reach is gated too, and forgetting that is a light leak. The `t₂` term reads two
+ * cells upwind, so it must check the link between the first and second neighbour as well as the one
+ * it stepped over — otherwise a cell against a wall takes a derivative through it and brightens from
+ * the far side.
  *
  * @param {object} options
  * @param {object} options.grid
@@ -536,10 +520,10 @@ export function march({ grid, links, seeds, speed = null, maxDistance = Infinity
     if (index < 0 || index >= size) continue;
     if (value >= dist[index]) continue;
     dist[index] = value;
-    // **Push the stored value, never the computed one.** `dist` is a Float32Array and the heap keys
-    // are float64, so pushing `value` would compare a full-precision key against a rounded `dist` on
-    // pop. Where the rounding went down, a live entry reads as stale, gets skipped, and the cell
-    // never freezes — which shows up as pinholes and ragged fronts rather than as an error.
+    // Push the stored value, never the computed one. `dist` is a Float32Array and the heap keys are
+    // float64, so pushing `value` compares a full-precision key against a rounded `dist` on pop.
+    // Where the rounding went down, a live entry reads as stale, gets skipped, and the cell never
+    // freezes — showing up as pinholes and ragged fronts rather than as an error.
     heap.push(dist[index], index);
     pushes++;
   }
@@ -553,11 +537,11 @@ export function march({ grid, links, seeds, speed = null, maxDistance = Infinity
     // less confusing symptom than a NaN spreading through the field.
     const h = cell / Math.max(1e-3, speed ? speed[j] : 1);
 
-    // Per axis: the nearer of the two directions, then one *further along that same direction* for
-    // the second-order term. `x2 <= x1` is the monotonicity test — a second neighbour further from
-    // the source than the first is not upwind and its difference is meaningless.
+    // Per axis: the nearer of the two directions, then one further along that same direction for the
+    // second-order term. `x2 <= x1` is the monotonicity test — a second neighbour further from the
+    // source than the first is not upwind and its difference is meaningless.
     // Each `t₂` test repeats its `t₁` link test one cell further along. That second check is the
-    // one a reader is tempted to drop, and dropping it takes a derivative straight through a wall.
+    // tempting one to drop, and dropping it takes a derivative straight through a wall.
     let x1 = Infinity;
     let x2 = Infinity;
     if (jx > 0 && !linkH[j - 1] && state[j - 1] === FROZEN) {
@@ -676,26 +660,25 @@ export function march({ grid, links, seeds, speed = null, maxDistance = Infinity
  * The falloff ladder: how far each brightness carries before it steps down.
  *
  * @remarks
- * **Per-tier band widths, not one width and a per-tier radius** (Hamilcarbarcas, 2026-08-27: *"rather than
- * a straight band width, the value of each brightness can tell you how large the band of that
- * brightness is"*). It is not messy; it is a cumulative sum, and it is the better reading of the
- * three numbers `spillRadius*` already hold.
+ * Per-tier band widths (2026-08-27), not one width and a per-tier radius: each brightness states how
+ * wide its own band is, and the ladder is their cumulative sum — the better reading of the three
+ * numbers `spillRadius*` already hold.
  *
- * The old scheme said both things at once: a cone radius keyed on the *initial* tier, and a separate
- * uniform band width for every step after it. Those double-count the falloff and disagree about
- * which one is the distance limit. Under this one there is a single statement — *bright light
- * carries 40 ft before it reads as normal, normal carries 20, dim carries 10* — and the total reach
- * is whatever that sums to. A Bright spill runs 40 / 20 / 10 for 70 ft; a Normal spill runs 20 / 10
- * for 30 ft, with no separate rule making it shorter.
+ * The old scheme said both things at once: a cone radius keyed on the initial tier, plus a separate
+ * uniform band width for every step after it. Those double-count the falloff and disagree about which
+ * is the distance limit. Here there is one statement — bright light carries 40 ft before it reads as
+ * normal, normal carries 20, dim carries 10 — and the total reach is whatever that sums to. A Bright
+ * spill runs 40 / 20 / 10 for 70 ft; a Normal spill runs 20 / 10 for 30 ft, with no separate rule
+ * making it shorter.
  *
  * `floorTier` is `max(interiorTier + 1, TIER.DIM)` at the call site, and Dim is not a preference:
  * `globalLightCutoff` is the Dim threshold and `darknessFor` erases below it, so there is no rung
  * underneath for global illumination to reach.
  *
- * > **The contour step is still to come.** This maps a distance to a tier; turning the field back
- * > into polygons for `areas` is marching squares at each `until` boundary, and it is deliberately
- * > not written until the field itself has been looked at. Hamilcarbarcas, 2026-08-27: the lighting
- * > decision stays with the levels overlay, so spill supplies geometry and nothing else.
+ * The contour step is still to come. This maps a distance to a tier; turning the field back into
+ * polygons for `areas` is marching squares at each `until` boundary, deliberately not written until
+ * the field itself has been looked at. The lighting decision stays with the levels overlay, so spill
+ * supplies geometry and nothing else.
  *
  * @param {number} spillTier
  * @param {number} floorTier
@@ -721,34 +704,34 @@ export function ladder(spillTier, floorTier, widthsFeet) {
  * Marching squares: the boundary of `dist < threshold`, as closed rings in scene pixels.
  *
  * @remarks
- * This is the step that hands the field back to the rest of the module as ordinary geometry
- * (Hamilcarbarcas, 2026-08-27: *"draw polygons out of those coloured fields, add them to the underlying
- * brightness model, and call it a day"*). Everything downstream then reads spill the way it already
- * reads a drawn region — no new plumbing, and the levels overlay keeps making every lighting call.
+ * The step that hands the field back to the rest of the module as ordinary geometry: polygons drawn
+ * from the field go into the underlying brightness model, so everything downstream reads spill the
+ * way it already reads a drawn region — no new plumbing, and the levels overlay keeps making every
+ * lighting call.
  *
  * ## The rings are nested, not annular, and that is the whole reason there are no boolean ops here
  *
- * A caller wanting Bright / Normal / Dim bands is tempted to difference each contour against the
- * one inside it. It must not: spill folds as `AT_LEAST` (§3.4), so `max` already does that. Emit the
- * *whole* `d < 40` disc as Bright and the *whole* `d < 60` disc as Normal, and the fold produces
- * Bright in the middle and Normal in the annulus by itself. Differencing would compute the same
- * answer through Clipper, which is where §3.4's slivers came from in the first place.
+ * A caller wanting Bright / Normal / Dim bands is tempted to difference each contour against the one
+ * inside it. It must not: spill folds as `AT_LEAST` (§3.4), so `max` already does that. Emit the
+ * whole `d < 40` disc as Bright and the whole `d < 60` disc as Normal, and the fold produces Bright
+ * in the middle and Normal in the annulus by itself. Differencing computes the same answer through
+ * Clipper, which is where §3.4's slivers came from.
  *
  * ## Vertices are keyed by edge, not by position
  *
  * Chaining segments into rings by matching coordinates is the classic place a contour comes apart:
  * two cells compute the same crossing and land a float apart. Every crossing here lies on a known
- * lattice edge, so it is keyed by that edge's **integer** index — `2·cell + 0` for the horizontal
- * link, `+ 1` for the vertical. Two cells sharing an edge therefore produce the identical key by
- * construction, and the chain is a `Map` walk with no tolerance in it.
+ * lattice edge, so it is keyed by that edge's integer index — `2·cell + 0` for the horizontal link,
+ * `+ 1` for the vertical. Two cells sharing an edge produce an identical key by construction, and the
+ * chain is a `Map` walk with no tolerance in it.
  *
  * ## Where an unreachable neighbour puts the boundary
  *
  * Linear interpolation needs two finite values. Against `Infinity` — the far side of a wall, or
  * ground the ladder never reached — there is nothing to interpolate, so the crossing goes at the
- * **midpoint** of the two cell centres, which is the cell boundary and therefore where the wall is.
- * That is a deliberate rule, not a fallback: it is what makes a spill polygon stop *on* a wall
- * rather than half a cell short of or past it.
+ * midpoint of the two cell centres, which is the cell boundary and therefore where the wall is. A
+ * deliberate rule, not a fallback: it is what makes a spill polygon stop on a wall rather than half a
+ * cell short of or past it.
  *
  * Saddle cells (two opposite corners inside) are resolved on the average of all four corners, with
  * any `Infinity` making the centre count as outside — the conservative reading, and the one that
@@ -895,19 +878,19 @@ export function tierAtDistance(steps, feet) {
  * Seed cells across an aperture, one cell inside the room.
  *
  * @remarks
- * **Pushed off the wall by a full cell**, so every seed is unambiguously on the room's side of the
- * region boundary that {@link cutRegionBoundary} has just cut. Half a cell would leave the seed
- * point's containing cell decided by rounding, and a seed landing outside the room is a seed with no
- * way back in. One cell is 1.25 ft at the default resolution, so the field reads zero a foot inside
- * the window rather than exactly at it — conservative, and below anything the picture resolves.
+ * Pushed off the wall by a full cell, so every seed is unambiguously on the room's side of the region
+ * boundary {@link cutRegionBoundary} has just cut. Half a cell leaves the seed point's containing
+ * cell decided by rounding, and a seed landing outside the room has no way back in. One cell is
+ * 1.25 ft at the default resolution, so the field reads zero a foot inside the window rather than
+ * exactly at it — conservative, and below anything the picture resolves.
  *
- * Sampled at half-cell spacing so no cell of a wide opening is missed, and de-duplicated because
- * that oversamples by construction.
+ * Sampled at half-cell spacing so no cell of a wide opening is missed, and de-duplicated because that
+ * oversamples by construction.
  *
- * > **No blocked-cell test any more, and the doorway failure went with it.** Under blocked cells a
- * > seed could land in the strip a flanking wall had eaten and be discarded, so an opening under
- * > three cells wide produced `seeds: 0` and no spill. Walls are links now
- * > ({@link cutLinks}), no ground is eaten, and a seed can only fail by being off the grid.
+ * No blocked-cell test any more, and the doorway failure went with it: under blocked cells a seed
+ * could land in the strip a flanking wall had eaten and be discarded, so an opening under three cells
+ * wide produced `seeds: 0` and no spill. Walls are links now ({@link cutLinks}), no ground is eaten,
+ * and a seed can only fail by being off the grid.
  */
 export function seedAperture(grid, { a, b, normal }) {
   const seeds = [];
@@ -929,39 +912,38 @@ export function seedAperture(grid, { a, b, normal }) {
 }
 
 /**
- * A speed field expressing the spill cone as **anisotropy**, not as a boundary.
+ * A speed field expressing the spill cone as anisotropy, not as a boundary.
  *
  * @remarks
- * ## Correcting the earlier sketch
+ * ## Why not a seed cost
  *
- * This was described on 2026-08-27 as a *seed cost* — "one line at seed time". That is wrong, and
- * the reason is worth keeping because it is the thing that makes the cone awkward to express at all.
- * Every seed sits in the opening, so the seeds do not differ from one another by direction; there is
- * no angle to charge them for. And a cell hugging the wall five feet to the side of a window is
- * reachable in five feet of open floor whatever the seeds cost, so raising a seed's value changes
- * nothing — the march takes the minimum.
+ * Sketched on 2026-08-27 as a seed cost — one line at seed time — which is wrong, and the reason is
+ * what makes the cone awkward to express at all. Every seed sits in the opening, so the seeds do not
+ * differ from one another by direction and there is no angle to charge them for. A cell hugging the
+ * wall five feet to the side of a window is reachable in five feet of open floor whatever the seeds
+ * cost, so raising a seed's value changes nothing — the march takes the minimum.
  *
- * Direction is a property of **travel**, so it has to be charged to travel. The eikonal equation
- * already has the term for it: `F`, the local speed. `|∇d| = 1/F` means distance accumulates faster
- * wherever `F < 1`, so making sideways ground slow is what makes sideways light dim.
+ * Direction is a property of travel, so it has to be charged to travel. The eikonal equation already
+ * has the term: `F`, the local speed. `|∇d| = 1/F` means distance accumulates faster wherever
+ * `F < 1`, so making sideways ground slow is what makes sideways light dim.
  *
  * ## What it does
  *
- * `F = 1` within the half-angle of the window's inward normal, falling to `graze` at 90°. So light
- * leaving straight out is charged its true distance and light leaving along the wall face is charged
+ * `F = 1` within the half-angle of the window's inward normal, falling to `graze` at 90°. Light
+ * leaving straight out is charged its true distance; light leaving along the wall face is charged
  * `1/graze` times its distance — at `graze = 0.45`, five feet of sideways travel costs eleven, and a
  * point beside a window is a tier down where before it was at full brightness for the whole first
  * band. That is the correct answer for the wrong-looking case pure geodesic distance produces.
  *
- * The angle stops being a hard wedge boundary that the bands were computed *outside* of, and becomes
- * where the falloff starts. It is a probe argument rather than a setting: `spillAngle` was deleted
- * with the old construction, since nothing reads this while `graze` is 1.
+ * The angle stops being a hard wedge boundary the bands were computed outside of, and becomes where
+ * the falloff starts. A probe argument rather than a setting: `spillAngle` was deleted with the old
+ * construction, since nothing reads this while `graze` is 1.
  *
- * > **The known wart.** θ is measured from the aperture geometrically, with no knowledge of walls, so
- * > a cell that is 80° off the normal but lit by bending round a corner is still charged the grazing
- * > rate. The alternative is propagating the path's own direction through the march, which averages
- * > angles badly at a merging front. Left as-is until it is seen to matter: {@link fill} takes
- * > `graze` as a parameter precisely so the case can be judged rather than argued.
+ * Known wart: θ is measured from the aperture geometrically, with no knowledge of walls, so a cell
+ * 80° off the normal but lit by bending round a corner is still charged the grazing rate. The
+ * alternative is propagating the path's own direction through the march, which averages angles badly
+ * at a merging front. Left as-is until it is seen to matter — {@link fill} takes `graze` as a
+ * parameter so the case can be judged rather than argued.
  */
 export function coneSpeed(grid, { a, b, normal, halfAngle, graze }) {
   const speed = new Float32Array(grid.size).fill(1);
@@ -974,8 +956,8 @@ export function coneSpeed(grid, { a, b, normal, halfAngle, graze }) {
 
   for (let i = 0; i < grid.size; i++) {
     const p = centerOf(grid, i);
-    // Nearest point on the aperture segment — an area source, not a point (§7.2), so the angle is
-    // taken from whichever part of the window the cell actually faces.
+    // Nearest point on the aperture segment — an area source, not a point (§7.2), so the angle comes
+    // from whichever part of the window the cell faces.
     let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / len2;
     t = t < 0 ? 0 : t > 1 ? 1 : t;
     const vx = p.x - (a.x + abx * t);
@@ -1001,9 +983,9 @@ export function coneSpeed(grid, { a, b, normal, halfAngle, graze }) {
  * Everything above, for one window: grid, obstacles, seeds, speed, march.
  *
  * @remarks
- * The grid is the aperture's own bounding box grown by the ladder's reach, so cost scales with
- * **reach squared** and not with the size of the scene. A 70 ft ladder at 25 px cells is a box about
- * 112 cells on a side — 12,500 cells, of which the march visits the reachable disc.
+ * The grid is the aperture's own bounding box grown by the ladder's reach, so cost scales with reach
+ * squared rather than scene size. A 70 ft ladder at 25 px cells is a box about 112 cells on a side —
+ * 12,500 cells, of which the march visits the reachable disc.
  *
  * @param {object} options
  * @param {{x: number, y: number}} options.a - Aperture endpoint
@@ -1030,9 +1012,9 @@ export function fill({ a, b, normal, steps, region = null, halfAngle = null, gra
   const grid = makeGrid(rect, cell);
 
   const { links, edges, cut } = blockingLinks(grid);
-  // **After the walls, not before.** Both cut into the same link set and the operation is
-  // idempotent, so the order does not change the result — but a region outline that runs along a
-  // wall then costs nothing, because those links are already cut.
+  // After the walls, not before. Both cut into the same link set and the operation is idempotent, so
+  // order does not change the result — but a region outline running along a wall then costs nothing,
+  // since those links are already cut.
   const boundary = region ? cutRegionBoundary(grid, links, region) : 0;
 
   const seeds = seedAperture(grid, { a, b, normal });
@@ -1075,8 +1057,7 @@ export function fill({ a, b, normal, steps, region = null, halfAngle = null, gra
  * A whole room in one march, seeded from every one of its windows at once.
  *
  * @remarks
- * **The shipped entry point; {@link fill} is the single-aperture probe.** Hamilcarbarcas, 2026-08-27:
- * *"one march per room sounds like the smart choice."*
+ * The shipped entry point; {@link fill} is the single-aperture probe. One march per room (2026-08-27).
  *
  * The grid is the union of every aperture's bounding box grown by the ladder's reach, so a room with
  * four windows costs one field rather than four — and, more importantly, produces one set of
@@ -1114,9 +1095,9 @@ export function fillRoom({ seedGroups, steps, region = null }) {
     maxY = Math.max(maxY, a.y, b.y);
   }
 
-  // **The margin is not slack.** `contour` can only close a ring that stays inside the lattice, and
-  // the march is capped at `reach`, so one cell of guaranteed-unreachable border is what makes every
-  // contour closed. Trimming this would produce open polylines that read as garbage polygons.
+  // The margin is not slack. `contour` can only close a ring that stays inside the lattice, and the
+  // march is capped at `reach`, so one cell of guaranteed-unreachable border is what makes every
+  // contour closed. Trimming it produces open polylines that read as garbage polygons.
   const pad = reach + 2 * cell;
   const grid = makeGrid(
     { x: minX - pad, y: minY - pad, width: maxX - minX + 2 * pad, height: maxY - minY + 2 * pad },

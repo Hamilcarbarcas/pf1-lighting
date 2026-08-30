@@ -6,19 +6,18 @@ export const MODULE_ID = "pf1-lighting";
  * The renderer's master switch.
  *
  * @remarks
- * Here rather than in `render/renderer.mjs`, which is where it is registered, because
- * `render/paint.mjs` also has to read it and the renderer imports *that*. A settings key in a
- * leaf module is one import; the alternative is a cycle between a settings reader and a model
- * query, which is the shape this project has already agreed not to build (see the architecture
- * note on `suppression.setVisionModel`).
+ * Here rather than in `render/renderer.mjs` where it is registered, because `render/paint.mjs`
+ * reads it too and the renderer imports that. A settings key in a leaf module is one import; the
+ * alternative is a cycle between a settings reader and a model query — the shape ruled out in the
+ * architecture note on `suppression.setVisionModel`.
  */
 export const SETTING_RENDER = "renderEnabled";
 
 /**
  * Property stamped on every source this module creates.
  *
- * DESIGN.md §6.6 — our synthetic sources land in `canvas.effects.lightSources` where
- * anything iterating that collection will see them. Tag them so they can be skipped.
+ * DESIGN.md §6.6 — synthetic sources land in `canvas.effects.lightSources`, visible to anything
+ * iterating that collection. Tagged so they can be skipped.
  */
 export const SYNTHETIC_MARK = "pf1LightingSynthetic";
 
@@ -26,21 +25,19 @@ export const SYNTHETIC_MARK = "pf1LightingSynthetic";
 export const isSynthetic = (source) => source?.[SYNTHETIC_MARK] === true;
 
 /**
- * The clipped polygon a source should be **drawn** with, leaving `shape` untouched.
+ * The clipped polygon a source is drawn with, leaving `shape` untouched.
  *
- * DESIGN.md §6.2.4. `shape` is load-bearing for at least three consumers and only one of
- * them is rendering:
+ * DESIGN.md §6.2.4. `shape` has three consumers and only one is rendering:
  *
- *   - `testPoint` is `shape.contains(x, y)` (`base-effect-source.mjs:343-345`), which the
- *     model uses to ask where a light reaches;
- *   - Foundry builds the **visibility mask** from it —
+ *   - `testPoint` is `shape.contains(x, y)` (`base-effect-source.mjs:343-345`), the model's
+ *     question of where a light reaches;
+ *   - Foundry builds the visibility mask from it —
  *     `vision.light.sources.drawShape(lightSource.shape)` (`groups/visibility.mjs:562`);
  *   - `_updateGeometry` meshes it (`point-effect-source.mjs:173-189`).
  *
- * Clipping `shape` therefore did far more than clip the picture: it shrank the model's
- * own view of each light, and punched holes in what tokens could *see* — black discs
- * that blocked darkvision and vanished where fog was already lifted. Only the third
- * consumer should see the clip.
+ * Clipping `shape` therefore did more than clip the picture: it shrank the model's own view of
+ * each light and punched holes in what tokens could see — black discs blocking darkvision, gone
+ * where fog was already lifted. Only the third consumer should see the clip.
  */
 export const RENDER_SHAPE = "pf1LightingRenderShape";
 
@@ -56,58 +53,54 @@ export const CLIP = "pf1LightingClip";
 export const LEVEL = "pf1LightingLevel";
 
 /**
- * The lighting level for a light's **outer band**, when it differs from its inner zone.
+ * The lighting level for a light's outer band, when it differs from its inner zone.
  *
  * @remarks
- * §3.2.1 gave the two zones different meanings — the inner one provides a set level, the outer
- * raises whatever is already there — so they routinely want different levels. Foundry already
- * separates them: `dimLevelCorrection` and `brightLevelCorrection` are distinct uniforms
- * (`base-lighting.mjs:368-369`), which is what made the old radius-shifting version of
- * reduction unnecessary (§6.2.2).
+ * §3.2.1 gave the two zones different meanings — inner provides a set level, outer raises whatever
+ * is already there — so they routinely want different levels. Foundry already separates them:
+ * `dimLevelCorrection` and `brightLevelCorrection` are distinct uniforms
+ * (`base-lighting.mjs:368-369`), which retired the radius-shifting form of reduction (§6.2.2).
  */
 export const BAND_LEVEL = "pf1LightingBandLevel";
 
 /**
- * The three **tiers** a light's zones resolve to, for absolute rendering. DESIGN.md §6.2.9.
+ * The three tiers a light's zones resolve to, for absolute rendering. DESIGN.md §6.2.9.
  *
  * @remarks
  * `{ inner, band, base }`, all {@link TIER} values rather than Foundry lighting levels.
  *
- * The distinction is the whole of §6.2.9. {@link LEVEL} says *which of Foundry's four levels to
- * ask for*, and Foundry answers relative to the ground beneath — `computedBrightColor =
- * mix(computedBackgroundColor, ambientBrightest, weightBright)` (`base-lighting.mjs:363`), so the
- * same level renders brighter over Dim ground than over Dark. This says *what brightness the zone
- * actually is*, which the tier table answers absolutely.
+ * {@link LEVEL} asks for one of Foundry's four levels, answered relative to the ground beneath —
+ * `computedBrightColor = mix(computedBackgroundColor, ambientBrightest, weightBright)`
+ * (`base-lighting.mjs:363`), so the same level renders brighter over Dim ground than over Dark.
+ * This states what brightness the zone actually is, absolutely.
  *
- * Both are set, and both are used: the relative path is what runs with the global-illumination
- * takeover off, and it is Foundry's own behaviour.
+ * Both are set and both are used: the relative path runs with the global-illumination takeover
+ * off, and is Foundry's own behaviour.
  */
 export const TIERS = "pf1LightingTiers";
 
 /**
  * How hard a darkness source should darken, 0..1, where 1 is its authored strength.
  *
- * Separate from {@link LEVEL} because the darkness layer's shader ignores lighting
- * levels entirely — it renders from `color` and `colorationAlpha`
- * (`point-darkness-source.mjs:206-213`). Alpha is the only dial that makes a darkness
- * source darken an area *partially*, which is what a one-step reduction is.
+ * Separate from {@link LEVEL} because the darkness layer's shader ignores lighting levels entirely,
+ * rendering from `color` and `colorationAlpha` (`point-darkness-source.mjs:206-213`). Alpha is the
+ * only dial that darkens partially, which is what a one-step reduction is.
  */
 export const STRENGTH = "pf1LightingStrength";
 
 /**
- * Draw this darkness source for its **animation only**, neutralising its darkening.
+ * Draw this darkness source for its animation only, neutralising its darkening.
  *
  * @remarks
- * §6.2.6. An ordinary *darkness* is expressed by the darkness-level texture, so the source has
- * no darkening left to do — but an animation is a fragment shader on a mesh, and withholding
- * the mesh withholds the animation with it.
+ * §6.2.6. An ordinary darkness is expressed by the darkness-level texture, leaving the source no
+ * darkening to do — but an animation is a fragment shader on a mesh, so withholding the mesh
+ * withholds the animation too.
  *
- * The lever is **not** {@link STRENGTH}, and that mistake is worth recording because the name
- * invites it. `colorationAlpha` multiplies the shader's output colour
- * (`darkness-lighting.mjs:119`) rather than fading it in, so *lowering* it drives the result
- * toward black — a "faint" 0.2 renders a darkness at its most absolute. Neutral is the opposite
- * end: colour white, alpha 1, which leaves `finalColor` as the scene it sampled and lets the
- * animation be the only thing that moves it.
+ * The lever is not {@link STRENGTH}, despite the name inviting it. `colorationAlpha` multiplies
+ * the shader's output colour (`darkness-lighting.mjs:119`) rather than fading it in, so lowering
+ * it drives toward black — a "faint" 0.2 renders a darkness at its most absolute. Neutral is the
+ * other end: colour white, alpha 1, leaving `finalColor` as the sampled scene so the animation is
+ * the only thing that moves it.
  */
 export const DARK_ANIMATION = "pf1LightingDarkAnimation";
 
@@ -115,69 +108,57 @@ export const DARK_ANIMATION = "pf1LightingDarkAnimation";
  * Suppress a source's rendering entirely, without touching its data or geometry.
  *
  * @remarks
- * Zeroing `colorationAlpha` does **not** stop a darkness source drawing — measured
- * 2026-08-22, with `colorationAlpha: 0` on every source and the dark discs still on
- * screen. The darkness shader evidently darkens through more than that one uniform, so
- * the only reliable lever is to not draw the mesh at all.
+ * Zeroing `colorationAlpha` does not stop a darkness source drawing — measured 2026-08-22 with
+ * `colorationAlpha: 0` on every source and the dark discs still on screen. The shader darkens
+ * through more than that one uniform, so the only reliable lever is not drawing the mesh.
  *
- * `_drawMesh` already has that path: it sets `mesh.visible = false` and returns null for
- * an inactive layer (`rendered-effect-source.mjs:413-416`). This reuses it.
+ * `_drawMesh` already has that path: `mesh.visible = false`, return null for an inactive layer
+ * (`rendered-effect-source.mjs:413-416`). Reused here.
  */
 export const HIDDEN = "pf1LightingHidden";
 
 /**
  * Force hard edges on a source whose cell was split into several rings.
  *
- * Soft edges inset the polygon and ramp depth 0→1 along its *entire* perimeter, cut
- * edges included, so two halves of a split cell fade against each other and leave a
- * visible seam. Overlapping them to hide it does not work: the coloration layer blends
- * additively, so the overlap reads *brighter*, not equal. Hard edges on both halves let
- * them abut exactly.
+ * Soft edges inset the polygon and ramp depth 0→1 along its entire perimeter, cut edges included,
+ * so two halves of a split cell fade against each other and leave a seam. Overlapping to hide it
+ * fails — the coloration layer blends additively, so the overlap reads brighter, not equal. Hard
+ * edges on both halves let them abut exactly.
  */
 export const HARD_EDGES = "pf1LightingHardEdges";
 
 /**
- * The sight-edge priority ladder. DESIGN.md §4.3, §4.5.2.
+ * The sight-edge priority ladder: edge rank by tier, darker regions ranking higher.
+ * DESIGN.md §4.3, §4.5.2.
  *
  * @remarks
- * Foundry skips an edge when `edge.priority < edgeType.priority`
- * (`clockwise-sweep.mjs:236`), which turns "who is blocked by what" into a single ordering.
- * Three behaviours ride on it:
+ * Foundry skips an edge when `edge.priority < edgeType.priority` (`clockwise-sweep.mjs:236`),
+ * turning "who is blocked by what" into a single ordering. Three behaviours ride on it:
  *
- *   - ordinary magical darkness must **cast an umbra** without blocking sight outright;
- *   - supernatural darkness must do both;
- *   - light-independent sight must ignore all of it.
+ *   - ordinary magical darkness casts an umbra without blocking sight outright;
+ *   - supernatural darkness does both;
+ *   - light-independent sight ignores all of it.
  *
- * Splitting them by rank means one sweep per question rather than per source, and it is why
- * umbra costs a single extra sweep rather than two (see `vision/umbra.mjs`).
+ * Splitting by rank costs one sweep per question rather than per source, which is why umbra costs
+ * a single extra sweep rather than two (see `vision/umbra.mjs`).
  *
- * **Walls are outside this ladder entirely.** `_determineEdgeTypes` registers them at
- * `-Infinity` (`clockwise-sweep.mjs:101`), so no value here can make a wall stop occluding.
- * That is what makes the mechanism safe to use rather than merely clever.
- */
-/**
- * Edge rank **by tier**: darker regions rank higher.
+ * Ranking by darkness rather than a blocking flag makes per-tier umbra fall out of the sweep
+ * instead of needing separate geometry. A sweep at rank R respects every edge ranked R or above —
+ * every region at least as dark as R — so successive ranks yield nested umbra regions, and the
+ * darkest one containing a point is its clamp.
  *
- * @remarks
- * Ranking by darkness rather than by a blocking/non-blocking flag is what makes per-tier
- * umbra fall out of the sweep instead of needing separate geometry. A sweep at rank *R*
- * respects every edge ranked *R* or above — that is, every region at least as dark as *R* —
- * so successive ranks yield **nested** umbra regions and the darkest one containing a point
- * is its clamp.
+ * Normal is on the ladder; only Bright is not. The first version stopped at Dim, assuming a
+ * Normal-lit region is transparent. §4.3 says instead that a region cannot be seen through more
+ * clearly than it allows, so a darkness cast at noon, interior resolving to Normal, must clamp
+ * sunlit ground beyond it to Normal. Reported 2026-08-23 as a Normal region casting no shadow onto
+ * a Bright backdrop — exactly the missing rung. Bright needs no rung: nothing is brighter, so a
+ * clamp to it can never reduce.
  *
- * **Normal is on the ladder; only Bright is not.** The first version stopped at Dim, on an
- * unstated assumption that a Normal-lit region is transparent. §4.3's rule does not say that —
- * it says you cannot see *through* a region more clearly than that region allows — so a
- * *darkness* cast at noon, whose interior resolves to Normal, must clamp directly sunlit ground
- * beyond it to Normal. Reported 2026-08-23 as *a Normal region casting no shadow onto a Bright
- * backdrop*, which is exactly the missing rung.
+ * The extra rung costs one more sweep per observer only on scenes with a Normal-tier suppressed
+ * region — bright outdoor maps, the same ones where the omission showed.
  *
- * Bright genuinely casts nothing, and needs no rung: nothing is brighter than Bright, so a
- * clamp to it can never be a reduction.
- *
- * The cost of the extra rung is one more sweep per observer **only on scenes that have a
- * Normal-tier suppressed region at all**, which means bright outdoor maps — the same maps where
- * the omission was visible.
+ * Walls sit outside this ladder entirely: `_determineEdgeTypes` registers them at `-Infinity`
+ * (`clockwise-sweep.mjs:101`), so no value here can stop a wall occluding.
  */
 export const UMBRA_RANK = Object.freeze({
   [TIER.NORMAL]: 1,
@@ -192,12 +173,12 @@ export const umbraRank = (tier) => UMBRA_RANK[tier] ?? 0;
 /** Sweep priorities that consume {@link UMBRA_RANK}. */
 export const VISION_RANK = Object.freeze({
   /**
-   * Ordinary sight. Blocked **only** by Supernatural Dark; everything less dark casts an
-   * umbra it sweeps straight through, which is the whole point of the ladder — a *darkness*
-   * dims what lies beyond without hiding it.
+   * Ordinary sight. Blocked only by Supernatural Dark; anything less dark casts an umbra it
+   * sweeps straight through — the point of the ladder, a darkness dimming what lies beyond
+   * without hiding it.
    */
   NORMAL: UMBRA_RANK[TIER.SUPERNATURAL_DARK],
-  /** *See in darkness* / *true seeing*: above every darkness edge. Walls still apply. */
+  /** See in darkness / true seeing: above every darkness edge. Walls still apply. */
   PIERCING: UMBRA_RANK[TIER.SUPERNATURAL_DARK] + 1,
 });
 
@@ -209,17 +190,16 @@ export const VISION_RANK = Object.freeze({
  * Show or hide a registered setting's row after the fact.
  *
  * @remarks
- * **For client-scoped settings that are nonetheless not everyone's business.** Foundry hides a
- * *world*-scoped setting from non-GM clients on its own
- * (`applications/settings/config.mjs:67`), and that is the right mechanism whenever the value
- * genuinely belongs to the world. It is the wrong one for a per-client preference that only a GM
- * should have — *GM sees through the selected token* has to stay client-scoped so two GMs can
- * disagree, and it still must not appear in a player's settings.
+ * For client-scoped settings that are still not everyone's business. Foundry hides world-scoped
+ * settings from non-GM clients on its own (`applications/settings/config.mjs:67`), which is right
+ * when the value belongs to the world and wrong for a GM-only per-client preference — *GM sees
+ * through the selected token* must stay client-scoped so two GMs can disagree, while still not
+ * appearing in a player's settings.
  *
- * `config` is read at render time out of the entry in `game.settings.settings`, so flipping it
- * afterwards is enough; there is no re-registration and no second copy of the definition. The
- * registration keeps `config: true` so the setting reads as a menu row by default and this only
- * ever takes rows *away*, which is the safe direction if the call is ever missed.
+ * `config` is read at render time from the entry in `game.settings.settings`, so flipping it
+ * afterwards suffices: no re-registration, no second copy of the definition. Registration keeps
+ * `config: true` so a setting reads as a menu row by default and this only ever takes rows away —
+ * the safe direction if the call is missed.
  *
  * @param {string} key
  * @param {boolean} visible
@@ -230,9 +210,9 @@ export function setSettingVisibility(key, visible) {
   if (!setting || setting.config === visible) return false;
   setting.config = visible;
 
-  // A settings window open at the moment the answer changes is showing the old one. Cheap to
-  // correct and confusing not to: this is reachable from a GM toggling *Light level is GM only*
-  // while a player has their settings open, which is exactly when someone is looking.
+  // A settings window open when the answer changes is showing the old one. Reachable from a GM
+  // toggling "Light level is GM only" while a player has their settings open — exactly when
+  // someone is looking.
   foundry.applications.instances?.get("settings-config")?.render();
   return true;
 }

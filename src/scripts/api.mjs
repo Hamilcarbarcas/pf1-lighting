@@ -1,33 +1,12 @@
 /**
  * The public API. DESIGN.md §11.
  *
- * ## Separate from the console surface, on purpose
+ * Distinct from `game.pf1Lighting.*`, a debug surface that changes shape without notice. This half
+ * is stable; {@link VERSION} moves on a breaking change.
  *
- * `game.pf1Lighting.*` is a debug surface — it logs to `console.error`, gains and loses fields
- * whenever a diagnosis needs them, and several entries hand back live internal objects. A
- * consumer that binds to it will break, and should. `game.pf1Lighting.api` is the half that
- * promises not to, and {@link VERSION} is how a consumer feature-detects.
- *
- * ## What is here, and what is deliberately not
- *
- * > Expose a question only this module can answer, or an answer only this module can assemble
- * > cheaply. Everything else stays core's.
- *
- * Hamilcarbarcas's rule, and it decides most of the surface. Distance, wall collisions, ownership and
- * the raw `scene.environment.darknessLevel` are all core's and are absent. What is here is the
- * tier ladder (§3.1), the observer-relative answer (§4.3, §4.8), and the *assembly* — one call
- * that returns what a stealth check needs instead of nine.
- *
- * ## Arrays in, arrays out
- *
- * Every query takes a single subject or an array of them, and the return shape follows the
- * argument: an array in gives an array out, a scalar gives a scalar. That is one rule to
- * remember and it exists for a real reason rather than for ergonomics — `evaluate` reads the
- * field, and the field rebuilds when the registry version moves, so ten separate calls in a
- * stealth pass can pay for ten rebuilds where one call with ten subjects pays once.
- *
- * {@link perceive} is the exception and says so: it returns one record per (observer, observed)
- * pair, so an array on either side gives a flat array of records that each name both ends.
+ * Scalar in, scalar out; array in, array out. Batch where possible — the field rebuilds when the
+ * registry version moves, so ten calls can pay for ten rebuilds where one call with ten subjects
+ * pays once. {@link perceive} is the exception: one record per (observer, observed) pair.
  */
 
 import { MODULE_ID } from "./constants.mjs";
@@ -37,8 +16,8 @@ import * as perception from "./vision/perception.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
 
 /**
- * Incremented on a **breaking** change only — a removed function, a changed return shape, or a
- * changed meaning. Added fields and new functions do not move it.
+ * Breaking changes only: a removed function, a changed return shape, a changed meaning. Added
+ * fields and new functions do not move it.
  */
 export const VERSION = 1;
 
@@ -54,13 +33,10 @@ const many = (v) => (isArray(v) ? v : [v]);
 const like = (input, results) => (isArray(input) ? results : results[0]);
 
 /**
- * A placed `Token` from whatever a caller had to hand.
+ * A placed `Token` from whatever a caller had to hand: `TokenDocument`, `Token`, or id.
  *
  * @remarks
- * Three shapes reach this in practice and only one of them is the object the vision pipeline
- * needs: a `TokenDocument` (what a hook hands you), a `Token` (what the canvas holds), and an id.
- * Everything downstream wants the placeable, because that is what carries `vision` and
- * `_getVisionSourceData`.
+ * Only the placeable carries `vision` and `_getVisionSourceData`, which the vision pipeline needs.
  */
 function tokenOf(subject) {
   if (!subject) return null;
@@ -74,8 +50,8 @@ function tokenOf(subject) {
  * A `{x, y, elevation}` from a token, a token document, or a point.
  *
  * @remarks
- * Elevation is carried and then ignored by the model (§3.6). It is taken anyway so the signature
- * does not have to change on the day §3.6 does.
+ * Elevation is carried but ignored by the model (§3.6); taken anyway so the signature survives
+ * §3.6 changing.
  */
 function pointOf(subject) {
   const token = tokenOf(subject);
@@ -100,17 +76,12 @@ function pointOf(subject) {
  * How a subject that occupies more than a point resolves to one tier. DESIGN.md §11.3.
  *
  * @remarks
- * **`center` is the shared rule, and sharing it is the point** (Hamilcarbarcas, 2026-08-28: *"we should
- * determine a grid cell's light the same way we determine a token's light"*). A token and the
- * cell it stands in therefore agree by construction rather than by coincidence, and the answer
- * matches what the readout has always reported.
+ * `center` is shared with grid cells (2026-08-28), so a token and its square always agree, and
+ * both match the readout.
  *
- * `min` and `max` exist because the stealth case is genuinely asymmetric — a creature hides in
- * the darkest square it occupies and is spotted by the brightest — and a Large creature
- * straddling a boundary has no single tier to give. They are opt-in; nothing defaults to them.
- *
- * There is deliberately no `average`. Averaging tiers and re-thresholding produces a number that
- * matches no rule in the game, which is the objection that retired the word.
+ * `min`/`max` are opt-in, for the asymmetric stealth case: a creature hides in the darkest square
+ * it occupies and is spotted by the brightest. No `average` — averaging tiers and re-thresholding
+ * matches no rule in the game.
  */
 const SAMPLE = Object.freeze({ CENTER: "center", MIN: "min", MAX: "max" });
 
@@ -118,11 +89,9 @@ const SAMPLE = Object.freeze({ CENTER: "center", MIN: "min", MAX: "max" });
  * Every grid space a token occupies, as centre points.
  *
  * @remarks
- * **The bounds walk is the live path.** v13 has no `getOccupiedGridSpaceOffsets` — the optional
- * call is there because the concept keeps reappearing under that name and a version that adds it
- * knows about hex grids and odd token shapes, which this does not. Square grids are what PF1
- * plays on and what the walk is correct for; on a hex or gridless scene it approximates, and only
- * `min`/`max` sampling ever reaches it.
+ * The bounds walk is the live path; v13 has no `getOccupiedGridSpaceOffsets`. The optional call
+ * is there because a version that adds it would handle hex grids and odd token shapes, which the
+ * walk does not — on hex or gridless scenes it approximates. Only `min`/`max` sampling reaches it.
  */
 function footprint(token) {
   const grid = canvas?.grid;
@@ -179,24 +148,19 @@ function fold(tiers, sample) {
  * A usable `PointVisionSource` for a token, building a throwaway one if the canvas has none.
  *
  * @remarks
- * **The problem this exists for.** `Token#initializeVisionSource` calls `#destroyVisionSource()`
- * whenever `_isVisionSource()` is false (`placeables/token.mjs:868-880`), which is every token
- * the current user does not own or control. For a stealth check the interesting observers are
- * exactly those, so `token.vision` is `undefined` precisely when the question is worth asking.
+ * `token.vision` is `undefined` for every token the user neither owns nor controls
+ * (`placeables/token.mjs:868-880`) — exactly the interesting observers for a stealth check.
  *
- * **Building one is safe because registration is a separate call.** Core does
- * `new CONFIG.Canvas.visionSourceClass(...)`, `initialize(...)`, then **`add()`**
- * (`token.mjs:884-892`), and only that last step puts it in `canvas.effects.visionSources`. We
- * never call it, so nothing on the canvas sees this source and nothing has to be cleaned up
- * beyond the object itself.
+ * Building one is safe because registration is separate: core does `new
+ * CONFIG.Canvas.visionSourceClass(...)`, `initialize(...)`, then `add()` (`token.mjs:884-892`), and
+ * only `add()` reaches `canvas.effects.visionSources`. Skipping it leaves nothing to clean up
+ * beyond the object.
  *
- * **The blinded states are copied first**, as core does, because `isBlinded` gates `basicSight`
- * and `lightPerception` in the visibility loop and a source initialised without them would
- * report a blinded creature as sighted.
+ * Blinded states are copied first, as core does: `isBlinded` gates `basicSight` and
+ * `lightPerception`, and a source without them reports a blinded creature as sighted.
  *
- * **It costs a polygon sweep** — the expensive operation in this module (§9.6). Affordable once
- * per die roll for a scene's worth of NPCs; not affordable on a hook that fires during movement.
- * The API says so rather than hiding it behind a cache that would go stale on the first wall.
+ * Costs a polygon sweep, the expensive operation in this module (§9.6) — once per die roll, not on
+ * a movement hook. A cache would go stale on the first wall.
  *
  * @param {Token} token
  * @returns {{source: object|null, dispose: () => void}}
@@ -244,11 +208,10 @@ function visionSourceFor(token) {
  * The light tier at one or more points.
  *
  * @remarks
- * **`observer` decides which of two questions this is**, and they are genuinely different
- * answers rather than a default and a refinement. Omitted, the answer is god's eye: the model's
- * own tier, what a GM sees, what the readout reports. Given a token, the answer is clamped by
- * any umbra between that token and the point (§4.3) — so a lit room seen through a *darkness*
- * reports the darkness's tier, which is what that creature can actually see by.
+ * `observer` selects between two different questions, not a default and a refinement. Omitted:
+ * god's eye — the model's own tier, what a GM sees, what the readout reports. Given a token:
+ * clamped by any umbra between token and point (§4.3), so a lit room seen through a darkness
+ * reports the darkness's tier.
  *
  * @param {object|object[]} points - `{x, y, elevation?}`, a Token, or a TokenDocument
  * @param {object} [options]
@@ -308,10 +271,8 @@ export function brightnessOf(tokens, { observer = null, sample = SAMPLE.CENTER }
  * The light tier of the grid space containing a point.
  *
  * @remarks
- * The **same rule a token gets** — the space's centre — so a token and the square it stands in
- * cannot disagree. That is the whole reason this is a separate function rather than the caller
- * snapping a point themselves and calling {@link brightnessAt}: the snapping rule is ours to
- * keep consistent.
+ * The space's centre, the same rule a token gets, so the two cannot disagree. A separate function
+ * rather than caller-side snapping keeps that rule in one place.
  *
  * @param {object|object[]} points
  * @param {object} [options]
@@ -338,15 +299,13 @@ export function brightnessInSquare(points, { observer = null } = {}) {
  * Detection modes that do not consult light at all.
  *
  * @remarks
- * The field a stealth pass actually branches on: for these observers the light tier is
- * irrelevant, so a hider in pitch darkness is no better off than one in daylight. Derived from
- * the mode id rather than detected, because there is nothing on a `DetectionMode` that declares
- * it — `basicSight` is where PF1 puts darkvision, and blindsight rides in on the same mode
- * (`pf1/module/documents/token.mjs:205-213`).
+ * The field a stealth pass branches on: for these observers the tier is irrelevant, so a hider in
+ * pitch darkness is no better off than one in daylight. Keyed by mode id because nothing on a
+ * `DetectionMode` declares it — PF1 puts darkvision on `basicSight`, and blindsight rides the same
+ * mode (`pf1/module/documents/token.mjs:205-213`).
  *
- * An unregistered id answers `null` rather than `false`, so a consumer can tell *"this sense
- * ignores light"* from *"we have never heard of this sense"*. Use
- * {@link registerLightIndependentMode} to add one.
+ * Unregistered ids answer `null`, not `false`, separating "ignores light" from "unknown here".
+ * {@link registerLightIndependentMode} adds one.
  */
 const LIGHT_INDEPENDENT = new Set(["basicSight", "blindSight", "feelTremor"]);
 const LIGHT_DEPENDENT = new Set(["lightPerception", "seeInvisibility", "visionLight"]);
@@ -368,24 +327,23 @@ function lightIndependenceOf(id) {
  * Every detection mode that can see `observed` from `source`, in core's own order.
  *
  * @remarks
- * **Core will not answer this and the workaround is not a reimplementation.**
- * `CanvasVisibility#testVisibility` short-circuits on the first mode that returns true
- * (`groups/visibility.mjs:735-792`) and gives back a boolean. But every mode is reached through a
- * *public* per-mode entry point, and the argument is built by a method we can call —
- * so running the same loop without the short circuit keeps every rule inside core's mode
- * instances. That is what makes this compose with PF1's replaced `seeInvisibility` and with
- * `limits`' wrap of `_testPoint`; a hand-written range-and-light test would silently drop both.
+ * Not a reimplementation. `CanvasVisibility#testVisibility` short-circuits on the first mode
+ * returning true (`groups/visibility.mjs:735-792`) and yields a boolean, but every mode has a
+ * public per-mode entry point and its argument comes from a callable method — so the same loop
+ * without the short circuit keeps every rule inside core's mode instances. That is what composes
+ * with PF1's replaced `seeInvisibility` and `limits`' wrap of `_testPoint`; a hand-written
+ * range-and-light test would drop both silently.
  *
- * Three details that are easy to miss, each of which changes an answer:
+ * Three details, each of which changes an answer:
  *
- * - **A vision-granting light is a fourth route**, tested before any mode
- *   (`visibility.mjs:745-749`). It has no mode id and no observer — `lightSource.testVisibility`
- *   takes only the config — so it reveals to everyone equally. Reported as `"visionLight"`.
- * - **`isBlinded` gates `basicSight` and `lightPerception` but not the special modes.** A blinded
+ * - A vision-granting light is a fourth route, tested before any mode
+ *   (`visibility.mjs:745-749`). No mode id, no observer — `lightSource.testVisibility` takes only
+ *   the config — so it reveals to everyone equally. Reported as `"visionLight"`.
+ * - `isBlinded` gates `basicSight` and `lightPerception` but not the special modes; a blinded
  *   creature still feels tremors.
- * - **`testVisibility` mutates the target**, assigning `object.detectionFilter` when a special
- *   mode wins (`visibility.mjs:788`). Saved and restored here, or a probe leaves a rendering
- *   artefact on a token nobody looked at.
+ * - `testVisibility` mutates the target, assigning `object.detectionFilter` when a special mode
+ *   wins (`visibility.mjs:788`). Saved and restored here, or a probe leaves a rendering artefact
+ *   on an unexamined token.
  */
 function modesSeeing(source, observed, point) {
   const found = [];
@@ -440,18 +398,15 @@ function modesSeeing(source, observed, point) {
  * What one observer can tell about one target.
  *
  * @remarks
- * Takes arrays on either side and returns **one record per pair**, which is the one place this
- * API does not follow "scalar in, scalar out": a matrix has no scalar shape. Each record names
- * both ends, so a flat list is unambiguous and a caller can group it however it likes. Both
- * arguments scalar gives a single record rather than an array of one.
+ * One record per pair — the one departure from scalar-in, scalar-out, since a matrix has no scalar
+ * shape. Each record names both ends, so a flat list stays unambiguous. Two scalar arguments give
+ * a single record, not an array of one.
  *
- * `distance` is bundled because every consumer of this recomputes it — a Perception DC rises
- * with it, and it is the term a caller needs to sort by. `losBlocked` likewise: a target hidden
- * behind a wall and a target hidden by darkness need different rulings, and `visible: false`
- * alone cannot tell them apart.
+ * `distance` is bundled because every consumer recomputes it; a Perception DC rises with it.
+ * `losBlocked` likewise — hidden behind a wall and hidden by darkness need different rulings, and
+ * `visible: false` cannot separate them.
  *
- * **This costs a polygon sweep per observer that has no live vision source.** See
- * {@link visionSourceFor}. Ask it on a die roll, not on a movement hook.
+ * Costs a polygon sweep per observer with no live vision source ({@link visionSourceFor}).
  *
  * @param {Token|TokenDocument|(Token|TokenDocument)[]} observers
  * @param {Token|TokenDocument|(Token|TokenDocument)[]} observed
@@ -521,9 +476,8 @@ function record(observer, source, target, sample) {
             mode: "any",
           }) === true
         : null,
-    // No live vision source means this observer is not one the canvas is currently drawing for,
-    // so the answer came from a source built for the question. Worth reporting: it is also the
-    // expensive path.
+    // No live vision source: the canvas is not drawing for this observer, so the answer came from
+    // a source built for the question. The expensive path.
     ephemeral: !observer?.vision,
   };
 }
@@ -532,12 +486,12 @@ function record(observer, source, target, sample) {
  * Who can see this token, and how. The stealth call.
  *
  * @remarks
- * One field build and one sweep per candidate, rather than N calls each paying for both.
- * `observers` defaults to every other token on the scene that has sight at all — the caller
- * narrows it, because which NPCs are *entitled* to notice is a table question and not ours.
+ * One field build and one sweep per candidate, rather than N calls paying for both each time.
+ * `observers` defaults to every other token on the scene with sight enabled; narrowing it is the
+ * caller's, since which NPCs are entitled to notice is a table question.
  *
- * Sorted so the ones that can see come first, brightest perception first within that, because
- * the caller's next step is almost always to partition this list.
+ * Sorted seers first, brightest perception first within that — the next step is almost always to
+ * partition the list.
  *
  * @param {Token|TokenDocument} observed
  * @param {object} [options]
@@ -567,10 +521,9 @@ export function perceivedBy(observed, { observers, sample = SAMPLE.CENTER } = {}
  * The scene's own light level, as a tier.
  *
  * @remarks
- * From `flags.pf1-lighting.tier` where the scene has been set through this module, and from the
- * nearest rung to its stored darkness where it has not (§10.5.1). A caller cannot tell the two
- * apart from here, and does not need to — both are the answer to *what light level is this
- * scene*.
+ * From `flags.pf1-lighting.tier` where the scene was set through this module, otherwise the
+ * nearest rung to its stored darkness (§10.5.1). Both answer the same question; callers need not
+ * tell them apart.
  */
 export function sceneTier(scene = canvas?.scene) {
   const stored = sceneConfig.tierOf(scene);
@@ -582,17 +535,14 @@ export function sceneTier(scene = canvas?.scene) {
  * Set the scene's light level. GM only, and **refused on a darkness-locked scene**.
  *
  * @remarks
- * The lock is core's own control and it already means exactly this — Hamilcarbarcas, 2026-08-28:
- * *"There's already a darkness level lock in scene config. Can we use this for preventing the
- * api from changing scene brightness?"* It does, and has since §10.5.2:
- * `Scene#_preUpdate` silently *deletes* `environment.darknessLevel` from an update when the lock
- * is set (`documents/scene.mjs:416-419`), so writing anyway would report success and change
- * nothing. `setSceneTier` checks first and returns `null`.
+ * Reuses core's darkness-level lock, which already carries this meaning (2026-08-28, §10.5.2):
+ * `Scene#_preUpdate` silently deletes `environment.darknessLevel` from a locked scene's update
+ * (`documents/scene.mjs:416-419`), so writing anyway reports success and changes nothing. Checked
+ * up front instead; returns `null`.
  *
- * That makes the lock the natural filter for a time-of-day driver, with one consequence worth
- * knowing: it means *frozen*, not *not clock-driven*. A locked dungeon cannot be changed by a GM
- * from the dropdown either. If a scene ever needs to be hand-settable but ignored by the clock,
- * that is a second flag and it does not exist yet.
+ * Also the natural filter for a time-of-day driver, with one consequence: the lock means frozen,
+ * not merely not-clock-driven. A locked dungeon resists the GM's dropdown too. Hand-settable but
+ * clock-ignored would need a second flag; none exists.
  *
  * @param {number} tier - A {@link TIER} value the ambient can hold
  * @param {Scene} [scene=canvas.scene]
@@ -611,12 +561,10 @@ let surface = null;
  * The frozen object handed to consumers.
  *
  * @remarks
- * **Memoised, because it is published at two addresses and they must not drift.**
- * `game.modules.get("pf1-lighting").api` is the one another module should use — it is Foundry's
- * convention, it is what this project's own modules already publish and consume, and a module id
- * containing a hyphen can only be reached through a string key anyway. `game.pf1Lighting.api` is
- * a console alias for the same object, and exists because `pf1-lighting.api` is not typeable:
- * the hyphen is a minus sign, so it parses as `pf1 - lighting.api`.
+ * Memoised: published at two addresses, which must not drift.
+ * `game.modules.get("pf1-lighting").api` is Foundry's convention and what other modules should
+ * use. `game.pf1Lighting.api` is a console alias for the same object, since `pf1-lighting.api` is
+ * not typeable — the hyphen parses as a minus sign.
  */
 export function build() {
   return (surface ??= Object.freeze({
@@ -643,13 +591,12 @@ export function build() {
  * Publish at the address other modules will actually look at.
  *
  * @remarks
- * **At `init`, and the timing is the point.** `game.pf1Lighting` is assigned in `ready`, which is
- * too late to be an API: a consumer's own `ready` hook races ours on registration order, so
- * whether the API exists depends on module load order rather than on anything either module did.
- * `.api` set here is visible to every consumer's `setup` and `ready` alike.
+ * At `init`, and the timing is the point. `game.pf1Lighting` is assigned in `ready`, too late: a
+ * consumer's own `ready` hook races it on registration order, making the API's existence depend on
+ * module load order. Set here, `.api` is visible to every consumer's `setup` and `ready` alike.
  *
- * Nothing in {@link build} touches the canvas or reads a setting — the entries are function
- * references and frozen constants — so there is nothing for `init` to be too early for.
+ * {@link build} touches neither canvas nor settings — function references and frozen constants
+ * only — so `init` is not too early.
  */
 export function publish() {
   const mod = game.modules?.get(MODULE_ID);

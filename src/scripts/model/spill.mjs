@@ -5,52 +5,43 @@
  * inside it. That is correct and it is half a room: a window in the wall should still let the
  * outdoor light in, falling off with distance rather than stopping dead at the boundary.
  *
- * ## What this is, in the model
+ * Ambient areas with computed polygons, not emitters — see §3.4 for why the original `SpillEmitter`
+ * framing was retired. Each band is an `AT_LEAST` area at its own tier, folded by
+ * `areas.ambientTierAt` beside the drawn ones, which makes spill identical to global illumination
+ * for every other facet of the module by construction rather than by resemblance:
  *
- * **Ambient areas with computed polygons.** Not emitters — see §3.4 for why the original
- * `SpillEmitter` framing was retired. Each band is an `AT_LEAST` area at its own tier, folded by
- * `areas.ambientTierAt` beside the drawn ones, which is what makes Hamilcarbarcas's requirement — that
- * spill be treated identically to global illumination by every other facet of the module — true
- * by construction rather than by resemblance:
- *
- * - the contest, `evaluate()`, suppressors, umbra, perception, detection and the readout all
- *   read the ambient through that one function, so none of them can accidentally skip spill;
- * - `AT_LEAST` *is* §3.4's max-combine-only rule — spill may raise a level and can express
- *   nothing else, so two windows lighting the same floor compose with no special case;
+ * - the contest, `evaluate()`, suppressors, umbra, perception, detection and the readout all read
+ *   the ambient through that one function, so none of them can accidentally skip spill;
+ * - `AT_LEAST` is §3.4's max-combine-only rule — spill may raise a level and can express nothing
+ *   else, so two windows lighting the same floor compose with no special case;
  * - §7.0's shader discards global light per fragment wherever the darkness-level texture reads
- *   darker than `globalLightCutoff`, so painting a Bright band inside a Dark room makes the
- *   scene's *own* global light source stop discarding and light it. The spill is not rendered
- *   like global illumination; it is rendered *by* it.
+ *   darker than `globalLightCutoff`, so painting a Bright band inside a Dark room makes the scene's
+ *   own global light source stop discarding and light it. The spill is not rendered like global
+ *   illumination; it is rendered by it.
  *
- * ## How the shape is computed — §3.4.1, rewritten 2026-08-28
+ * The shape — §3.4.1, rewritten 2026-08-28: geodesic distance on a grid, not Euclidean dilation.
+ * `model/geodesic.mjs` marches a distance field out from every window of a room at once; this file
+ * contours it at the ladder's thresholds and hands the polygons over. That replaced a construction
+ * which measured brightness by straight-line distance and then merely masked it by visibility, so
+ * light that turned a corner arrived having been charged for the distance through the wall. Bands
+ * bending around exactly one corner, `MAX_CORNERS` and its relevance heuristic, the nudged-corner
+ * containment test and the region-clip slivers were all symptoms of that one substitution, and all
+ * are gone rather than fixed.
  *
- * **Geodesic distance on a grid, not Euclidean dilation.** `model/geodesic.mjs` marches a distance
- * field out from every window of a room at once; this file contours it at the ladder's thresholds
- * and hands the polygons over. That replaced a construction which measured brightness by
- * straight-line distance and then merely *masked* it by visibility — so light that turned a corner
- * arrived having been charged for the distance **through the wall**. Bands bending around exactly
- * one corner, `MAX_CORNERS` and its relevance heuristic, the nudged-corner containment test and the
- * region-clip slivers were all symptoms of that one substitution, and all of them are gone rather
- * than fixed.
- *
- * What this file still owns is *which* edges are windows and *how bright* they are
+ * What this file still owns is which edges are windows and how bright they are
  * ({@link apertureInfo}); the geometry lives next door.
  *
- * ## Walls that pass light never block anything
+ * Walls that pass light never block anything. `geodesic.blockingLinks` cuts a cell-to-cell link only
+ * where `edge.light !== NONE`, the same predicate {@link isAperture} reads to find a window in the
+ * first place. So a second window, or another open door, lets the spill straight through, and the
+ * two cannot disagree. A wall is a severed link rather than blocked ground, so it eats no floor and
+ * cannot leak: any 4-connected path across a wall must cross a link the wall cut.
  *
- * `geodesic.blockingLinks` cuts a cell-to-cell link only where `edge.light !== NONE`, which is the
- * *same* predicate {@link isAperture} reads to find a window in the first place. So a second window,
- * or another open door, lets the spill straight through, and the two cannot disagree. A wall is a
- * severed link rather than blocked ground, so it eats no floor and cannot leak: any 4-connected path
- * across a wall must cross a link the wall cut.
- *
- * ## The one ordering constraint
- *
- * Spill folds **after** the drawn regions. `field.ambientDomains` applies areas in list order
- * and the modes do not commute — a Bright spill into a room clamped Dark is
- * `max(min(Bright, Dark), Bright)` only if the `AT_LEAST` runs second. Reversed, the clamp eats
- * the spill and the feature silently does nothing. {@link areas} is appended by
- * `areas.registerProvider`, which is called last for exactly this reason.
+ * One ordering constraint: spill folds after the drawn regions. `field.ambientDomains` applies areas
+ * in list order and the modes do not commute — a Bright spill into a room clamped Dark is
+ * `max(min(Bright, Dark), Bright)` only if the `AT_LEAST` runs second. Reversed, the clamp eats the
+ * spill and the feature silently does nothing. {@link areas} is appended by `areas.registerProvider`,
+ * called last for exactly this reason.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -85,11 +76,11 @@ export const SETTING_RADIUS = Object.freeze({
  * How far off the wall the ambient is sampled, in grid squares.
  *
  * @remarks
- * The one tolerance in the eligibility test, and it is a tolerance for *authoring* rather than
- * for arithmetic: a region outline traced by hand does not land on the wall it describes. Too
- * small and a sloppily drawn region reads as having the same ambient on both sides of its own
- * window; too large and the probe jumps a narrow corridor into a third space. Half a square is
- * a foot or two at any normal scale, and comfortably inside the thinnest room anyone draws.
+ * The one tolerance in the eligibility test, and a tolerance for authoring rather than for
+ * arithmetic: a region outline traced by hand does not land on the wall it describes. Too small and
+ * a sloppily drawn region reads as having the same ambient on both sides of its own window; too
+ * large and the probe jumps a narrow corridor into a third space. Half a square is a foot or two at
+ * any normal scale, comfortably inside the thinnest room anyone draws.
  */
 const PROBE_SQUARES = 0.5;
 
@@ -112,10 +103,10 @@ export const isEnabled = () => setting(SETTING_ENABLED, true) === true;
  * How far this brightness carries before it steps down, in feet — §3.4.1.
  *
  * @remarks
- * **The key is still `spillRadius*` and the meaning has changed.** It used to be the cone radius of
- * a spill *starting* at this tier; it is now the width of this tier's own band, wherever in a ladder
- * that band falls. A GM's stored 40 / 20 / 10 keeps working and reads better: bright carries forty
- * feet, normal twenty, dim ten, so a bright window reaches seventy.
+ * The key is still `spillRadius*` and the meaning has changed. It used to be the cone radius of a
+ * spill starting at this tier; it is now the width of this tier's own band, wherever in a ladder
+ * that band falls. A stored 40 / 20 / 10 keeps working and reads better: bright carries forty feet,
+ * normal twenty, dim ten, so a bright window reaches seventy.
  */
 const radiusFeet = (tier) => Number(setting(SETTING_RADIUS[tier], 0)) || 0;
 
@@ -138,11 +129,11 @@ let lastSignature = null;
  * Bumped whenever **geometry** goes stale — walls, regions, settings.
  *
  * @remarks
- * Now purely part of {@link rebuild}'s signature. §3.4's two clocks existed because a window's
- * sweeps were expensive and its tier was not, so the sweeps were cached against this and the tier
- * re-run against the registry. §3.4.1's march is cheap enough that there is nothing left worth
- * caching separately — a rebuild is one field per room — so this survives only to say *something
- * moved*, alongside the registry version and the scene tier.
+ * Now purely part of {@link rebuild}'s signature. §3.4's two clocks existed because a window's sweeps
+ * were expensive and its tier was not, so the sweeps were cached against this and the tier re-run
+ * against the registry. §3.4.1's march is cheap enough that nothing is left worth caching separately
+ * — a rebuild is one field per room — so this survives only to say something moved, alongside the
+ * registry version and the scene tier.
  */
 let geometryEpoch = 0;
 
@@ -154,25 +145,23 @@ export function spillAreas() {
 }
 
 /**
- * Spill's contribution to `render/gradient.mjs` — **empty since §3.4.1, deliberately.**
+ * Spill's contribution to `render/gradient.mjs` — empty since §3.4.1, deliberately.
  *
  * @remarks
- * §7.0 step 5 gave each window a triangulated mesh carrying a *distance per vertex*, so the
- * rasteriser interpolated the falloff instead of the field blur approximating it. That machinery was
- * the whole back half of this file — `rampFor`, `ringDistances`, `groupWithDistances` — and it
- * existed to reconstruct distances that §3.4.1's field simply has.
+ * §7.0 step 5 gave each window a triangulated mesh carrying a distance per vertex, so the rasteriser
+ * interpolated the falloff instead of the field blur approximating it. That machinery was the whole
+ * back half of this file — `rampFor`, `ringDistances`, `groupWithDistances` — and it existed to
+ * reconstruct distances §3.4.1's field simply has.
  *
- * It is not being rebuilt on the new field yet, because it may not be needed (Hamilcarbarcas, 2026-08-27:
- * *"draw polygons out of those coloured fields, add them to the underlying brightness model, and
- * call it a day"*). The bands are much wider under per-tier widths — 40 / 20 / 10 ft rather than
- * 40 + 10 + 10 — so each boundary may read correctly on §6.4.4's blur alone, which is the treatment
- * every other brightness boundary in the module gets. **If it bands, the fix is small**: ask
- * `geodesic.contour` for thresholds at quarter-band spacing instead of tier spacing and hand the
- * rings over with the distances they already carry.
+ * Not rebuilt on the new field yet, because it may not be needed (2026-08-27): the bands are much
+ * wider under per-tier widths — 40 / 20 / 10 ft rather than 40 + 10 + 10 — so each boundary may read
+ * correctly on §6.4.4's blur alone, the treatment every other brightness boundary in the module
+ * gets. If it bands, the fix is small: ask `geodesic.contour` for thresholds at quarter-band spacing
+ * instead of tier spacing and hand the rings over with the distances they already carry.
  *
  * The stub stays rather than the export being deleted: `render/gradient.mjs` is the shared mesh pool
  * for four producers, three of which have nothing to do with spill, and it already treats an empty
- * list as "nothing to draw".
+ * list as nothing to draw.
  *
  * @returns {object[]} Always empty
  */
@@ -188,14 +177,14 @@ export function ramps() {
  * Could this edge be a window?
  *
  * @remarks
- * **`type === "wall"` is not optional.** `Edge.light` defaults to `NONE` for every edge type
- * (`geometry/edges/edge.mjs:41`), and this module puts its own umbra edges into `canvas.edges`
- * with exactly that (`vision/umbra-edges.mjs`). Without the type test every umbra boundary on
- * the scene reads as a window.
+ * `type === "wall"` is not optional. `Edge.light` defaults to `NONE` for every edge type
+ * (`geometry/edges/edge.mjs:41`), and this module puts its own umbra edges into `canvas.edges` with
+ * exactly that (`vision/umbra-edges.mjs`). Without the type test every umbra boundary on the scene
+ * reads as a window.
  *
- * **Open doors need no special case.** `Wall##createEdge` zeroes all four restrictions while
- * `isOpen` (`placeables/wall.mjs:225`), so a door's edge stays in the collection with its
- * geometry intact and qualifies exactly while it is open.
+ * Open doors need no special case. `Wall##createEdge` zeroes all four restrictions while `isOpen`
+ * (`placeables/wall.mjs:225`), so a door's edge stays in the collection with its geometry intact and
+ * qualifies exactly while it is open.
  */
 export function isAperture(edge) {
   if (edge?.type !== "wall") return false;
@@ -232,10 +221,10 @@ const reject = (why) => {
  * Is a light-blocking wall between these two points?
  *
  * @remarks
- * **The aperture's own edge cannot register here, which is the property this rests on.** It passes
- * light by definition ({@link isAperture}), and `_testEdgeInclusion` drops any edge whose `light` is
- * `NONE` before it can occlude (`geometry/clockwise-sweep.mjs:244`). So a genuine window sees
- * nothing between its two probes, and a wall standing *behind* another wall sees that other wall.
+ * The aperture's own edge cannot register here, which is the property this rests on. It passes light
+ * by definition ({@link isAperture}), and `_testEdgeInclusion` drops any edge whose `light` is `NONE`
+ * before it can occlude (`geometry/clockwise-sweep.mjs:244`). So a genuine window sees nothing
+ * between its two probes, and a wall standing behind another wall sees that other wall.
  */
 function blockedBetween(a, b) {
   const Poly = CONFIG.Canvas?.polygonBackends?.light;
@@ -243,8 +232,8 @@ function blockedBetween(a, b) {
   try {
     return Poly.testCollision(a, b, { type: "light", mode: "any" }) === true;
   } catch {
-    // A malformed edge set should not take the whole feature down; erring toward "not blocked"
-    // keeps a real window working and at worst lets the old behaviour through.
+    // A malformed edge set should not take the whole feature down; erring toward not-blocked keeps a
+    // real window working and at worst lets the old behaviour through.
     return false;
   }
 }
@@ -253,11 +242,11 @@ function blockedBetween(a, b) {
  * The ambient tier ignoring spill's own contribution.
  *
  * @remarks
- * **The back door onto "spill must not feed spill".** `ambientTierAt` folds every area including
- * the bands this file produced last time, so reading it plainly would make a previously-lit
- * patch report the spill tier, the `spillTier > interiorTier` guard go false, and the feature
- * switch itself off one rebuild after it started working. Excluding derived areas is what keeps
- * the interior tier meaning *the room*, which is the quantity the guard is about.
+ * The back door onto spill-must-not-feed-spill. `ambientTierAt` folds every area including the bands
+ * this file produced last time, so reading it plainly would make a previously-lit patch report the
+ * spill tier, the `spillTier > interiorTier` guard go false, and the feature switch itself off one
+ * rebuild after it started working. Excluding derived areas keeps the interior tier meaning the
+ * room, which is the quantity the guard is about.
  */
 const roomTier = (point, base) => areas.ambientTierAt(point, base, { derived: false });
 
@@ -266,21 +255,21 @@ const roomTier = (point, base) => areas.ambientTierAt(point, base, { derived: fa
  *
  * @remarks
  * Not `evaluate()`, and the difference is the whole feature. A candle on the windowsill already
- * shines through the window — the edge passes light, Foundry sweeps it, and §7.1 notes as much
- * in its own parenthesis — so reading the full emitter set would spill forty feet of *bright*
- * from a candle and double-count light that is already being drawn. Global illumination is the
- * only thing with no geometry to stream through the gap, so it is the only thing spill is for.
+ * shines through the window — the edge passes light and Foundry sweeps it — so reading the full
+ * emitter set would spill forty feet of bright from a candle and double-count light already being
+ * drawn. Global illumination is the only thing with no geometry to stream through the gap, so it is
+ * the only thing spill is for.
  *
- * Running the *contest* rather than reading the ambient directly is what makes a darkness over
- * the window work: the spell clamps the ambient at that point and the spill starts one or two
- * rungs lower, with `floor`, eligibility and *daylight* cancellation honoured by the code that
- * already owns those rules.
+ * Running the contest rather than reading the ambient directly is what makes a darkness over the
+ * window work: the spell clamps the ambient at that point and the spill starts one or two rungs
+ * lower, with `floor`, eligibility and daylight cancellation honoured by the code that already owns
+ * those rules.
  */
 function spillTierAt(point) {
-  // Flattened exactly as `evaluate()` flattens it, and for the reason its comment gives: the
-  // contest reads config fields off the emitter itself, so an entry handed over unflattened
-  // arrives with no `kind`, no `level` and no `cancelsDarkness`, and every rule that tests one
-  // silently takes its default branch.
+  // Flattened exactly as `evaluate()` flattens it, for the reason its comment gives: the contest
+  // reads config fields off the emitter itself, so an entry handed over unflattened arrives with no
+  // `kind`, no `level` and no `cancelsDarkness`, and every rule that tests one silently takes its
+  // default branch.
   const ambientOnly = emittersAt(point)
     .filter(({ entry }) => entry?.isGlobal)
     .map(({ entry, ...rest }) => ({ ...entry, entry, ...rest }));
@@ -296,16 +285,16 @@ function spillTierAt(point) {
 /* -------------------------------------------- */
 
 /**
- * Everything about a candidate edge that does **not** depend on how the falloff is drawn: is it a
+ * Everything about a candidate edge that does not depend on how the falloff is drawn: is it a
  * window, which way is inward, what tier spills through it, and what room it spills into.
  *
  * @remarks
- * **Split out of `bandsFor` on 2026-08-27, and the split line is the point.** §3.4.1 replaces the
- * *geometry* — the wedge, the sweeps, the corner bending, the Minkowski ladder — with a geodesic
- * distance field. None of that touches eligibility or the tier, which are the parts play-testing has
- * not faulted. Keeping them in one exported function means the new construction and the old one
- * cannot disagree about which walls are windows or how bright a window is, and the probe that judges
- * the new geometry judges it against the real answer rather than a copy of it.
+ * Split out of `bandsFor` on 2026-08-27, and the split line is the point. §3.4.1 replaces the
+ * geometry — the wedge, the sweeps, the corner bending, the Minkowski ladder — with a geodesic
+ * distance field. None of that touches eligibility or the tier, the parts play-testing has not
+ * faulted. Keeping them in one exported function means the new construction and the old one cannot
+ * disagree about which walls are windows or how bright a window is, and the probe judging the new
+ * geometry judges it against the real answer rather than a copy of it.
  *
  * @param {Edge} edge
  * @param {number} sceneTier
@@ -324,25 +313,24 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
   const tierMinus = roomTier(minus, sceneTier);
 
   // Same ambient on both sides: an interior wall, or a window in open air. Either way there is
-  // nothing to spill, and this is also what turns the whole feature off at nightfall — once the
-  // sky is darker than the room, no window on the scene qualifies.
+  // nothing to spill, and this also turns the whole feature off at nightfall — once the sky is
+  // darker than the room, no window on the scene qualifies.
   if (tierPlus === tierMinus) return reject("sameAmbient");
 
-  // **The ambients must be separated by *this* edge, not merely differ across it** (Hamilcarbarcas,
-  // 2026-08-28: *"exterior walls of an interior space that intersect with a wall outside cause light
-  // to leak in… just moving those outer walls away from the room cleared the brightness bug"*).
+  // The ambients must be separated by this edge, not merely differ across it (2026-08-28: exterior
+  // walls of an interior space intersecting a wall outside caused light to leak in, and moving those
+  // outer walls away from the room cleared it).
   //
   // §3.4 chose the ambient differential over a border test on purpose, and gave the reason:
   // collinearity between a drawn region outline and a drawn wall is a tolerance exercise with no
-  // right answer. That reasoning still holds. What it missed is that the differential says nothing
-  // about *what* separates the two samples — so any light-passing wall standing within half a grid
-  // square of a region's boundary reads as a window into it, however far outside the room it is and
-  // however solid the real wall between them. A fence, a cliff edge or a bit of scenery parked
-  // against a building therefore poured daylight through it, and dragging the same wall a few feet
-  // away turned it off again.
+  // right answer. That still holds. What it missed is that the differential says nothing about what
+  // separates the two samples — so any light-passing wall standing within half a grid square of a
+  // region's boundary reads as a window into it, however far outside the room it is and however
+  // solid the real wall between them. A fence, a cliff edge or scenery parked against a building
+  // therefore poured daylight through it, and dragging the same wall a few feet away turned it off.
   //
-  // The honest test is neither the border nor the differential alone: **can light actually get from
-  // one sample to the other?** The aperture's own edge cannot answer *no* — it passes light by
+  // The honest test is neither the border nor the differential alone: can light actually get from
+  // one sample to the other? The aperture's own edge cannot answer no — it passes light by
   // definition, so the sweep drops it before it can occlude — which makes this exact rather than
   // approximate. A real window sees nothing between its probes; a wall behind a wall sees the wall.
   if (blockedBetween(plus, minus)) return reject("occluded");
@@ -357,25 +345,25 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
   const spillTier = spillTierAt(outside);
   if (spillTier === null) return reject("noAmbientEmitter");
 
-  // §3.4's guard, and the same comparison as eligibility. A Bright scene clamped to Dim indoors
-  // with a *deeper darkness* over the window gives Dim against Dim: nothing to do, correctly.
+  // §3.4's guard, and the same comparison as eligibility. A Bright scene clamped to Dim indoors with
+  // a deeper darkness over the window gives Dim against Dim: nothing to do, correctly.
   if (spillTier <= interiorTier) return reject("notBrighterOutside");
 
-  // Bands run from the spill tier down to whichever is higher: one rung above the room, or Dim.
-  // Dim is not a preference — `globalLightCutoff` is the Dim threshold and `darknessFor` erases
-  // below it, so there is no rung underneath for global illumination to reach.
+  // Bands run from the spill tier down to whichever is higher: one rung above the room, or Dim. Dim
+  // is not a preference — `globalLightCutoff` is the Dim threshold and `darknessFor` erases below
+  // it, so there is no rung underneath for global illumination to reach.
   const floor = Math.max(interiorTier + 1, TIER.DIM);
   if (spillTier < floor) return reject("belowDim");
 
-  // The regions that make this room an interior. Clipping to them is what stops the spill
-  // leaking back out of its own window, and it is the only non-wall trim in the construction.
+  // The regions that make this room an interior. Clipping to them stops the spill leaking back out
+  // of its own window, and is the only non-wall trim in the construction.
   const enclosing = areas.areas().filter((area) => !area.derived && areas.covers(area, inside));
   if (!enclosing.length) return reject("noEnclosingRegion");
   const regionPaths = union(enclosing.flatMap((area) => areas.pathsFor(area, SCALE)));
   if (!regionPaths.length) return reject("emptyRegion");
 
-  // Sorted, so two windows in one room hash to the same key however `areas()` happened to order
-  // them — the grouping in `roomsOf` is only as reliable as this is stable.
+  // Sorted, so two windows in one room hash to the same key however `areas()` ordered them — the
+  // grouping in `roomsOf` is only as reliable as this is stable.
   const regionIds = enclosing.map((area) => area.id ?? area.region?.id ?? "?").sort();
 
   return {
@@ -401,14 +389,14 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
  * Band width per tier, in feet.
  *
  * @remarks
- * **The three stored numbers, read as widths rather than as radii** (Hamilcarbarcas, 2026-08-27: *"rather
- * than a straight band width, the value of each brightness can tell you how large the band of that
- * brightness is"*). 40 now means *bright light carries forty feet before it reads as normal*, and
- * the total reach is whatever the ladder sums to — 70 ft from Bright, 30 from Normal, 10 from Dim.
+ * The three stored numbers, read as widths rather than radii (2026-08-27): each brightness value
+ * gives the size of that brightness's band. 40 means bright light carries forty feet before it reads
+ * as normal, and the total reach is whatever the ladder sums to — 70 ft from Bright, 30 from Normal,
+ * 10 from Dim.
  *
- * The old scheme said two things at once, a per-tier cone radius *and* a separate uniform band
- * width, which double-counted the falloff and disagreed about which was the distance limit. This is
- * one statement, and it is why `spillBandWidth` no longer exists.
+ * The old scheme said two things at once, a per-tier cone radius and a separate uniform band width,
+ * which double-counted the falloff and disagreed about which was the distance limit. This is one
+ * statement, and why `spillBandWidth` no longer exists.
  */
 function widthsFeet() {
   const table = {};
@@ -420,20 +408,19 @@ function widthsFeet() {
  * Group this scene's windows by the room they spill into.
  *
  * @remarks
- * **One march per room, not per window** (Hamilcarbarcas, 2026-08-27: *"one march per room sounds like the
- * smart choice"*), and the reason is correctness before cost. Two windows lighting one room from
- * separate fills land on separately-snapped grids, so their contours can disagree by a fraction of a
- * cell along a shared boundary — and thin disagreeing polygons folding together is precisely the
+ * One march per room, not per window (2026-08-27), for correctness before cost. Two windows lighting
+ * one room from separate fills land on separately-snapped grids, so their contours can disagree by a
+ * fraction of a cell along a shared boundary — and thin disagreeing polygons folding together is the
  * sliver failure §3.4.1 exists to end. One field per room has one set of contours and nothing to
  * disagree with.
  *
- * It is also provably the same answer rather than an approximation. Tier is monotone decreasing in
- * distance, so `max over windows of tier(dᵥᵥ)` is `tier(min over windows of dᵥᵥ)` — and the minimum
- * over seeds is exactly what a multi-source march computes. The `AT_LEAST` fold that used to combine
- * separate windows is doing the same arithmetic one level down.
+ * Provably the same answer rather than an approximation. Tier is monotone decreasing in distance, so
+ * `max over windows of tier(dᵥᵥ)` is `tier(min over windows of dᵥᵥ)`, and the minimum over seeds is
+ * what a multi-source march computes. The `AT_LEAST` fold that used to combine separate windows does
+ * the same arithmetic one level down.
  *
- * Keyed on the **region set**, because that is what `apertureInfo` resolved as the room and what
- * bounds the fill. Two rooms sharing no region never share a march.
+ * Keyed on the region set, that being what `apertureInfo` resolved as the room and what bounds the
+ * fill. Two rooms sharing no region never share a march.
  */
 function roomsOf(sceneTier) {
   const rooms = new Map();
@@ -454,7 +441,7 @@ function roomsOf(sceneTier) {
       rooms.set(key, room);
     }
     room.apertures.push(info);
-    // A room is only as bright as its darkest reading allows the ladder to run — see §3.4's floor.
+    // A room is only as bright as its darkest reading lets the ladder run — see §3.4's floor.
     if (info.floor > room.floor) room.floor = info.floor;
   }
 
@@ -465,20 +452,17 @@ function roomsOf(sceneTier) {
  * One room's spill, as nested ambient areas.
  *
  * @remarks
- * ## Windows at different tiers share the march, via a head start
+ * Windows at different tiers share the march via a head start. A room can have a bright window and
+ * one under a darkness; rather than a march each, the dimmer window seeds at a cost offset — the
+ * cumulative width of every rung between the room's brightest spill tier and its own. A Normal
+ * window in a room whose ladder starts at Bright seeds at 40, the width of the Bright rung, so the
+ * ladder reads Normal at its mouth exactly as a march of its own would have. Works only because the
+ * ladder is cumulative, the second thing per-tier widths bought.
  *
- * A room can have a bright window and one under a *darkness*. Rather than a march each, the dimmer
- * window seeds at a **cost offset**: the cumulative width of every rung between the room's brightest
- * spill tier and its own. A Normal window in a room whose ladder starts at Bright seeds at 40 — the
- * width of the Bright rung — so the ladder reads Normal at its mouth, exactly as a march of its own
- * would have. That works only because the ladder is cumulative, which is the second thing per-tier
- * widths bought.
- *
- * ## The contours are nested, and nothing is differenced
- *
- * Each tier's area is the **whole** disc inside its threshold, not the annulus. `AT_LEAST` folds by
- * `max`, so nesting produces the bands for free (`geodesic.contour`). Differencing them would
- * compute the same answer through Clipper, which is where the slivers came from.
+ * The contours are nested and nothing is differenced. Each tier's area is the whole disc inside its
+ * threshold, not the annulus. `AT_LEAST` folds by `max`, so nesting produces the bands for free
+ * (`geodesic.contour`). Differencing them would compute the same answer through Clipper, which is
+ * where the slivers came from.
  *
  * @returns {{areas: object[], fill: object|null}}
  */
@@ -520,8 +504,8 @@ function spillFor(room) {
     if (!rings.length) continue;
 
     // Through `union` rather than used raw: marching squares emits outers and holes wound against
-    // each other, and Clipper's NonZero union is what normalises that into the winding
-    // `areas.pathsFor` hands to `field.mjs` — which reads derived paths without normalising them.
+    // each other, and Clipper's NonZero union normalises that into the winding `areas.pathsFor` hands
+    // to `field.mjs`, which reads derived paths without normalising them.
     const paths = union(rings.map((ring) => toClipperPath(new PIXI.Polygon(ring.flatMap((p) => [p.x, p.y])), SCALE)));
     if (!paths.length) continue;
 
@@ -546,11 +530,11 @@ function spillFor(room) {
  * Mark the bands stale. `geometry` also bumps {@link geometryEpoch}.
  *
  * @remarks
- * **Deliberately does not clear {@link cache}.** The last good bands stay on screen until new
- * ones replace them, which matters because {@link schedule} declines to rebuild while the walls
- * layer is open: clearing here would make every lit room go dark the moment a GM picked up the
- * wall tool, and stay dark until they put it down. Stale spill for the length of an edit is a
- * far better failure than no spill.
+ * Deliberately does not clear {@link cache}. The last good bands stay on screen until new ones
+ * replace them, which matters because {@link schedule} declines to rebuild while the walls layer is
+ * open: clearing here would make every lit room go dark the moment a GM picked up the wall tool, and
+ * stay dark until they put it down. Stale spill for the length of an edit is a far better failure
+ * than no spill.
  */
 export function invalidate({ geometry = false } = {}) {
   if (geometry) {
@@ -587,14 +571,14 @@ export function rebuild() {
     return publish({ enabled: isEnabled(), candidates: 0, windows: 0, rooms: 0, bands: 0, ms: 0 });
   }
 
-  // No point: `ambientTier` returns the scene's own tier untouched, which is the base every
+  // No point: `ambientTier` returns the scene's own tier untouched, the base every
   // room-versus-outside comparison below is folded from.
   const sceneTier = sceneAmbientTier();
 
-  // Nothing this depends on has moved. `initializeLightSources` fires for reasons that have
-  // nothing to do with spill — a light re-initialising in place, a canvas refresh — and the
-  // whole ladder is cheap only relative to how often that is. Same idea as `field.get()`
-  // returning the same object when its signature is unchanged.
+  // Nothing this depends on has moved. `initializeLightSources` fires for reasons unrelated to spill
+  // — a light re-initialising in place, a canvas refresh — and the whole ladder is cheap only
+  // relative to how often that is. Same idea as `field.get()` returning the same object when its
+  // signature is unchanged.
   const signature = `${geometryEpoch}:${registryVersion()}:${sceneTier}`;
   if (signature === lastSignature && cache.length) {
     dirty = false;
@@ -619,12 +603,12 @@ export function rebuild() {
     enabled: true,
     candidates,
     windows,
-    // One march covers every window of a room, so `rooms` below `windows` is the ordinary state
-    // and is the whole point of §3.4.1's grouping — not a sign anything was skipped.
+    // One march covers every window of a room, so `rooms` below `windows` is the ordinary state and
+    // the point of §3.4.1's grouping — not a sign anything was skipped.
     rooms: marched,
     cells,
-    // Why candidates were turned away. §6.4.2s lesson: a correct no-op and a broken mechanism
-    // look identical on screen, so every `return null` in `apertureInfo` is counted instead.
+    // Why candidates were turned away. §6.4.2's lesson: a correct no-op and a broken mechanism look
+    // identical on screen, so every `return null` in `apertureInfo` is counted instead.
     rejected: { ...rejects },
     bands: next.length,
     rings: next.reduce((n, area) => n + area.paths.length, 0),
@@ -646,10 +630,9 @@ let detachDarkness = null;
  * @remarks
  * See the note in {@link registerHooks} for why `updateScene` alone leaves the bands stale.
  *
- * **Compared on the tier, not the level.** The event fires on every frame of a ten-second
- * animation; the tier changes at most three times across the whole sweep. Comparing levels would
- * schedule ~600 rebuilds, and `schedule` requests a vision refresh, so the cure would be worse than
- * the disease.
+ * Compared on the tier, not the level: the event fires on every frame of a ten-second animation and
+ * the tier changes at most three times across the sweep. Comparing levels would schedule ~600
+ * rebuilds, and `schedule` requests a vision refresh, so the cure would be worse than the disease.
  *
  * Attached per canvas, because `canvas.environment` is rebuilt with the scene — hence the explicit
  * detach rather than relying on the listener dying with the object.
@@ -671,7 +654,7 @@ function watchDarkness() {
     try {
       environment.removeEventListener("darknessChange", onDarknessChange);
     } catch {
-      // The canvas went away underneath us; the listener went with it.
+      // The canvas went away underneath; the listener went with it.
     }
     detachDarkness = null;
   };
@@ -685,22 +668,21 @@ function unwatchDarkness() {
  * Coalesce to one rebuild per frame.
  *
  * @remarks
- * **The walls-layer suppression is deliberately not here** (Hamilcarbarcas, 2026-08-26: *"let's disable
- * the rebuild suppress when editing walls — I want to see what kind of latency this actually
- * creates"*). Wall editing is the worst case by construction: every change bumps the geometry
- * epoch and re-marches every room on the scene. If it turns out to need a brake, the brake is one
- * `if` and the hook to lift it is already written (`deactivateWallsLayer`).
+ * The walls-layer suppression is deliberately not here (2026-08-26), to see what latency wall editing
+ * actually creates. Wall editing is the worst case by construction: every change bumps the geometry
+ * epoch and re-marches every room on the scene. If it needs a brake, the brake is one `if` and the
+ * hook to lift it is already written (`deactivateWallsLayer`).
  *
- * **The perception update is conditional on the rebuild having changed something**, as of
- * 2026-08-28. `rebuild` already declines to do work when its signature is unmoved — that guard is
- * what makes `initializeLightSources` affordable, since it fires for reasons with nothing to do
- * with spill — but the refresh below used to run regardless, so every one of those no-ops still
- * cost a lighting *and* vision refresh of the whole canvas.
+ * The perception update is conditional on the rebuild having changed something, as of 2026-08-28.
+ * `rebuild` already declines to work when its signature is unmoved — the guard that makes
+ * `initializeLightSources` affordable, since it fires for reasons unrelated to spill — but the
+ * refresh below used to run regardless, so every one of those no-ops still cost a lighting and
+ * vision refresh of the whole canvas.
  *
- * That was tolerable while the callers were document hooks. It stops being tolerable with a
- * per-frame signal in the mix ({@link watchDarkness}), and a guard that depends on every caller
- * filtering perfectly is the wrong shape. `generation` moving is the honest test of *did anything
- * change*, because `rebuild` bumps it exactly when it publishes.
+ * Tolerable while the callers were document hooks; not with a per-frame signal in the mix
+ * ({@link watchDarkness}), and a guard depending on every caller filtering perfectly is the wrong
+ * shape. `generation` moving is the honest test of whether anything changed, because `rebuild` bumps
+ * it exactly when it publishes.
  */
 export function schedule({ geometry = false } = {}) {
   invalidate({ geometry });
@@ -724,8 +706,8 @@ export function schedule({ geometry = false } = {}) {
 export function registerSettings() {
   const numeric = (key, name, hint, dflt, range) =>
     game.settings.register(MODULE_ID, key, {
-      // English, not keys: every setting here is `config: false` and edited in *Configure Light
-      // Spill*, which carries its own translated labels. §10.11.
+      // English, not keys: every setting here is `config: false` and edited in Configure Light
+      // Spill, which carries its own translated labels. §10.11.
       name,
       hint,
       scope: "world",
@@ -748,12 +730,11 @@ export function registerSettings() {
     onChange: () => schedule({ geometry: true }),
   });
 
-  // **Three numbers, and they are the whole falloff since §3.4.1.** *Spill cone angle* and *Band
-  // width* were registered here and are gone (Hamilcarbarcas, 2026-08-28: *"Am I correct assuming band
-  // width is an outdated knob?"* — correct, and the angle with it). The angle described the wedge
-  // the old construction clipped against, and there is no wedge; band width described a uniform
-  // step, and each tier now carries its own. Neither had a consumer left, and a live setting that
-  // moves nothing is worse than no setting.
+  // Three numbers, the whole falloff since §3.4.1. Spill cone angle and Band width were registered
+  // here and are gone (2026-08-28). The angle described the wedge the old construction clipped
+  // against, and there is no wedge; band width described a uniform step, and each tier now carries
+  // its own. Neither had a consumer left, and a live setting that moves nothing is worse than no
+  // setting.
   const band = (tier, label, dflt) =>
     numeric(SETTING_RADIUS[tier], `Spill band width — ${label}`, "Feet.", dflt, {
       min: 0,
@@ -780,8 +761,8 @@ export function registerHooks() {
     for (const verb of ["create", "update", "delete"]) Hooks.on(`${verb}${doc}`, geometry);
   }
 
-  // Kept while rebuilds during wall editing are unsuppressed — it is a no-op in that state, and
-  // it is the hook a brake would need if the latency turns out to warrant one. See `schedule`.
+  // Kept while rebuilds during wall editing are unsuppressed — a no-op in that state, and the hook a
+  // brake would need if the latency turns out to warrant one. See `schedule`.
   Hooks.on("deactivateWallsLayer", () => {
     if (dirty) schedule();
   });
@@ -792,24 +773,23 @@ export function registerHooks() {
     if ("environment" in changed || "darkness" in changed || "grid" in changed) tiers();
   });
 
-  // **`updateScene` is not enough on its own, and this was the sticky-brightness bug** (Hamilcarbarcas,
-  // 2026-08-28: *"some areas are getting sticky brightness readings — when the scene brightness is
-  // turned down from bright, they remain bright until the scene is set to dark"*).
+  // `updateScene` is not enough on its own — the sticky-brightness bug (2026-08-28: areas stayed
+  // bright after the scene brightness was turned down, until the scene was set to dark).
   //
-  // Scene darkness is **animated**: `Scene##onUpdate` hands a `darknessLevel` change to
+  // Scene darkness is animated: `Scene##onUpdate` hands a `darknessLevel` change to
   // `canvas.effects.animateDarkness`, which slides `canvas.environment.darknessLevel` over ten
-  // seconds by default (`CONFIG.Canvas.darknessToDaylightAnimationMS`). `updateScene` fires once,
-  // at the *start*. {@link schedule} then rebuilds on the next animation frame — when the level has
-  // barely moved — so `sceneTier` still reads the old tier, the signature matches, `lastSignature`
-  // is stamped with it, and **nothing fires again when the animation lands**. The bands stay at the
-  // tier they were built for, indefinitely.
+  // seconds by default (`CONFIG.Canvas.darknessToDaylightAnimationMS`). `updateScene` fires once, at
+  // the start. {@link schedule} then rebuilds on the next animation frame, when the level has barely
+  // moved, so `sceneTier` still reads the old tier, the signature matches, `lastSignature` is
+  // stamped with it, and nothing fires again when the animation lands. The bands stay at the tier
+  // they were built for, indefinitely.
   //
   // It cleared at Dark because that crosses `globalLightCutoff` and switches the scene's global
-  // light source off, which fires `initializeLightSources` and moves a *different* term of the
-  // signature. Nothing to do with darkness as such, which is why the failure looked arbitrary.
+  // light source off, firing `initializeLightSources` and moving a different term of the signature.
+  // Nothing to do with darkness as such, which is why the failure looked arbitrary.
   //
-  // The real signal is a **PIXI event on `canvas.environment`, not a Foundry hook** — dispatched on
-  // every step of the animation with `{darknessLevel, priorDarknessLevel}`. Filtered on the *tier*
+  // The real signal is a PIXI event on `canvas.environment`, not a Foundry hook — dispatched on
+  // every step of the animation with `{darknessLevel, priorDarknessLevel}`. Filtered on the tier
   // rather than the level, because it fires per frame for ten seconds and a rebuild per frame would
   // be far worse than the bug.
   Hooks.on("canvasReady", watchDarkness);
@@ -821,7 +801,7 @@ export function registerHooks() {
     dirty = true;
   });
 
-  // Appended last, so spill folds *after* the drawn regions — see the file header.
+  // Appended last, so spill folds after the drawn regions — see the file header.
   areas.registerProvider(spillAreas);
 }
 
@@ -834,9 +814,9 @@ export function registerHooks() {
  *
  * @remarks
  * §6.4.2's lesson, applied in advance: a correct no-op and a broken mechanism look identical on
- * screen. `candidates` above zero with `windows` at zero is the ordinary night-time state and
- * also what a mis-drawn region looks like; `visible: false` means the model has moved and the
- * map cannot, because §7.0's texture is the only channel that can brighten a restricted region.
+ * screen. `candidates` above zero with `windows` at zero is the ordinary night-time state and also
+ * what a mis-drawn region looks like; `visible: false` means the model has moved and the map cannot,
+ * §7.0's texture being the only channel that can brighten a restricted region.
  */
 export function stats() {
   const report = {
@@ -869,8 +849,7 @@ export function stats() {
  *
  * @remarks
  * Overlap here is ordinary, not a bug: two windows lighting the same floor both claim it, and
- * `AT_LEAST` folds them to the brightest. The first row is therefore the tier this point
- * actually gets from spill.
+ * `AT_LEAST` folds them to the brightest. The first row is the tier this point gets from spill.
  */
 export function at(point) {
   return cache

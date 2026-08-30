@@ -3,72 +3,64 @@
  *
  * ## Inside the Basic tab, not beside it
  *
- * The first plan was a fourth tab on `AmbientLightConfig`. Hamilcarbarcas's objection settled it, and
- * it is not a matter of taste: our fields and Foundry's own two radii describe **one** light
- * between them, and the radii no longer mean what their labels say — "Dim Radius" is §3.2.1's
- * *increase* band and has nothing to do with dim light. A separate tab leaves that mislabelling
- * in place and puts the fields that explain it a click away.
- *
- * So one fieldset, between the radius fieldset and whatever follows it, carrying every control
- * including the two radii.
+ * One fieldset between the radius fieldset and whatever follows it, carrying every control
+ * including the two radii — not a fourth tab. The module's fields and Foundry's two radii
+ * describe one light between them, and the radii no longer mean what their labels say: "Dim
+ * Radius" is §3.2.1's *increase* band, nothing to do with dim light. A separate tab leaves that
+ * mislabelling standing with its explanation a click away.
  *
  * ## The native inputs are MOVED, not copied
  *
  * `config.bright`, `config.dim` and `config.negative` are real `LightData` paths. A second input
- * carrying the same `name` would not be a mirror — `FormDataExtended` collects same-named fields
- * into a `RadioNodeList` and returns an **array** (`form-data-extended.mjs:176-183`), so the
- * document would be handed `[20, 20]` for its bright radius. There is exactly one of each input
- * on the page and we relocate the node, which keeps its value, its binding and core's delegated
- * listeners intact, and costs nothing.
+ * with the same `name` is not a mirror: `FormDataExtended` collects same-named fields into a
+ * `RadioNodeList` and returns an array (`form-data-extended.mjs:176-183`), so the document would
+ * get `[20, 20]` for its bright radius. Relocating the one existing node keeps its value, its
+ * binding and core's delegated listeners intact.
  *
- * The rows they came from are hidden rather than deleted, so a re-render finds the DOM it
- * expects.
+ * Their old rows are hidden rather than deleted, so a re-render finds the DOM it expects.
  *
  * ## Built as a string, not a template
  *
- * `foundry.applications.handlebars.renderTemplate` is **async**, and hook callbacks are not
- * awaited. Injecting asynchronously would leave a window in which the sheet is visible without
- * our fieldset, and would race our own de-duplication guard against a second render. The markup
- * here is simple enough that a synchronous build is the whole cost of avoiding that.
+ * `foundry.applications.handlebars.renderTemplate` is async and hook callbacks are not awaited,
+ * so async injection would leave the sheet visible without the fieldset and race the de-dup
+ * guard against a second render. The markup is simple enough that a synchronous build costs
+ * nothing.
  *
  * ## …and one of them is shown as a dropdown
  *
- * `config.negative` is a checkbox in core's sheet and a *Type* dropdown in the preset editor, and
- * the two forms are meant to read as one (Hamilcarbarcas, 2026-08-29). The dropdown wins: it names
- * both states rather than only the odd one, and the checkbox's label — *Darkness source* — was the
- * one row where the shared layout scope carried different-looking controls.
+ * `config.negative` is a checkbox in core's sheet and a *Type* dropdown in the preset editor;
+ * the two forms read as one (2026-08-29). The dropdown names both states rather than only the
+ * odd one, and *Darkness source* was the one row where the shared layout scope carried
+ * different-looking controls.
  *
- * The checkbox is still the field that submits. It moves into a hidden slot exactly as the radii
- * move into visible ones, and an unnamed `<select>` drives it. Naming the select instead would put
- * the string `"darkness"` where a boolean belongs, and a second field of that name would make
- * `FormDataExtended` return an array — the same trap the radii avoid.
+ * The checkbox still submits — it moves into a hidden slot and an unnamed `<select>` drives it.
+ * Naming the select would put `"darkness"` where a boolean belongs, and a second field of that
+ * name returns an array from `FormDataExtended`.
  *
  * ## Light↔darkness swaps by visibility, never by re-render
  *
- * `AmbientLightConfig#_onChangeForm` re-renders exactly `["animation", "advanced"]` when
- * `config.negative` changes (`ambient-light-config.mjs:169`) — never `basic`, where we live. So
- * both field groups are rendered and one is hidden.
+ * `AmbientLightConfig#_onChangeForm` re-renders exactly `["animation", "advanced"]` on a
+ * `config.negative` change (`ambient-light-config.mjs:169`) — never `basic`. So both field groups
+ * render and one is hidden.
  *
- * That has a real benefit beyond cheapness: hidden inputs still submit, and the model reads
- * `emitTier`/`steps`/`cap` **only** for emitters and `transform`/`floor` **only** for
- * suppressors. A light toggled to darkness and back keeps its emission settings, and the
- * opposite-mode flags sitting in the document are inert by construction.
+ * Beyond cheapness: hidden inputs still submit, and the model reads `emitTier`/`steps`/`cap`
+ * only for emitters, `transform`/`floor` only for suppressors. A light toggled to darkness and
+ * back keeps its emission settings, and the opposite-mode flags are inert by construction.
  *
  * ## The activation range is a tier range (§10.4.1)
  *
  * `config.darkness.min`/`max` gate the source on `canvas.darknessLevel` — a raw `[0,1]` number
- * against a model that quantises to four ambient rungs, so the same argument §10.5 makes about
- * the scene slider applies: a continuous control offers precision that does not exist. Both
- * inputs are moved into hidden slots and driven by a pair of tier dropdowns.
+ * against a model quantised to four ambient rungs, so §10.5's argument about the scene slider
+ * applies: a continuous control offers precision that does not exist. Both inputs move into
+ * hidden slots, driven by tier dropdowns.
  *
- * Two things the mapping has to get right, and both are easy to get plausibly wrong:
+ * Two easy ways to get the mapping plausibly wrong:
  *
- * - **The range is bands, not points.** `darknessTable()[tier]` is the level a tier *paints* at;
- *   the set of levels that *read* as that tier is `darknessBand(tier)`. Writing the point levels
- *   would leave a light set to *Normal* off on a scene at darkness 0.30, which the module itself
- *   calls Normal.
- * - **The two ends invert.** Low darkness is bright light, so the *brightest* tier drives `min`
- *   and the *darkest* drives `max`. The labels are in tiers throughout and never say min/max.
+ * - Bands, not points. `darknessTable()[tier]` is the level a tier *paints* at; the levels that
+ *   *read* as that tier are `darknessBand(tier)`. Point levels would leave a light set to
+ *   *Normal* dark on a scene at darkness 0.30, which the module itself calls Normal.
+ * - The ends invert. Low darkness is bright light, so the brightest tier drives `min` and the
+ *   darkest drives `max`. Labels are in tiers throughout and never say min/max.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -85,10 +77,10 @@ import { TABLE_CHANGED_HOOK } from "../render/levels.mjs";
 import * as registry from "../model/registry.mjs";
 import { isWriter } from "./scene-config.mjs";
 
-/** Our own de-dup marker. Per-feature, never a shared utility class. */
+/** De-dup marker. Per-feature, never a shared utility class. */
 const MARKER = "pf1-lighting-config";
 
-/** Applied to the core rows whose inputs we have taken. */
+/** Applied to the core rows whose inputs were taken. */
 const HIDDEN_ROW = "pf1-lighting-moved";
 
 /** Flag path prefix. Identical on an AmbientLightDocument and a TokenDocument. */
@@ -102,10 +94,9 @@ const FLAG = `flags.${MODULE_ID}.config`;
  * The document whose flags the sheet is editing.
  *
  * @remarks
- * Three shapes behind one function. `AmbientLightConfig` previews into a clone and exposes
- * `preview`; `TokenConfig` and `PrototypeTokenConfig` both answer `token` through their shared
- * mixin, which already resolves to the preview when there is one
- * (`sheets/token/prototype-config.mjs:53-55`).
+ * Three shapes, one function. `AmbientLightConfig` previews into a clone and exposes `preview`;
+ * `TokenConfig` and `PrototypeTokenConfig` both answer `token` through their shared mixin, which
+ * already resolves to the preview when there is one (`sheets/token/prototype-config.mjs:53-55`).
  */
 function subject(app) {
   return app.preview ?? app.token ?? app.document ?? null;
@@ -131,10 +122,10 @@ const esc = (value) =>
  * A `<select>`.
  *
  * @remarks
- * **`data-dtype="Number"` on every numeric one.** A select's value is a string, and
- * `FormDataExtended` only casts when told to (`form-data-extended.mjs:188`). Without it a tier
- * arrives as `"3"`, and `stepTier`'s `tier + steps` would concatenate rather than add — the kind
- * of failure that produces a plausible wrong answer rather than an error.
+ * `data-dtype="Number"` on every numeric one. A select's value is a string and
+ * `FormDataExtended` only casts when told (`form-data-extended.mjs:188`). Without it a tier
+ * arrives as `"3"` and `stepTier`'s `tier + steps` concatenates instead of adding — a plausible
+ * wrong answer rather than an error.
  */
 function select(name, options, value, { numeric = false, disabled = false, drives = "" } = {}) {
   const attrs = [
@@ -157,9 +148,9 @@ function select(name, options, value, { numeric = false, disabled = false, drive
 }
 
 /**
- * **Functions, not constants**, for `ui/preset-editor.mjs`'s reason: a module-level array is
- * built at import, and `game.i18n` holds no translations until after `init` (see `i18n.mjs`).
- * Every one of these is called from `fieldset`, which runs on sheet render.
+ * Functions, not constants, for `ui/preset-editor.mjs`'s reason: a module-level array is built at
+ * import, and `game.i18n` holds no translations until after `init` (see `i18n.mjs`). All of these
+ * are called from `fieldset`, which runs on sheet render.
  */
 const tierChoice = (tier) => ({ value: tier, label: tierLabel(tier) });
 
@@ -171,9 +162,8 @@ const floorChoices = () => [TIER.DARK, TIER.SUPERNATURAL_DARK].map(tierChoice);
  * Targets a *darkness* may be set to.
  *
  * @remarks
- * Deliberately stops at Dim. `clamp` only ever lowers, so offering Normal or Bright would offer
- * a darkness that does nothing on all but the brightest ground — a control whose most likely
- * setting is a no-op.
+ * Stops at Dim. `clamp` only lowers, so Normal or Bright would offer a darkness that does
+ * nothing on all but the brightest ground — a control whose likeliest setting is a no-op.
  */
 const clampChoices = () => [TIER.SUPERNATURAL_DARK, TIER.DARK, TIER.DIM].map(tierChoice);
 
@@ -187,16 +177,15 @@ const effectChoices = () => [
  * *Light* or *Darkness* — the two words core's `config.negative` checkbox stands for.
  *
  * @remarks
- * A dropdown rather than the native checkbox (Hamilcarbarcas, 2026-08-29), matching the preset
- * editor's *Type* row. The two forms show the same controls in the same order, and this was the
- * one row where they disagreed about how to ask the same question — a checkbox reading *Darkness
- * source* beside a dropdown reading *Light / Darkness*. The checkbox is still the field that
- * submits; see the note in {@link wire}.
+ * A dropdown rather than the native checkbox (2026-08-29), matching the preset editor's *Type*
+ * row. The two forms show the same controls in the same order; this was the one row where they
+ * disagreed about how to ask the same question — a checkbox reading *Darkness source* beside a
+ * dropdown reading *Light / Darkness*. The checkbox still submits; see {@link wire}.
  *
  * Duplicated from `ui/preset-editor.mjs` rather than shared, like `effectChoices` and
- * `tierChoice` above it, and the strings are duplicated too — `lang/en.json` keeps one section per
- * form throughout (`Presets.Magical` and `LightConfig.Magical` are already the same word), so a
- * translator reads each form as a whole rather than following cross-references out of it.
+ * `tierChoice`, strings included. `lang/en.json` keeps one section per form throughout
+ * (`Presets.Magical` and `LightConfig.Magical` are already the same word) so each form reads as a
+ * whole to a translator, without cross-references out of it.
  */
 const kindChoices = () => [
   { value: "light", label: t("LightConfig.Kind.light") },
@@ -217,16 +206,16 @@ const ACTIVATION_TIERS = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
 
 const activationChoices = () => ACTIVATION_TIERS.map(tierChoice);
 
-/** Float comparison for "the stored number is still the one we would write". */
+/** Float comparison: the stored number is still the one this control would write. */
 const NEAR = 1e-6;
 
 /**
  * A tier range → the `darkness.min`/`max` pair Foundry gates the source on.
  *
  * @remarks
- * **Moved to `model/tiers.mjs` on 2026-08-29** and kept here under its old name, because the
- * preset editor needs the same arithmetic and two copies of a rounding rule is how the sheet and
- * the preset table would come to disagree about which tier a light switches on at.
+ * Moved to `model/tiers.mjs` (2026-08-29), kept here under its old name. The preset editor needs
+ * the same arithmetic, and two copies of a rounding rule is how the sheet and the preset table
+ * come to disagree about which tier a light switches on at.
  */
 const rangeFor = activationRange;
 
@@ -238,16 +227,16 @@ const storedTier = (value) =>
  * The tier range a light is set to, and whether it was set *through this control*.
  *
  * @remarks
- * Flags first, numbers as the fallback — §10.5.1's argument, unchanged. A light that has never
- * been through this control shows the nearest rungs so it reads sensibly, and **nothing is
- * written until the GM picks one**: opening a sheet to change a radius must not quietly move a
- * hand-authored range onto the nearest band edge. Foundry's own defaults of `0`/`1` read back as
- * Bright→Dark, which is "always on" said in tiers.
+ * Flags first, numbers as fallback — §10.5.1's argument. A light never set through this control
+ * shows the nearest rungs so it reads sensibly, and nothing is written until the GM picks one:
+ * opening a sheet to change a radius must not quietly move a hand-authored range onto the nearest
+ * band edge. Foundry's defaults of `0`/`1` read back as Bright→Dark, which is "always on" in
+ * tiers.
  *
- * `exact` is the price of that restraint. Where the numbers do not already sit on the band edges
- * the dropdowns claim, the two disagree — a light reading *Dim down to Dark* with `min = 0.6` is
- * off at a scene darkness of 0.55, which is Dim. The hint says so rather than the control
- * pretending otherwise, and picking either dropdown resolves it.
+ * `exact` is the price of that restraint. Where the numbers do not sit on the band edges the
+ * dropdowns claim, the two disagree — a light reading *Dim down to Dark* with `min = 0.6` is off
+ * at a scene darkness of 0.55, which is Dim. The hint says so rather than the control pretending
+ * otherwise; picking either dropdown resolves it.
  */
 function activationOf(config, minValue, maxValue) {
   const storedFrom = storedTier(config?.activeFrom);
@@ -256,7 +245,7 @@ function activationOf(config, minValue, maxValue) {
 
   let from = storedFrom ?? tierFromDarkness(minValue);
   let to = storedTo ?? tierFromDarkness(maxValue);
-  // Brightest carries the *higher* TIER value, so this is `from >= to`, not the other way.
+  // Brightest carries the higher TIER value, so the valid relation is `from >= to`.
   if (from < to) [from, to] = [to, from];
 
   const want = rangeFor(from, to);
@@ -292,32 +281,30 @@ function fieldset(config, negative, activation, prefix) {
 
   return `
 <!--
-  \`pf1-lighting-rows\` is the shared layout scope, carried by this fieldset and by the preset
-  editor's window alike — see \`styles/config.css\`. \`MARKER\` stays the identity class: it is
-  what \`inject\` and \`sync\` find this element by, and what marks it as *ours inside somebody
-  else's sheet*. One says where it lives, the other says how a row of it lays out.
+  \`pf1-lighting-rows\` is the shared layout scope, carried by this fieldset and the preset
+  editor's window alike — see \`styles/config.css\`. \`MARKER\` is the identity class: what
+  \`inject\` and \`sync\` find this element by, and what marks it as this module's inside another
+  sheet. One says how a row lays out, the other says whose element it is.
 -->
 <fieldset class="${MARKER} pf1-lighting-rows">
   <legend>${esc(t("LightConfig.Legend"))}</legend>
 
   <!--
-    **The two values with no control of their own.** \`kind\` is a string the model reads and a
-    checkbox in the sheet; \`level\` is one number with two different sets of labels depending on
-    the branch. Both are carried by a hidden input that the visible controls drive, so exactly
-    one field of each name submits and no junk key ends up in the flag. The alternative — naming
-    the visible controls and letting the disabled one drop out — loses the value whenever the
-    branch that owns it is the hidden one.
+    Two values with no control of their own. \`kind\` is a string to the model and a checkbox in
+    the sheet; \`level\` is one number with two label sets depending on the branch. Both ride a
+    hidden input the visible controls drive, so exactly one field of each name submits and no junk
+    key reaches the flag. Naming the visible controls instead and letting the disabled one drop
+    out loses the value whenever the branch that owns it is the hidden one.
   -->
   <input type="hidden" name="${FLAG}.kind" value="${magical ? "magical" : "mundane"}">
   <input type="hidden" name="${FLAG}.level" value="${esc(config.level ?? 0)}" data-dtype="Number">
   <!--
-    \`cancelsDarkness\` is carried too, and for a sharper reason than the other two.
-    \`breaks()\` tests it **without** consulting \`kind\` (\`model/contest.mjs:235\`) — unlike
-    every other use of \`level\`, which is gated on the light being magical. So a light that was
-    once a *daylight* and has since been made mundane would go on annihilating darkness, and a
-    *disabled* checkbox does not fix that: \`FormDataExtended\` omits disabled fields by default,
-    so the stale \`true\` would simply persist in the flag. The hidden field always submits, and
-    \`sync\` writes \`magical && checked\` into it.
+    \`cancelsDarkness\` is carried too, for a sharper reason. \`breaks()\` tests it without
+    consulting \`kind\` (\`model/contest.mjs:235\`), unlike every other use of \`level\`, which is
+    gated on the light being magical — so a light once a *daylight* and since made mundane would
+    go on annihilating darkness. A disabled checkbox does not fix that: \`FormDataExtended\` omits
+    disabled fields, so the stale \`true\` persists in the flag. The hidden field always submits,
+    and \`sync\` writes \`magical && checked\` into it.
   -->
   <input type="hidden" name="${FLAG}.cancelsDarkness" data-dtype="Boolean"
          value="${magical && config.cancelsDarkness ? "true" : "false"}">
@@ -331,14 +318,14 @@ function fieldset(config, negative, activation, prefix) {
   </div>
 
   <!--
-    **The visible control is a dropdown; the field that submits is still core's checkbox.**
-    \`config.negative\` is a real \`LightData\` path, so the checkbox is moved into the hidden slot
-    below rather than replaced — a \`<select name="config.negative">\` would hand the document the
-    string "darkness", and a second field of that name would make \`FormDataExtended\` return an
-    array. The dropdown carries no name at all and writes the checkbox in \`wire\`.
+    Visible control is a dropdown; the field that submits is still core's checkbox.
+    \`config.negative\` is a real \`LightData\` path, so the checkbox moves into the hidden slot
+    below rather than being replaced — a \`<select name="config.negative">\` hands the document the
+    string "darkness", and a second field of that name makes \`FormDataExtended\` return an array.
+    The dropdown carries no name and writes the checkbox in \`wire\`.
 
-    Same arrangement as \`ui/scene-config.mjs\`'s light-level row, and for the same reason there:
-    the native control is kept alive and driven, never re-implemented.
+    Same arrangement as \`ui/scene-config.mjs\`'s light-level row: the native control is kept
+    alive and driven, never re-implemented.
   -->
   <div class="form-group">
     <label>${esc(t("LightConfig.Source"))}</label>
@@ -361,13 +348,12 @@ function fieldset(config, negative, activation, prefix) {
     </div>
 
     <!--
-      **Both are withheld when the light is mundane, not greyed** — mirroring the preset editor
-      (Hamilcarbarcas, 2026-08-29). They were pf1-lighting-dim + disabled, on the argument that
-      "a control that vanishes reads as a bug". That argument does not survive this sheet's own
-      behaviour: switching *Darkness source* already takes an entire branch away, so a control
-      vanishing when it stops applying is the idiom here rather than an exception to it.
-      Mechanically safe because neither carries a name attribute — both drive a hidden input that
-      always submits, so nothing is lost from FormDataExtended by their being gone.
+      Both withheld when the light is mundane, not greyed, mirroring the preset editor
+      (2026-08-29). Previously pf1-lighting-dim + disabled, on the argument that a vanishing
+      control reads as a bug — but switching *Darkness source* already takes a whole branch away,
+      so vanishing is this sheet's idiom rather than an exception to it. Safe because neither
+      carries a name attribute: both drive a hidden input that always submits, so nothing is lost
+      from FormDataExtended by their absence.
     -->
     <div data-needs="magical"${magical ? "" : ' class="pf1-lighting-off"'}>
       <div class="form-group">
@@ -410,12 +396,12 @@ function fieldset(config, negative, activation, prefix) {
         <input type="number" name="${FLAG}.steps" value="${esc(config.steps ?? 1)}"
                min="0" max="4" step="1">
         <!-- Forced, not left to wrapping: the natural break fell between "Max" and its dropdown,
-             stranding the label on the row above. Same reason as the preset editor's. -->
+             stranding the label on the row above. Same as the preset editor's. -->
         <span class="pf1-lighting-break"></span>
-        <!-- "Max", not "Maximum" (Hamilcarbarcas, 2026-08-28). Three controls shared this row and the
-             long label was taking the width the dropdown needed to show its own value. Kept even
-             though the break now gives it its own line: the two live in lang/en.json as
-             LightConfig.Max and Presets.Maximum and are free to differ. -->
+        <!-- "Max", not "Maximum" (2026-08-28). Three controls shared this row and the long label
+             took the width the dropdown needed for its own value. Kept even though the break now
+             gives it its own line: lang/en.json holds LightConfig.Max and Presets.Maximum
+             separately, so the two are free to differ. -->
         <label>${esc(t("LightConfig.Max"))}</label>
         ${select(`${FLAG}.cap`, tierChoices(), config.cap ?? emitTier, { numeric: true })}
       </div>
@@ -435,14 +421,14 @@ function fieldset(config, negative, activation, prefix) {
     </div>
 
     <!--
-      **One group, two rows — *Effect* owns the radius and the floor**, mirroring the preset
-      editor. Neither is a decision separate from what the darkness does: the floor is the bottom
-      of the same transform, and a darkness has exactly one radius. Both lose their own hints;
-      the floor's is folded into this group's, where it can also say why the control disappears
-      under *set level to*.
+      One group, two rows: *Effect* owns the radius and the floor, mirroring the preset editor.
+      Neither is a decision separate from what the darkness does — the floor is the bottom of the
+      same transform, and a darkness has exactly one radius. Both lose their own hints; the
+      floor's folds into this group's, where it can also say why the control disappears under
+      *set level to*.
 
-      The radius is still the **relocated native input** — syncRadii and relocate find the slot
-      by [data-slot="dim-dark"], so moving the span in the DOM costs them nothing.
+      The radius is still the relocated native input. syncRadii and relocate find the slot by
+      [data-slot="dim-dark"], so moving the span in the DOM costs them nothing.
     -->
     <div class="form-group slim">
       <label>${esc(t("LightConfig.Effect"))}</label>
@@ -478,18 +464,17 @@ ${activation ? activationGroup(activation) : ""}
  * The activation range, in tiers. DESIGN.md §10.4.1.
  *
  * @remarks
- * **Outside both branches**, because Foundry gates a darkness source on the same field
- * (`light.mjs:148-159` runs before the source is built, so it applies whichever kind this is).
+ * Outside both branches, because Foundry gates a darkness source on the same field
+ * (`light.mjs:148-159` runs before the source is built, so it applies to either kind).
  *
  * The two hidden slots sit outside `.form-fields` deliberately: `styles/config.css` gives
- * `.form-fields > span[data-slot]` `display: contents`, which would override the `hidden`
- * attribute and put the raw 0–1 numbers back on screen beside the dropdowns.
+ * `.form-fields > span[data-slot]` `display: contents`, which overrides the `hidden` attribute
+ * and puts the raw 0–1 numbers back on screen beside the dropdowns.
  */
 function activationGroup({ from, to, stored, exact }) {
-  // **Disabled until the range is this control's to own.** `FormDataExtended` omits disabled
-  // fields, so an untouched light that has never been set through here submits no flag at all
-  // and stays untouched — the same restraint §10.5.1 applies to scenes. `syncActivation` enables
-  // them the moment a dropdown moves.
+  // Disabled until the range is this control's to own. `FormDataExtended` omits disabled fields,
+  // so a light never set through here submits no flag and stays untouched — the restraint §10.5.1
+  // applies to scenes. `syncActivation` enables them the moment a dropdown moves.
   const off = stored ? "" : " disabled";
   return `
   <div class="form-group slim">
@@ -504,9 +489,8 @@ function activationGroup({ from, to, stored, exact }) {
     <input type="hidden" name="${FLAG}.activeFrom" value="${from}" data-dtype="Number"${off}>
     <input type="hidden" name="${FLAG}.activeTo" value="${to}" data-dtype="Number"${off}>
     <p class="hint">${t("LightConfig.Activation.Hint")}${
-      // Only for a light this control has never owned. A *stored* range that has drifted is
-      // snapped by the first `sync`, so saying it was set by hand would be describing a state
-      // the sheet has already corrected.
+      // Only for a light this control has never owned. A stored range that has drifted is snapped
+      // by the first `sync`, so "set by hand" would describe a state already corrected.
       stored || exact ? "" : t("LightConfig.Activation.HandSet")
     }</p>
   </div>`;
@@ -524,12 +508,11 @@ function rowOf(input) {
 }
 
 /**
- * Move a native input into one of our slots and hide the row it came from.
+ * Move a native input into one of the fieldset's slots and hide the row it came from.
  *
  * @remarks
- * The row is hidden rather than removed. Core built it and core may re-render around it, and a
- * missing node is the sort of thing that turns a cosmetic clash into an exception inside
- * someone else's code.
+ * Hidden rather than removed. Core built the row and may re-render around it, and a missing node
+ * turns a cosmetic clash into an exception inside someone else's code.
  */
 function relocate(root, name, slot) {
   const input = root.querySelector(`[name="${name}"]`);
@@ -544,9 +527,8 @@ function relocate(root, name, slot) {
  * Toggle a group on or off.
  *
  * @remarks
- * A class, not `hidden` and not `style.display`. `hidden` is trivially overridden by any
- * `display` rule the sheet's own stylesheet carries, and writing inline styles means fighting
- * whatever set them last.
+ * A class, not `hidden` and not `style.display`. `hidden` loses to any `display` rule the sheet's
+ * own stylesheet carries, and inline styles mean fighting whatever set them last.
  */
 function show(node, visible) {
   if (node) node.classList.toggle("pf1-lighting-off", !visible);
@@ -557,9 +539,9 @@ function show(node, visible) {
  * fields carry.
  *
  * @remarks
- * Idempotent and cheap, and called after every change rather than only after the ones that
- * matter. The alternative — working out which control affects which other one — is a second
- * dependency graph to keep in step with the first.
+ * Idempotent and cheap, so it runs after every change rather than only the ones that matter.
+ * Working out which control affects which other one is a second dependency graph to keep in step
+ * with the first.
  */
 function sync(root, prefix, changed) {
   const fieldsetEl = root.querySelector(`.${MARKER}`);
@@ -568,9 +550,9 @@ function sync(root, prefix, changed) {
   syncActivation(fieldsetEl, prefix, changed);
 
   const negative = root.querySelector(`[name="${prefix}.negative"]`)?.checked === true;
-  // The checkbox is the truth and the dropdown is its face, so the dropdown is written *from* it
-  // rather than the other way about. That is what makes a preset flipping `negative`, or core
-  // re-rendering the sheet, land on the visible control without a second code path.
+  // The checkbox is the truth, the dropdown its face, so the dropdown is written from it and not
+  // the reverse. That is what lands a preset flipping `negative`, or a core re-render, on the
+  // visible control without a second code path.
   const typeSelect = fieldsetEl.querySelector(`select[data-drives="${prefix}.negative"]`);
   if (typeSelect) typeSelect.value = negative ? "darkness" : "light";
 
@@ -581,29 +563,28 @@ function sync(root, prefix, changed) {
   syncRadii(fieldsetEl, prefix, negative);
 
   // The emitter half. `level` and `cancelsDarkness` mean nothing on a mundane light, so they are
-  // **taken away** rather than greyed (2026-08-29, mirroring the preset editor). The old comment
-  // here argued that "a control that vanishes reads as a bug"; the branch switch two lines above
-  // does exactly that with a whole half of the fieldset, so vanishing is this sheet's idiom.
+  // taken away rather than greyed (2026-08-29, mirroring the preset editor) — the branch switch
+  // two lines above does the same with a whole half of the fieldset.
   //
-  // No `disabled` toggle any more, and none is needed: neither control carries a `name`. Both
-  // drive a hidden input that always submits, so `FormDataExtended` sees the same fields either
-  // way — which is what makes hiding safe here where it would not be for a named field.
+  // No `disabled` toggle, and none needed: neither control carries a `name`. Both drive a hidden
+  // input that always submits, so `FormDataExtended` sees the same fields either way. That is
+  // what makes hiding safe here where it would not be for a named field.
   const magical = fieldsetEl.querySelector(`[data-drives="${FLAG}.kind"]`)?.checked === true;
   setHidden(fieldsetEl, `${FLAG}.kind`, magical ? "magical" : "mundane");
   for (const group of fieldsetEl.querySelectorAll('[data-needs="magical"]')) {
     show(group, magical);
   }
 
-  // `&& magical`, not just the checkbox — see the markup's note. This is the one flag the model
-  // reads without first asking whether the light is magical at all.
+  // `&& magical`, not just the checkbox — see the markup's note. The one flag the model reads
+  // without first asking whether the light is magical.
   const daylight =
     magical &&
     fieldsetEl.querySelector(`[data-drives="${FLAG}.cancelsDarkness"]`)?.checked === true;
   setHidden(fieldsetEl, `${FLAG}.cancelsDarkness`, daylight ? "true" : "false");
 
-  // **The visible branch owns `level`.** Both selects drive the same hidden field, so the one
-  // the GM can actually see is the one whose value counts, and the other is brought into line
-  // so it reads correctly if the branch is switched.
+  // The visible branch owns `level`. Both selects drive the same hidden field, so the one the GM
+  // can see is the one whose value counts; the other is brought into line so it reads correctly
+  // if the branch is switched.
   const owner = (negative ? darkBranch : lightBranch)?.querySelector(
     `[data-drives="${FLAG}.level"]`
   );
@@ -620,12 +601,12 @@ function sync(root, prefix, changed) {
     show(node, node.dataset.effect === op);
   }
 
-  // **Under `clamp` the target IS the floor, and the model does not make that true by itself.**
+  // Under `clamp` the target is the floor, and the model does not make that true by itself.
   // `applyTransform` ignores `floor` on that branch (correctly — clamping toward a named tier
   // needs no lower bound) while `resolveTier` applies `floor` separately at thresholding. So a
-  // darkness *set* to Supernatural Dark yields B = 0, resolves through the default floor of
-  // Dark, and comes out Dark. One line in the writer, rather than teaching the model a rule it
-  // has no reason to hold. See §10.4.
+  // darkness set to Supernatural Dark yields B = 0, resolves through the default floor of Dark,
+  // and comes out Dark. One line in the writer beats teaching the model a rule it has no reason
+  // to hold. See §10.4.
   if (op === "clamp") {
     const max = fieldsetEl.querySelector(`[name="${FLAG}.transform.max"]`)?.value;
     const floor = fieldsetEl.querySelector(`[name="${FLAG}.floor"]`);
@@ -637,26 +618,26 @@ function sync(root, prefix, changed) {
  * Drive `darkness.min`/`max` from the two tier dropdowns.
  *
  * @remarks
- * The dropdowns carry no `name`, so nothing but the derived numbers and the two flag carriers
- * reach `FormDataExtended`. The write happens here rather than on submit because
- * `AmbientLightConfig#_onChangeForm` rebuilds a `FormDataExtended` from the live DOM on **every**
- * change and previews it (`ambient-light-config.mjs:163-169`) — our fieldset's listener is inside
- * the form's, so the numbers are already in place by the time core reads them, and the preview
- * light goes out on screen the moment the GM picks a range that excludes the current darkness.
+ * The dropdowns carry no `name`, so only the derived numbers and the two flag carriers reach
+ * `FormDataExtended`. Written here rather than on submit because
+ * `AmbientLightConfig#_onChangeForm` rebuilds a `FormDataExtended` from the live DOM on every
+ * change and previews it (`ambient-light-config.mjs:163-169`); this fieldset's listener is inside
+ * the form's, so the numbers are in place before core reads them and the preview light goes out
+ * the moment the GM picks a range excluding the current darkness.
  *
- * **Ordering is enforced here, not left to the schema.** `LightData` refuses
- * `darkness.max < darkness.min` outright (`common/data/data.mjs:68`), which as a failure mode is
- * a validation error on save rather than anything the GM can see coming. Brightest carries the
- * higher `TIER` value, so the valid relation is `from >= to`, and whichever select the GM just
- * moved is the one that keeps its value.
+ * Ordering is enforced here, not left to the schema. `LightData` refuses
+ * `darkness.max < darkness.min` outright (`common/data/data.mjs:68`), which surfaces as a
+ * validation error on save rather than anything the GM sees coming. Brightest carries the higher
+ * `TIER` value, so the valid relation is `from >= to`, and whichever select the GM just moved
+ * keeps its value.
  */
 function syncActivation(fieldsetEl, prefix, changed) {
   const fromSel = fieldsetEl.querySelector(`[data-drives="${FLAG}.activeFrom"]`);
   const toSel = fieldsetEl.querySelector(`[data-drives="${FLAG}.activeTo"]`);
   if (!fromSel || !toSel) return;
 
-  // Moving either dropdown is the GM adopting the control; from then on the numbers are ours to
-  // keep in step, including on the sheet's first `sync` after a later re-render.
+  // Moving either dropdown is the GM adopting the control; from then on the numbers are kept in
+  // step here, including on the sheet's first `sync` after a later re-render.
   if (changed === fromSel || changed === toSel) fieldsetEl.dataset.activation = "set";
   if (fieldsetEl.dataset.activation !== "set") return;
 
@@ -688,28 +669,25 @@ function syncActivation(fieldsetEl, prefix, changed) {
  * how big it is.
  *
  * @remarks
- * **A darkness has one radius, and Foundry decides which one it is.**
- * `PointDarknessSource#_initialize` collapses the pair on every initialise
- * (`point-darkness-source.mjs:117`):
+ * A darkness has one radius, and Foundry decides which. `PointDarknessSource#_initialize`
+ * collapses the pair on every initialise (`point-darkness-source.mjs:117`):
  *
  * ```js
  * this.data.radius = this.data.bright = this.data.dim = Math.max(this.data.dim ?? 0, this.data.bright ?? 0);
  * ```
  *
- * So the document's two values are meaningless for a suppressor except through their maximum,
- * and a control bound to `dim` alone would be **lying** whenever `bright` exceeded it. That is
- * not hypothetical: `{bright: 60, dim: 0}` is the natural way to author *bright out to here*
- * (see `ramp.normaliseEmission`), and flipping such a light to a darkness would give a 60-foot
- * darkness over a Radius field reading 0.
+ * So for a suppressor the document's two values mean nothing except through their maximum, and a
+ * control bound to `dim` alone lies whenever `bright` exceeds it. Not hypothetical:
+ * `{bright: 60, dim: 0}` is the natural way to author *bright out to here* (see
+ * `ramp.normaliseEmission`), and flipping such a light to a darkness gives a 60-foot darkness
+ * over a Radius field reading 0.
  *
- * The input is **moved** between the two branches rather than duplicated, for the same reason
- * the natives were moved out of core's rows in the first place: two fields sharing a name yield
- * an array.
+ * The input moves between branches rather than being duplicated, for the reason the natives were
+ * moved out of core's rows: two fields sharing a name yield an array.
  *
- * `bright` is then clamped down to it — **only when it exceeds**, which is the one case that
- * needs correcting. An ordinary light has `bright <= dim`, so flipping to a darkness and back
- * leaves its two radii exactly as they were, and the emission settings survive the round trip
- * as designed.
+ * `bright` is then clamped down to it, only when it exceeds — the one case needing correction. An
+ * ordinary light has `bright <= dim`, so flipping to a darkness and back leaves both radii as
+ * they were and the emission settings survive the round trip.
  */
 function syncRadii(fieldsetEl, prefix, negative) {
   const dim = fieldsetEl.querySelector(`[name="${prefix}.dim"]`);
@@ -754,9 +732,9 @@ function fill(root, name, prefix) {
     put(`${FLAG}.${key}`, value);
   }
 
-  // The driven controls have to be set from the other direction: they carry no `name`, so the
-  // loop above never reaches them, and `sync` reads *them* to write the hidden fields — so
-  // leaving them stale would undo the preset on the very next call.
+  // The driven controls need setting from the other direction: they carry no `name`, so the loop
+  // above never reaches them, and `sync` reads them to write the hidden fields — leaving them
+  // stale would undo the preset on the next call.
   const magical = preset.config.kind === "magical";
   for (const driver of root.querySelectorAll(`[data-drives="${FLAG}.kind"]`)) {
     driver.checked = magical;
@@ -774,8 +752,8 @@ function fill(root, name, prefix) {
     for (const driver of root.querySelectorAll(`[data-drives="${FLAG}.${key}"]`)) {
       driver.value = preset.config[key];
     }
-    // Choosing that preset is the GM adopting the range, so the carriers have to come off
-    // `disabled` — `put` above set their values but a disabled field still does not submit.
+    // Choosing that preset is the GM adopting the range, so the carriers come off `disabled` —
+    // `put` above set their values, but a disabled field still does not submit.
     const fieldsetEl = root.querySelector(`.${MARKER}`);
     if (fieldsetEl) fieldsetEl.dataset.activation = "set";
   }
@@ -793,13 +771,13 @@ function fill(root, name, prefix) {
  * Wire the fieldset's own behaviour.
  *
  * @remarks
- * One delegated listener on the fieldset rather than one per control, because the controls come
- * and go with the branch and a per-control listener would have to be re-bound on every sync.
+ * One delegated listener on the fieldset rather than one per control: the controls come and go
+ * with the branch, so per-control listeners would need re-binding on every sync.
  *
- * **`change` events are re-dispatched, not synthesised into a preview call.** Core's
- * `_onChangeForm` is bound to the form and does the previewing; letting the event bubble to it
- * is what makes a preset selection preview exactly like a hand edit, including
- * `AmbientLightConfig`'s re-render when `config.negative` moves.
+ * `change` events are re-dispatched, not synthesised into a preview call. Core's `_onChangeForm`
+ * is bound to the form and does the previewing; letting the event bubble to it makes a preset
+ * selection preview exactly like a hand edit, `AmbientLightConfig`'s re-render on a
+ * `config.negative` move included.
  */
 function wire(root, prefix) {
   const fieldsetEl = root.querySelector(`.${MARKER}`);
@@ -814,20 +792,19 @@ function wire(root, prefix) {
         fill(root, target.value, prefix);
         sync(root, prefix);
         // Let core preview the whole new state. Dispatched from the `negative` checkbox because
-        // that is the name `AmbientLightConfig#_onChangeForm` tests when deciding to re-render
-        // the animation and advanced parts, and a preset can flip it.
+        // that is the name `AmbientLightConfig#_onChangeForm` tests when deciding to re-render the
+        // animation and advanced parts, and a preset can flip it.
         const negative = root.querySelector(`[name="${prefix}.negative"]`);
         negative?.dispatchEvent(new Event("change", { bubbles: true }));
       }
       return;
     }
 
-    // **The *Type* dropdown writes the checkbox and then gets out of the way.** The event is
-    // dispatched from the checkbox rather than the change previewed here, because core decides
-    // whether to re-render the animation and advanced parts by testing `event.target.name`
-    // against `config.negative` (`ambient-light-config.mjs:169`) — a name only the real field
-    // has. Letting it bubble is what makes picking *Darkness* from this dropdown behave exactly
-    // as ticking the box did, and the re-entered event drives `sync` for us.
+    // The *Type* dropdown writes the checkbox and gets out of the way. The event is dispatched
+    // from the checkbox rather than previewed here because core decides whether to re-render the
+    // animation and advanced parts by testing `event.target.name` against `config.negative`
+    // (`ambient-light-config.mjs:169`) — a name only the real field has. Bubbling makes picking
+    // *Darkness* behave exactly as ticking the box did, and the re-entered event drives `sync`.
     if (target.dataset?.drives === `${prefix}.negative`) {
       const box = root.querySelector(`[name="${prefix}.negative"]`);
       if (box) {
@@ -853,21 +830,22 @@ function wire(root, prefix) {
       if (preset) preset.value = CUSTOM;
     }
 
-    // Activation is deliberately **not** in `GOVERNED`. It says where this particular light is
-    // placed and when the GM wants it lit, not what kind of thing it is — the same argument the
-    // radii are left ungoverned on. A torch that only burns after dark is still a torch.
+    // Activation is deliberately not in `GOVERNED`. It says when the GM wants this particular
+    // light lit, not what kind of thing it is — the argument the radii are left ungoverned on. A
+    // torch that only burns after dark is still a torch.
     sync(root, prefix, target);
   });
 
-  // The `negative` checkbox lives in our fieldset now but belongs to core, so its own change
-  // needs to reach `sync` as well. It bubbles through the same listener — nothing extra needed.
+  // The `negative` checkbox now lives in this fieldset but belongs to core, so its own change
+  // needs to reach `sync` too. It bubbles through the same listener — nothing extra needed.
 }
 
 /** Build and insert the fieldset. Idempotent. */
 function inject(app, element, prefix) {
   const root = element instanceof HTMLElement ? element : element?.[0];
   if (!root) return;
-  // Re-renders of other parts leave ours standing; a full render replaces it. Either way, one.
+  // Re-renders of other parts leave this fieldset standing; a full render replaces it. Either
+  // way, one.
   if (root.querySelector(`.${MARKER}`)) {
     sync(root, prefix);
     return;
@@ -880,9 +858,9 @@ function inject(app, element, prefix) {
   const config = configOf(app);
   const negative = root.querySelector(`[name="${prefix}.negative"]`)?.checked === true;
 
-  // **Only where core drew the fields.** `templates/scene/token/light.hbs` has no activation
-  // range at all, though `LightData` carries one — so on a token sheet there is nothing to
-  // relocate and the row is left out rather than rendered with nothing behind it.
+  // Only where core drew the fields. `templates/scene/token/light.hbs` has no activation range,
+  // though `LightData` carries one — so on a token sheet there is nothing to relocate and the row
+  // is left out rather than rendered with nothing behind it.
   const minInput = root.querySelector(`[name="${prefix}.darkness.min"]`);
   const maxInput = root.querySelector(`[name="${prefix}.darkness.max"]`);
   // Empty means the field's own initial, not zero — `darkness.max` initialises to 1, and
@@ -901,14 +879,14 @@ function inject(app, element, prefix) {
   const fieldsetEl = root.querySelector(`.${MARKER}`);
   relocate(root, `${prefix}.bright`, fieldsetEl.querySelector('[data-slot="bright"]'));
   relocate(root, `${prefix}.dim`, fieldsetEl.querySelector('[data-slot="dim"]'));
-  // Out of sight, not out of the form: it still submits, still previews, and is still what
-  // everything here reads to decide which branch is showing.
+  // Out of sight, not out of the form: it still submits, still previews, and is still what decides
+  // which branch is showing.
   relocate(root, `${prefix}.negative`, fieldsetEl.querySelector('[data-slot="negative"]'));
   if (activation) {
     // Both live in one core row, so the second `relocate` re-hides a row already hidden.
     relocate(root, `${prefix}.darkness.min`, fieldsetEl.querySelector('[data-slot="darkness-min"]'));
     relocate(root, `${prefix}.darkness.max`, fieldsetEl.querySelector('[data-slot="darkness-max"]'));
-    // A light already set through this control is ours to keep in step — including snapping a
+    // A light already set through this control is kept in step from here — including snapping a
     // range left stale by a tier-table change the resync pass did not reach.
     if (activation.stored) fieldsetEl.dataset.activation = "set";
   }
@@ -925,10 +903,9 @@ function inject(app, element, prefix) {
  * Rewrite `darkness.min`/`max` on every light that carries an activation tier.
  *
  * @remarks
- * The same obligation §10.5.1 puts on scenes, for the same reason and with the same guard: the
- * tier is the GM's decision and the numbers are derived output, so moving Dim from 0.67 to 0.80
- * has to carry every light set to *Dim down to Dark* along with it. Lights with no flag are
- * skipped — they were never set through this control.
+ * §10.5.1's obligation on scenes, same reason and same guard: the tier is the GM's decision and
+ * the numbers are derived, so moving Dim from 0.67 to 0.80 carries every light set to *Dim down
+ * to Dark* with it. Lights with no flag are skipped — never set through this control.
  *
  * `isWriter` is shared with `ui/scene-config.mjs` rather than reimplemented: a world setting's
  * `onChange` fires on every connected client, so without it players attempt a write they are
@@ -1021,12 +998,12 @@ export function registerHooks() {
     }
   });
 
-  // **Our fields do not preview** — `registry.usable()` excludes previews, because a drag
-  // creates a second live source and counting both made the model resolve a scene that did not
-  // exist (`model/registry.mjs:190`). The config sheet's preview is the same kind of clone, so
-  // the model only sees our values once they are committed, and it has to be told to look.
-  // `affectsRegistry` already tests our flag namespace, but a flag-only update fires no
-  // `refreshAmbientLight`, so the invalidation is made explicit here.
+  // These fields do not preview. `registry.usable()` excludes previews because a drag creates a
+  // second live source, and counting both made the model resolve a scene that did not exist
+  // (`model/registry.mjs:190`). The config sheet's preview is the same kind of clone, so the model
+  // sees these values only once committed — and has to be told to look. `affectsRegistry` already
+  // tests the flag namespace, but a flag-only update fires no `refreshAmbientLight`, so the
+  // invalidation is explicit here.
   Hooks.on("closeAmbientLightConfig", () => registry.invalidate());
   Hooks.on("closeTokenApplication", () => registry.invalidate());
 

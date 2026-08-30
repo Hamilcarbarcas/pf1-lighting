@@ -1,16 +1,14 @@
 /**
  * Vision as perception — DESIGN.md §4.8, §8.2 step 4.
  *
- * The model says how bright a point is. This says what that means for *seeing*.
+ * The model says how bright a point is. This says what that means for seeing.
  *
- * Those are separate questions and Foundry answers them in separate places, which is why
- * getting the lighting right left a visible gap: a token standing in a *darkness* was
- * still plainly visible, because Foundry's light-perception test asks
- * `canvas.effects.testInsideLight(point)` — is this point inside some light source's
- * polygon — and we deliberately never clip `source.shape` (§6.2.4). The raw torch polygon
- * still covers the darkness, so the answer stayed yes no matter what the renderer drew.
- *
- * ## The mapping
+ * Separate questions, answered in separate places by Foundry, which is why getting the lighting
+ * right left a visible gap: a token standing in a darkness was still plainly visible, because
+ * Foundry's light-perception test asks `canvas.effects.testInsideLight(point)` — is this point
+ * inside some light source's polygon — and `source.shape` is deliberately never clipped (§6.2.4).
+ * The raw torch polygon still covers the darkness, so the answer stayed yes whatever the renderer
+ * drew.
  *
  * | Foundry                | PF1                                  | Here                     |
  * | ---------------------- | ------------------------------------ | ------------------------ |
@@ -18,19 +16,17 @@
  * | `basicSight`           | darkvision (PF1 folds blindsight in) | any tier above Supernatural Dark, within range |
  * | `seeInvisibility`      | *see invisibility* / *true seeing*   | in range, or lit         |
  *
- * The tier thresholds are the whole ruleset. Ordinary sight works down to dim light and
- * stops at Dark; darkvision ignores light level entirely but is defeated by *supernatural*
- * darkness, which is exactly the distinction §3.1's fifth tier exists to carry.
+ * The tier thresholds are the whole ruleset. Ordinary sight works down to dim light and stops at
+ * Dark; darkvision ignores light level entirely but is defeated by supernatural darkness, the
+ * distinction §3.1's fifth tier exists to carry.
  *
- * ## Where the observer enters
+ * `perceivedTier` takes an observer and, since the umbra landing (§4.3), uses it: the god's-eye
+ * tier is clamped to whatever the darkness between the two allows. That parameter was threaded
+ * through three detection modes before there was anything to put in it, which is why the change was
+ * four lines rather than a refactor.
  *
- * `perceivedTier` takes an observer, and as of the umbra landing (§4.3) it uses it: the
- * god's-eye tier is clamped to whatever the darkness between the two of them allows. That
- * parameter was threaded through three detection modes before there was anything to put in
- * it, which is why this change is four lines rather than a refactor.
- *
- * It remains the seam for §4.4/§4.5 (low-light vision, darkvision as a tier remap), which
- * are the other two observer terms and enter the same way.
+ * It remains the seam for §4.4/§4.5 — low-light vision and darkvision as a tier remap — the other
+ * two observer terms, entering the same way.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -52,18 +48,17 @@ let lastValue = null;
  * Is the perception layer active?
  *
  * @remarks
- * Gated on native suppression being disabled as well as on its own setting, and not as a
- * convenience. With native suppression on, Foundry has already clipped light polygons at
- * darkness boundaries (§4.1.1 path 1) and blinded any token standing in one (path 4), so
- * the model is reading a baseline that has had the answer applied to it already. Deciding
- * perception from that would double-count.
+ * Gated on native suppression being disabled as well as on its own setting, not as a convenience:
+ * with native suppression on, Foundry has already clipped light polygons at darkness boundaries
+ * (§4.1.1 path 1) and blinded any token standing in one (path 4), so the model reads a baseline
+ * with the answer already applied. Deciding perception from that double-counts.
  */
 export function isPerceptionEnabled() {
-  // **Both reads are cached** (`settings-cache.mjs`). This is the hottest settings read in the
-  // module by a wide margin — every `_testPoint` and `_testLOS` of every detection mode calls it,
-  // and the patched `testInsideLight` calls it again, so a single visibility refresh over ~1,000
-  // test points made thousands of `game.settings.get` calls at 14.7 µs each. Measured 2026-08-28
-  // at ~61 ms per refresh, which was the largest single cost in the module.
+  // Both reads are cached (`settings-cache.mjs`). This is the hottest settings read in the module
+  // by a wide margin — every `_testPoint` and `_testLOS` of every detection mode calls it, and the
+  // patched `testInsideLight` calls it again, so one visibility refresh over ~1,000 test points
+  // made thousands of `game.settings.get` calls at 14.7 µs each. Measured 2026-08-28 at ~61 ms per
+  // refresh, the largest single cost in the module.
   if (!flag(SETTING_PERCEPTION)) return false;
   return isNativeSuppressionDisabled();
 }
@@ -76,9 +71,8 @@ export function registerSettings() {
       "polygons: ordinary sight needs dim light or better, darkvision works in darkness but not in " +
       "supernatural darkness. Requires 'Disable native darkness suppression'.",
     scope: "world",
-    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
-    // switch was a development bisection aid and the module is past needing one in the menu.
-    // Reachable from the console — see `game.pf1Lighting.settings`.
+    // No control surface (2026-08-26): the switch was a development bisection aid.
+    // Functionality stays, reachable from the console — see `game.pf1Lighting.settings`.
     config: false,
     type: Boolean,
     // Flipped from `false` with the control. See `suppression.mjs` for the reasoning.
@@ -117,12 +111,12 @@ let currentObserver = null;
  * Run `fn` with `observer` as the creature doing the perceiving.
  *
  * @remarks
- * An ambient rather than an argument because the call we most need to influence is
+ * An ambient rather than an argument, because the call most in need of influence is
  * `canvas.effects.testInsideLight(point)`, made from inside core's
- * `DetectionModeLightPerception#_testPoint` with no way to pass anything down. Wrapping
- * the detection-mode call gives our `testInsideLight` override the observer that core
- * never had a slot for, without reimplementing the chain above it — which matters,
- * because `limits` also mixes into `_testPoint` and its range clipping has to survive.
+ * `DetectionModeLightPerception#_testPoint` with no way to pass anything down. Wrapping the
+ * detection-mode call gives the `testInsideLight` override the observer core never had a slot for,
+ * without reimplementing the chain above it — which matters, `limits` also mixing into
+ * `_testPoint` with range clipping that has to survive.
  *
  * @template T
  * @param {PointVisionSource|null} observer
@@ -152,11 +146,10 @@ export function observer() {
  * @type {{clampAt: (point: object, source: object) => number|null}|null}
  *
  * @remarks
- * Injected rather than imported because `vision/umbra.mjs` already imports *this* file — it
- * needs `darkSightRange` to decide whether an observer is subject to umbra at all. Importing
- * back would make a cycle between two peers, which ES modules tolerate but which puts the
- * correctness of both on the order the bundler happens to evaluate them in. Same seam, same
- * reason, as `suppression.setVisionModel`.
+ * Injected rather than imported because `vision/umbra.mjs` already imports this file, needing
+ * `darkSightRange` to decide whether an observer is subject to umbra at all. Importing back makes a
+ * cycle between two peers, which ES modules tolerate but which puts the correctness of both on
+ * evaluation order. Same seam and reason as `suppression.setVisionModel`.
  */
 let umbraModel = null;
 
@@ -174,16 +167,14 @@ export function setUmbraModel(model) {
  * One frame's worth of point queries.
  *
  * @remarks
- * `evaluate()` costs 0.0025 ms (§9.7), which is cheap right up until visibility testing
- * multiplies it: every token, times its ~9 test points, times each of its sight modes,
- * every time vision refreshes. The same point is asked about repeatedly within a single
- * pass — `lightPerception` and `seeInvisibility` test identical points — so a memo keyed
- * on the point is nearly free and removes most of the multiplier.
+ * `evaluate()` costs 0.0025 ms (§9.7), cheap until visibility testing multiplies it: every token,
+ * times its ~9 test points, times each of its sight modes, every vision refresh. The same point is
+ * asked about repeatedly within one pass — `lightPerception` and `seeInvisibility` test identical
+ * points — so a memo keyed on the point is nearly free and removes most of the multiplier.
  *
- * Cleared on the next animation frame rather than on an invalidation signal. Within one
- * frame the scene cannot change, which makes the cache trivially correct without having
- * to enumerate what would dirty it; and a stale entry could never outlive the frame that
- * created it even if something did.
+ * Cleared on the next animation frame rather than on an invalidation signal. Within one frame the
+ * scene cannot change, making the cache trivially correct without enumerating what would dirty it,
+ * and a stale entry could not outlive the frame that created it even if something did.
  */
 const memo = new Map();
 let memoScheduled = false;
@@ -210,11 +201,10 @@ export function invalidate() {
  * @returns {number} A {@link TIER} value
  */
 export function perceivedTier(point, obs = currentObserver) {
-  // The observer is part of the key because the answer now genuinely differs between two
-  // creatures standing in different places: umbra is a property of the *path*, not of the
-  // point. It was in the key before there was anything to distinguish, on the reasoning that
-  // a cache silently sharing entries between observers would present as a rules bug rather
-  // than as a cache bug.
+  // The observer is part of the key because the answer genuinely differs between two creatures
+  // standing in different places: umbra is a property of the path, not the point. It was in the key
+  // before there was anything to distinguish, on the reasoning that a cache silently sharing
+  // entries between observers would present as a rules bug rather than a cache bug.
   const key = `${obs?.sourceId ?? ""}|${Math.round(point.x)}|${Math.round(point.y)}|${Math.round(point.elevation ?? 0)}`;
 
   const hit = memo.get(key);
@@ -227,21 +217,21 @@ export function perceivedTier(point, obs = currentObserver) {
 }
 
 /**
- * The tier as the **current view** would perceive it, or `null` in god's eye.
+ * The tier as the current view would perceive it, or `null` in god's eye.
  *
  * @remarks
- * `perceivedTier` needs an observer, and `currentObserver` is only set while a detection mode is
- * on the stack — so anything asking outside a visibility pass (the readout, a console probe) got
- * the unclamped god's-eye answer and no indication that it had. That is why the tooltip went on
- * reporting a lit room at its own tier while the screen, correctly, showed it shadowed.
+ * `perceivedTier` needs an observer, and `currentObserver` is set only while a detection mode is on
+ * the stack — so anything asking outside a visibility pass (the readout, a console probe) got the
+ * unclamped god's-eye answer with no indication of it. That is why the tooltip reported a lit room
+ * at its own tier while the screen correctly showed it shadowed.
  *
- * §5.3's rule decides the multi-observer case and it is `max`: a point shadowed for one creature
- * and lit for another is **lit**, so the least restrictive observer wins. That also matches what
- * is on screen, which is the union of what the party can see.
+ * §5.3 decides the multi-observer case, and the rule is `max`: a point shadowed for one creature
+ * and lit for another is lit, the least restrictive observer winning. That matches the screen,
+ * which shows the union of what the party can see.
  *
  * `null` rather than the raw tier when there are no active vision sources, so a caller can tell
- * "nothing is clamping this" from "something looked and found no clamp" — in god's eye there is
- * no observer, no path, and so no umbra at all (§5.4).
+ * nothing-is-clamping-this from something-looked-and-found-no-clamp — in god's eye there is no
+ * observer, no path, and so no umbra at all (§5.4).
  *
  * @param {{x: number, y: number, elevation?: number}} point
  * @returns {number|null}
@@ -259,11 +249,10 @@ export function viewerTier(point) {
  * Lower a god's-eye tier to what this observer can actually make out at that point.
  *
  * @remarks
- * **The clamp only ever darkens.** Umbra answers "what is between us", and nothing between
- * two points can make the far one brighter. Guarding on `<` rather than assigning means a
- * region whose clamp is *above* the point's own tier — a Dim umbra falling across ground that
- * is already Dark — correctly leaves it alone, which is the case §4.3's "clamp, do not
- * transform" amendment exists to get right.
+ * The clamp only ever darkens. Umbra answers what lies between two points, and nothing between them
+ * can make the far one brighter. Guarding on `<` rather than assigning leaves alone a region whose
+ * clamp is above the point's own tier — a Dim umbra falling across ground already Dark — the case
+ * §4.3's clamp-do-not-transform amendment exists to get right.
  */
 function clampToUmbra(tier, point, obs) {
   if (!obs || !umbraModel) return tier;
@@ -272,11 +261,11 @@ function clampToUmbra(tier, point, obs) {
 }
 
 /**
- * How far this creature sees with **no regard to light level at all**, in pixels.
+ * How far this creature sees with no regard to light level at all, in pixels.
  *
  * @remarks
- * Two PF1 senses grant the same faculty and differ only in reach, so they are one function
- * rather than two predicates:
+ * Two PF1 senses grant the same faculty and differ only in reach, so this is one function rather
+ * than two predicates:
  *
  * | Sense | Reach | Notes |
  * | --- | --- | --- |
@@ -284,20 +273,20 @@ function clampToUmbra(tier, point, obs) {
  * | *True seeing* (`tr`) | its own range, 120 ft | "sees through normal and magical darkness" |
  * | *Blindsight* (`bs`) | its own range | not sight at all, so light cannot constrain it |
  *
- * This is **not** a wider darkvision. Darkvision is defeated by supernatural darkness and
- * these are not, so they cannot be expressed by extending a radius — they are an exemption
- * from light level as a constraint, bounded by distance.
+ * Not a wider darkvision. Darkvision is defeated by supernatural darkness and these are not, so
+ * they cannot be expressed by extending a radius — they are an exemption from light level as a
+ * constraint, bounded by distance.
  *
- * **PF1 leaves `sid` stranded.** It is a real trait with a change flag
- * (`pf1/module/documents/actor/actor-pf.mjs:1639`, `config.mjs:2021`) and it appears on the
- * sheet, but `_syncSenses` never reads it — no detection mode, no vision behaviour, ever.
- * Nothing existed for it to counter. Supernatural Dark is the first thing that does.
+ * PF1 leaves `sid` stranded: a real trait with a change flag
+ * (`pf1/module/documents/actor/actor-pf.mjs:1639`, `config.mjs:2021`), shown on the sheet, but
+ * `_syncSenses` never reads it — no detection mode, no vision behaviour. Nothing existed for it to
+ * counter, and Supernatural Dark is the first thing that does.
  *
- * *True seeing* it does handle, partly: `_syncSenses` bumps `basicSight.range` and
- * `sight.range` to the spell's range and drops the vision mode back to `basic`
- * (`pf1/module/documents/token.mjs:225-232`), so terrain and detection already reach. What
- * PF1 has no way to express is that the reach survives *magical darkness* — which is
- * exactly what §4.8's darkvision gate would otherwise take away from it.
+ * True seeing it handles partly: `_syncSenses` bumps `basicSight.range` and `sight.range` to the
+ * spell's range and drops the vision mode back to `basic`
+ * (`pf1/module/documents/token.mjs:225-232`), so terrain and detection already reach. What PF1
+ * cannot express is that the reach survives magical darkness — exactly what §4.8's darkvision gate
+ * would otherwise take away.
  *
  * @param {PointVisionSource|null} source
  * @returns {number} Pixels; `Infinity` for see-in-darkness, `0` for neither sense
@@ -306,26 +295,24 @@ export function darkSightRange(source) {
   const senses = source?.object?.actor?.system?.traits?.senses;
   if (!senses) return 0;
 
-  // No range in the rules, so no range here. `maxR` stands in wherever a finite number is
-  // required — see the `_initialize` override in `suppression.mjs`.
+  // No range in the rules, so none here. `maxR` stands in wherever a finite number is required —
+  // see the `_initialize` override in `suppression.mjs`.
   if (senses.sid === true) return Infinity;
 
   // The widest bounded sense wins; they compose rather than override.
   //
-  // **Blindsight is here because it is not sight**, which is the same reason it needed
-  // rescuing from the sight edges in `detection.mjs`. Detection already worked through the
-  // `blindSight` mode; what did not was *terrain*, which Foundry paints from `data.radius`
-  // intersected with `los` — and `los` is truncated at a supernatural darkness boundary. So
-  // a blindsighted creature detected every token in range while standing in an unpainted
-  // void. Treating it as light-independent perception with a range fixes the rendering half
-  // and costs nothing on the detection half, which was already right.
+  // Blindsight is here because it is not sight — the same reason it needed rescuing from the sight
+  // edges in `detection.mjs`. Detection already worked through the `blindSight` mode; terrain did
+  // not, Foundry painting it from `data.radius` intersected with `los`, and `los` is truncated at a
+  // supernatural darkness boundary. So a blindsighted creature detected every token in range while
+  // standing in an unpainted void. Treating it as light-independent perception with a range fixes
+  // the rendering half and costs nothing on the detection half, which was already right.
   const bounded = Math.max(senses.tr?.total ?? 0, senses.bs?.total ?? 0);
   if (bounded > 0) {
     try {
       const feet = pf1.utils.convertDistance(bounded)[0];
-      // `getLightRadius` rather than a raw pixel conversion: it accounts for token size, so
-      // a Huge creature's range is measured from its edge as Foundry measures everything
-      // else.
+      // `getLightRadius` rather than a raw pixel conversion: it accounts for token size, so a Huge
+      // creature's range is measured from its edge, as Foundry measures everything else.
       return source.object?.getLightRadius?.(feet) ?? 0;
     } catch {
       return 0;
@@ -339,18 +326,17 @@ export function darkSightRange(source) {
  * Blindsight's range alone, in pixels.
  *
  * @remarks
- * The third slice of the same trait data, and it exists because the **blinded condition** needs
- * a different subset again from either of the other two.
+ * The third slice of the same trait data, existing because the blinded condition needs a different
+ * subset again from either of the other two.
  *
- * {@link darkSightRange} answers *"how far does perception that ignores light reach"* and folds
- * blindsight in with *see in darkness* and *true seeing*. That is right for a creature standing
- * in magical darkness — all three see through it. It is wrong for a creature that has been
- * **blinded**, because the other two are still *sight*: a blinded creature does not get to use
- * *true seeing*, and blindsight is the only one of the three that survives.
+ * {@link darkSightRange} answers how far light-ignoring perception reaches, folding blindsight in
+ * with see in darkness and true seeing. Right for a creature standing in magical darkness, where
+ * all three see through it; wrong for a blinded creature, because the other two are still sight —
+ * a blinded creature does not get to use true seeing, and blindsight is the only survivor.
  *
- * So: one function per question, rather than one function with a flag. Three narrow readers of
- * the same field are easier to reason about than one reader with three modes, and the mistake
- * this guards against — using the wrong subset — is invisible at the call site otherwise.
+ * Hence one function per question rather than one function with a flag. Three narrow readers of the
+ * same field are easier to reason about than one reader with three modes, and the mistake this
+ * guards against — using the wrong subset — is otherwise invisible at the call site.
  *
  * @param {PointVisionSource|null} source
  * @returns {number} Pixels; `0` for a creature with no blindsight
@@ -359,7 +345,7 @@ export function blindsightRange(source) {
   const range = source?.object?.actor?.system?.traits?.senses?.bs?.total ?? 0;
   if (range <= 0) return 0;
   try {
-    // `getLightRadius`, as the others do, so a Huge creature measures from its edge.
+    // `getLightRadius`, as the others use, so a Huge creature measures from its edge.
     return source.object?.getLightRadius?.(pf1.utils.convertDistance(range)[0]) ?? 0;
   } catch {
     return 0;
@@ -367,21 +353,19 @@ export function blindsightRange(source) {
 }
 
 /**
- * The same, **excluding blindsight** — the senses that are genuinely *sight*.
+ * The same, excluding blindsight — the senses that are genuinely sight.
  *
  * @remarks
- * Blindsight belongs in {@link darkSightRange}, which drives terrain, blinding and sweep
- * rank. It must **not** drive the detection short-circuits below, for a reason that is pure
- * Foundry plumbing rather than rules:
- *
- * `CanvasVisibility#testVisibility` runs `basicSight` and `lightPerception` **before** the
+ * Blindsight belongs in {@link darkSightRange}, which drives terrain, blinding and sweep rank. It
+ * must not drive the detection short-circuits below, for a reason that is Foundry plumbing rather
+ * than rules: `CanvasVisibility#testVisibility` runs `basicSight` and `lightPerception` before the
  * special modes, and only a special mode sets `object.detectionFilter`
- * (`groups/visibility.mjs:759-790`). So if `lightPerception` starts succeeding for a
- * blindsighted creature, the target is still detected — but by the wrong mode, and PF1's
- * blue blindsight outline silently stops being drawn.
+ * (`groups/visibility.mjs:759-790`). So if `lightPerception` starts succeeding for a blindsighted
+ * creature the target is still detected, but by the wrong mode, and PF1's blue blindsight outline
+ * silently stops being drawn.
  *
- * The distinction is real in the rules too: blindsight perceives, it does not *see*. It
- * should not let you read a scroll in the dark.
+ * The distinction is real in the rules too: blindsight perceives, it does not see. It should not
+ * make a scroll readable in the dark.
  *
  * @param {PointVisionSource|null} source
  * @returns {number} Pixels
@@ -404,9 +388,9 @@ export function visualDarkSightRange(source) {
  * Is this point inside the observer's light-independent sight?
  *
  * @remarks
- * Walls are not tested here. Every caller runs inside a detection mode that has already
- * checked line of sight, and the one that has not — {@link modelBlinds} — asks about the
- * observer's own square, where the question does not arise.
+ * Walls are not tested here. Every caller runs inside a detection mode that has already checked line
+ * of sight, and the one that has not — {@link modelBlinds} — asks about the observer's own square,
+ * where the question does not arise.
  */
 function withinDarkSight(point, obs) {
   const range = visualDarkSightRange(obs);
@@ -431,16 +415,14 @@ export function perceives(point, obs = currentObserver) {
  * Can darkvision make something out here?
  *
  * @remarks
- * Darkvision does not care how dark it is — that is the point of it — so this is not a
- * threshold like {@link perceives} but a single exclusion. *Supernatural* darkness is the
- * one thing it cannot see through, and the model already distinguishes that from ordinary
- * Dark by which suppressor produced it and how low that suppressor's `floor` reaches
- * (§3.3). Plain *darkness* bottoms out at Dark and darkvision works in it; a source
- * explicitly configured for Supernatural Dark defeats it.
+ * Darkvision does not care how dark it is, so this is a single exclusion rather than a threshold
+ * like {@link perceives}. Supernatural darkness is the one thing it cannot see through, and the
+ * model already distinguishes that from ordinary Dark by which suppressor produced it and how low
+ * that suppressor's `floor` reaches (§3.3). Plain darkness bottoms out at Dark and darkvision works
+ * in it; a source explicitly configured for Supernatural Dark defeats it.
  *
- * Range is not checked here. Foundry has already applied it — `basicSight` carries the
- * darkvision range as `mode.range` and `DetectionMode#_testPoint` tests it before this
- * runs.
+ * Range is not checked here — Foundry has already applied it, `basicSight` carrying the darkvision
+ * range as `mode.range` and `DetectionMode#_testPoint` testing it before this runs.
  *
  * @param {{x: number, y: number, elevation?: number}} point
  * @param {PointVisionSource|null} [obs]
@@ -460,9 +442,9 @@ export function darkvisionSees(point, obs = currentObserver) {
 export function explainPoint(point, obs = currentObserver) {
   const tier = perceivedTier(point, obs);
 
-  // The god's-eye answer alongside the observer's, because "this token should be visible"
-  // has two completely different causes — the point is dark, or the *path* is — and they
-  // need different fixes. Reporting only the resolved tier makes them indistinguishable.
+  // The god's-eye answer alongside the observer's, because a token that should be visible has two
+  // different causes — the point is dark, or the path is — needing different fixes. Reporting only
+  // the resolved tier makes them indistinguishable.
   const raw = evaluate(point).tier;
   const clamp = obs && umbraModel ? umbraModel.clampAt(point, obs) : null;
 
@@ -475,7 +457,7 @@ export function explainPoint(point, obs = currentObserver) {
     rawTierName: TIER_NAME[raw],
     // null: nothing between them. A tier: shadowed, and this is what by.
     umbraClamp: clamp === null ? null : TIER_NAME[clamp],
-    // The distinction that matters — the clamp exists *and* it is what decided the answer.
+    // The distinction that matters: the clamp exists and it is what decided the answer.
     umbraApplied: clamp !== null && clamp < raw,
   };
 }

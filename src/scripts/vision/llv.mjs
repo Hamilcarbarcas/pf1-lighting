@@ -1,31 +1,21 @@
 /**
  * Low-light vision must not enlarge darkness. DESIGN.md §4.4.
  *
- * PF1 multiplies a light's `dim` and `bright` radii by the observers' low-light multiplier
- * in `LLVMixin.getRadius()` (`pf1/module/canvas/low-light-vision.mjs:66-114`), applied to
- * the **placeable** via `_getLightSourceData()` rather than to the source
- * (`pf1/pf1.mjs:182-183`). A darkness source is an AmbientLight with `negative: true`
- * (§3.5) and goes through exactly the same path, so it gets doubled too.
+ * PF1 multiplies a light's `dim` and `bright` radii by the observer's low-light multiplier in
+ * `LLVMixin.getRadius()` (`pf1/module/canvas/low-light-vision.mjs:66-114`), applied to the
+ * placeable via `_getLightSourceData()` rather than to the source (`pf1/pf1.mjs:182-183`). A
+ * darkness source is an AmbientLight with `negative: true` (§3.5) taking the same path, so it gets
+ * doubled too. Confirmed live 2026-08-22.
  *
- * **Confirmed live 2026-08-22**: darkness bubbles render at double their authored radius
- * whenever an observer has low-light vision. §4.4 predicted this from reading the source
- * before any of it was built.
+ * Ships ahead of the rest of §4.4 for instrumentation, not correctness — low-light vision is
+ * unimplemented, so nothing depends on it yet. Every darkness on the scene is otherwise a
+ * different size from its own document, making every geometry observation a measurement against a
+ * scene that does not match its data. Same failure mode as native suppression path 3 (§4.1.1),
+ * which cost several rounds of diagnosing a rules bug that was really a geometry one.
  *
- * ## Why this ships ahead of the rest of §4.4
- *
- * Not for correctness — low-light vision is unimplemented, so nothing else depends on it
- * yet. For **instrumentation**. Every darkness on the scene is currently a different size
- * from the one its document describes, so every geometry observation is being made against
- * a scene that does not match its own data, and every conclusion drawn from one inherits
- * the discrepancy silently.
- *
- * That is the same failure mode as native suppression path 3 (§4.1.1), which cost several
- * rounds of diagnosing a rules bug that was really a geometry one. Distorting the test bed
- * is a different and worse class of problem from distorting the picture.
- *
- * Low-light vision *should* enlarge light and never darkness: the rules extend how far a
- * creature can make use of a light source, and say nothing about how far a *darkness* spell
- * reaches. That is a property of the spell, not of the eye.
+ * Low-light vision should enlarge light and never darkness: the rules extend how far a creature
+ * can use a light source and say nothing about how far a darkness spell reaches — a property of
+ * the spell, not the eye.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -52,9 +42,8 @@ export function registerSettings() {
       "darkness spell reaches. Fixes a PF1 bug, so it is on by default and independent of this " +
       "module's other features.",
     scope: "world",
-    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** The functionality stays; the
-    // switch was a development bisection aid and the module is past needing one in the menu.
-    // Reachable from the console — see `game.pf1Lighting.settings`.
+    // No control surface (2026-08-26): the switch was a development bisection aid.
+    // Functionality stays, reachable from the console — see `game.pf1Lighting.settings`.
     config: false,
     type: Boolean,
     default: true,
@@ -76,9 +65,9 @@ export function registerSettings() {
 /** Is this placeable's light configured as darkness? */
 function isNegative(placeable) {
   const doc = placeable?.document;
-  // AmbientLight keeps its light config on `config`; TokenDocument on `light`. The mixin is
-  // applied to both object classes (`pf1/pf1.mjs:182-183`), and token light shares the
-  // schema, so mobile darkness reaches here too.
+  // AmbientLight keeps its light config on `config`, TokenDocument on `light`. The mixin applies
+  // to both object classes (`pf1/pf1.mjs:182-183`) and token light shares the schema, so mobile
+  // darkness reaches here too.
   return (doc?.config?.negative ?? doc?.light?.negative) === true;
 }
 
@@ -86,13 +75,12 @@ function isNegative(placeable) {
  * Guard `getRadius` against negative lights.
  *
  * @remarks
- * Mixed **above** PF1's `LLVMixin` so our `getRadius` runs first and can decline to call
- * theirs at all. Overriding `_getLightSourceData` instead would mean either duplicating
- * their bookkeeping or undoing a multiplication after the fact; `getRadius` is the seam
- * that exists precisely for this, and it is public.
+ * Mixed above PF1's `LLVMixin` so this `getRadius` runs first and can decline to call theirs at
+ * all. Overriding `_getLightSourceData` instead would mean duplicating their bookkeeping or
+ * undoing a multiplication after the fact; `getRadius` is the public seam for exactly this.
  *
- * Applied at `setup`: after PF1's `init` where the mixin is installed, and once, so the
- * class chain does not grow a link per canvas draw.
+ * Applied at `setup` — after PF1's `init` installs the mixin, and once, so the class chain does
+ * not grow a link per canvas draw.
  */
 export function applyMixin() {
   const Base = CONFIG.AmbientLight.objectClass;

@@ -1,39 +1,38 @@
 /**
- * Painting the model's tiers into Foundry's **darkness-level texture**. DESIGN.md §7.0.
+ * Painting the model's tiers into Foundry's darkness-level texture. DESIGN.md §7.0.
  *
- * The renderer's other half expresses "this area is Dim" by synthesising a *light source* — an
+ * The renderer's other half expresses "this area is Dim" by synthesising a light source — an
  * object with an origin, a falloff, a wall sweep, a darkness band and a dozen uniforms — where
- * what the model actually has is a number. Every seam bug of 2026-08-23 was a property of
- * `GlobalLightSource` that a stand-in had failed to clone.
+ * the model has a number. Every seam bug of 2026-08-23 was a property of `GlobalLightSource` that
+ * a stand-in had failed to clone.
  *
- * Foundry has exactly one channel shaped like *"here is my computed field, please render it"*:
- * `canvas.effects.illumination.darknessLevelMeshes`, a cached container rendered to a texture
- * and handed to every lighting **and vision** shader as `darknessLevelTexture`. That second
- * word is the whole reason this file exists. A region written here keeps its brightness
- * *through* a vision source's paint, so god's eye, *true seeing* and see-in-darkness all still
- * show the map's light levels instead of flattening them — which a light fill structurally
- * cannot do, because `vision.sight` is not gated by `light.mask` and revealing is the same act
- * as brightening (§4.5.1).
+ * Foundry has exactly one channel that takes a computed field directly:
+ * `canvas.effects.illumination.darknessLevelMeshes`, a cached container rendered to a texture and
+ * handed to every lighting *and vision* shader as `darknessLevelTexture`. That second word is why
+ * this file exists. A region written here keeps its brightness through a vision source's paint, so
+ * god's eye, *true seeing* and see-in-darkness still show the map's light levels instead of
+ * flattening them — which a light fill structurally cannot do, because `vision.sight` is not gated
+ * by `light.mask` and revealing is the same act as brightening (§4.5.1).
  *
  * ## Two meshes per region, and they answer different questions
  *
- * Core's own "Adjust Darkness Level" behaviour makes a pair, and so do we
+ * Core's own "Adjust Darkness Level" behaviour makes a pair, and so does this file
  * (`data/region-behaviors/adjust-darkness-level.mjs:68-85`):
  *
  * | Mesh | Container | Question |
  * | --- | --- | --- |
- * | `AdjustDarknessLevelRegionShader` | `illumination.darknessLevelMeshes` | how **bright** is this ground |
- * | `IlluminationDarknessLevelRegionShader` | `visibility.vision.light.global.meshes` | does global light **reveal** it |
+ * | `AdjustDarknessLevelRegionShader` | `illumination.darknessLevelMeshes` | how bright is this ground |
+ * | `IlluminationDarknessLevelRegionShader` | `visibility.vision.light.global.meshes` | does global light reveal it |
  *
- * The second is only created where the answer is *no*. `#refreshDynamicIllumination`
+ * The second is created only where the answer is no. `#refreshDynamicIllumination`
  * (`groups/visibility.mjs:643-651`) walks that container and flips a mesh to `ERASE` when its
  * darkness level falls outside the global light's band — so a mesh there cuts the region out of
- * what global illumination lets a creature see, which is exactly what a *darkness* should do to
- * a normal-sighted observer, while darkvision (which comes from `vision.sight`) is untouched.
+ * what global illumination lets a creature see, which is what a darkness should do to a
+ * normal-sighted observer, while darkvision (from `vision.sight`) is untouched.
  *
  * ## What this file draws, and what composites over it
  *
- * These meshes are the **partition**: one per merged ground region, opaque, flat. They are the base
+ * These meshes are the partition: one per merged ground region, opaque, flat. They are the base
  * layer and nothing here overlaps anything else here.
  *
  * Three other passes composite on top, and they are not in this file — `render/gradient.mjs` owns
@@ -48,23 +47,22 @@
  *   0      clamps                   MAX_COLOR — darkest wins, drawn last
  * ```
  *
- * `MIN`/`MAX` on a *darkness* level are brightest-wins and darkest-wins per fragment, which is why
- * overlap is the mechanism rather than the hazard it was before §7.0 step 6. An earlier version of
- * this note said the opposite and was correct about the default blend mode.
+ * `MIN`/`MAX` on a darkness level are brightest-wins and darkest-wins per fragment, which is why
+ * overlap is the mechanism rather than the hazard it was before §7.0 step 6.
  *
- * Since §6.4.4 the whole container is blurred in one pass, which is what softens every boundary in
- * it — see `render/texture-blur.mjs`. The only filter left on an individual mesh is the one on the
- * `il` half (§6.4.5), where alpha genuinely *is* the quantity.
+ * Since §6.4.4 the whole container is blurred in one pass, which softens every boundary in it —
+ * see `render/texture-blur.mjs`. The only filter left on an individual mesh is the one on the `il`
+ * half (§6.4.5), where alpha genuinely is the quantity.
  *
  * The texture is cleared to `canvas.environment.darknessLevel`, and since §7.0 step 6 the ground
  * covers the scene rect unconditionally, so that clear is unreachable.
  *
  * ## Duck-typing a Region
  *
- * `RegionMesh` wants a Region placeable and we have bare polygons. It reads five things, and a
- * missing one throws **inside PIXI's render loop** — once per frame, blacking the canvas out
- * rather than producing an attributable error. They are enumerated in {@link regionStub} rather
- * than discovered, after two were found one crash at a time during the spike.
+ * `RegionMesh` wants a Region placeable; these are bare polygons. It reads five things, and a
+ * missing one throws inside PIXI's render loop — once per frame, blacking the canvas out rather
+ * than producing an attributable error. Enumerated in {@link regionStub} rather than discovered,
+ * after two were found one crash at a time during the spike.
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -92,18 +90,18 @@ const MODE_OVERRIDE = 0;
  * The modifier given to an erasing illumination mesh.
  *
  * @remarks
- * Core expresses "this region is not lit by global light" as *outside the global light's
- * darkness band* (`visibility.mjs:646`), and going through its own test is what also sets
- * `#needsContainment` — a private field that enables the fence filter keeping an `ERASE` blend
- * inside the container. Setting `blendMode` by hand would skip that.
+ * Core expresses "not lit by global light" as outside the global light's darkness band
+ * (`visibility.mjs:646`), and going through its own test is what also sets `#needsContainment` —
+ * a private field enabling the fence filter that keeps an `ERASE` blend inside the container.
+ * Setting `blendMode` by hand skips that.
  *
- * `-1` is below **every** possible band because `darkness.min` is an `AlphaField` and so is
- * never negative (`common/data/data.mjs:64`). The upper bound is not usable for this: its
- * default is 1 and nothing exceeds it.
+ * `-1` is below every possible band because `darkness.min` is an `AlphaField` and never negative
+ * (`common/data/data.mjs:64`). The upper bound is unusable for this: its default is 1 and nothing
+ * exceeds it.
  *
- * This value only ever reaches the band comparison. The erasing shader's fragment program
- * writes `vec4(1.0)` and never reads the level, and the *brightness* of the region is carried
- * by the other mesh of the pair.
+ * The value only ever reaches the band comparison. The erasing shader's fragment program writes
+ * `vec4(1.0)` and never reads the level; the region's brightness is carried by the other mesh of
+ * the pair.
  */
 const ERASE_MODIFIER = -1;
 
@@ -111,11 +109,11 @@ const ERASE_MODIFIER = -1;
  * Modifier for a parked illumination mesh.
  *
  * @remarks
- * Zero rather than {@link ERASE_MODIFIER} because `#refreshDynamicIllumination` walks *every*
- * child of the container, visible or not, and a parked mesh left out of band would keep setting
+ * Zero rather than {@link ERASE_MODIFIER} because `#refreshDynamicIllumination` walks every child
+ * of the container, visible or not, and a parked mesh left out of band would keep setting
  * `#needsContainment` and so keep the fence filter on for nothing. Zero is inside the default
- * band; a GM who has raised `darkness.min` above it costs a redundant filter and nothing more,
- * since a parked mesh does not draw.
+ * band; a `darkness.min` raised above it costs one redundant filter and nothing more, since a
+ * parked mesh does not draw.
  */
 const PARKED_MODIFIER = 0;
 
@@ -138,54 +136,54 @@ let backstopped = false;
  *
  * @remarks
  * Core uses 2 for its own darkness mesh (`adjust-darkness-level.mjs:71`) rather than
- * `CONFIG.Canvas.blurQuality`, which defaults to 4. Matching core: this is a soft boundary
- * between two flat values, not a bloom, and the second pass is already past the point where
- * another one is visible. It doubles as a cost lever if the filter turns out to be expensive.
+ * `CONFIG.Canvas.blurQuality`, which defaults to 4. Matched here: this is a soft boundary between
+ * two flat values, not a bloom, and the second pass is already past visible improvement. Doubles
+ * as a cost lever if the filter proves expensive.
  */
 const BLUR_QUALITY = 2;
 
 /**
- * **A §3.4 spill band is no longer blurred at all — it is a gradient mesh.** DESIGN.md §7.0 step 5.
+ * A §3.4 spill band is not blurred at all — it is a gradient mesh. DESIGN.md §7.0 step 5.
  *
  * @remarks
  * Three settings lived here and all three are gone: a spill-specific softening multiplier, a blur
- * pass count and a blur tap count. Each was an attempt to make a falloff read as a gradient by
- * filtering flat stripes, and the last of them found why none of them could:
- * `PIXI.BlurFilter(strength, quality, resolution, kernelSize)` spreads a **fixed** number of taps
+ * pass count and a blur tap count. Each tried to make a falloff read as a gradient by filtering
+ * flat stripes, and the last found why none could:
+ * `PIXI.BlurFilter(strength, quality, resolution, kernelSize)` spreads a fixed number of taps
  * across its width rather than adding more, so a wide blur samples five points eleven pixels apart
  * and produces a staircase. Raising the taps to 15 helped and still bounded the result at the
- * number of stripes underneath it, because a blur softens a boundary between two levels and cannot
+ * number of stripes underneath, because a blur softens a boundary between two levels and cannot
  * invent one between them.
  *
  * `render/gradient.mjs` draws the falloff as one mesh with a level per vertex instead, which the
- * rasteriser interpolates per fragment. Spill cells that were not clamped by an umbra are skipped
- * here — see {@link mergeByLevel} — so nothing in this file feathers them any more.
+ * rasteriser interpolates per fragment. Spill cells an umbra did not clamp are skipped here — see
+ * {@link mergeByLevel} — so nothing in this file feathers them.
  */
 
 /**
  * Detach any blur left on a ground mesh, and keep the one on its erase partner in step.
  *
  * @remarks
- * **Only the darkness-level mesh, never the illumination one.** `entry.il` answers a *binary*
- * question — does global light reveal this region — by being in or out of a band
- * (`visibility.mjs:643-651`), and its fragment program writes `vec4(1.0)` without ever reading a
- * level. Blurring a mesh whose only content is "yes" produces a soft-edged yes, which is not a
- * softer boundary but a partially transparent one. The reveal edge stays hard; that is §6.4.2's
- * `eraseDisabled` experiment's whole subject and it is a separate question from this one.
+ * Only the darkness-level mesh, never the illumination one. `entry.il` answers a binary question
+ * — does global light reveal this region — by being in or out of a band
+ * (`visibility.mjs:643-651`), and its fragment program writes `vec4(1.0)` without reading a level.
+ * Blurring a mesh whose only content is "yes" gives a soft-edged yes, which is a partially
+ * transparent boundary rather than a softer one. The reveal edge stays hard; that is §6.4.2's
+ * `eraseDisabled` experiment, a separate question from this one.
  *
- * **Detached at zero, not zeroed.** A `PIXI.BlurFilter` at strength 0 still costs a filtered
- * render pass — an extra texture allocation, a blit out and a blit back — per mesh per container
- * render. `filters = null` costs nothing.
+ * Detached at zero, not zeroed. A `PIXI.BlurFilter` at strength 0 still costs a filtered render
+ * pass — extra texture allocation, a blit out and a blit back — per mesh per container render.
+ * `filters = null` costs nothing.
  *
- * Registration goes through `canvas.addBlurFilter` (via `createBlurFilter`) so the strength is
- * kept in **world** units and re-derived on zoom; re-adding an existing filter is safe, since
- * `blurFilters` is a `Set` and `addBlurFilter` recomputes from `_configuredStrength`.
+ * Registration goes through `canvas.addBlurFilter` (via `createBlurFilter`) so the strength stays
+ * in world units and is re-derived on zoom. Re-adding an existing filter is safe: `blurFilters` is
+ * a `Set` and `addBlurFilter` recomputes from `_configuredStrength`.
  */
 function syncFilter(entry) {
-  // **The ground blur is retired, since §6.4.3.** It was the module's only softening that was not
-  // a gradient: a `PIXI.BlurFilter` fades a mesh's *alpha* to reveal whatever is beneath it, which
-  // can soften a boundary between two levels but — as §7.0 step 5 established the hard way — can
-  // never invent one between them. §6.4.4 now blurs the composited field instead, in one pass.
+  // The ground blur is retired, since §6.4.3. It was the only softening here that was not a
+  // gradient: a `PIXI.BlurFilter` fades a mesh's alpha to reveal what is beneath, which can soften
+  // a boundary between two levels but — per §7.0 step 5 — can never invent one between them.
+  // §6.4.4 blurs the composited field instead, in one pass.
   const dl = entry.dl;
   if (dl && !dl._destroyed && dl.filters?.length) dl.filters = null;
 
@@ -193,34 +191,30 @@ function syncFilter(entry) {
 }
 
 /**
- * Soften the **reveal** boundary — the last hard edge on the map. DESIGN.md §6.4.5.
+ * Soften the reveal boundary — the last hard edge on the map. DESIGN.md §6.4.5.
  *
  * @remarks
- * Hamilcarbarcas, 2026-08-27, with the two halves of the diagnosis in two sentences: *"it doesn't seem to
- * be applying to borders between a light and dark source when the darkness is overriding the
- * light"*, and then *"only has this effect when the global illumination is brighter than dim"*.
+ * Reported 2026-08-27 as a hard border between a light and a dark source where the darkness
+ * overrides the light, appearing only where global illumination is brighter than Dim. That second
+ * half names the mechanism. `darknessFor` sets `erase` when a region is darker than
+ * `globalLightCutoff()`, which is the Dim threshold; an erasing region gets a second mesh in
+ * `canvas.visibility.vision.light.global.meshes`, blended `ERASE`, cutting it out of what global
+ * illumination reveals. That container is not the darkness-level texture, so §6.4.4's field blur
+ * cannot reach it — and it only matters where global light is actually revealing, which is exactly
+ * "brighter than Dim".
  *
- * That second clause names the mechanism outright. `darknessFor` sets `erase` when a region is
- * darker than `globalLightCutoff()`, which **is** the Dim threshold; an erasing region gets a
- * second mesh in `canvas.visibility.vision.light.global.meshes`, blended `ERASE`, cutting it out of
- * what global illumination reveals. That container is not the darkness-level texture, so §6.4.4's
- * field blur cannot reach it — and it only *matters* where global light is actually revealing,
- * which is exactly "brighter than Dim".
+ * §6.4.2a recorded this as permanent, on the grounds that revelation is yes-or-no rather than a
+ * level, and `create()` refused to blur these meshes because a soft-edged yes is a partially
+ * transparent boundary rather than a softer one.
  *
- * §6.4.2a recorded this as permanent — *"whether global illumination reveals a region is a
- * yes-or-no question rather than a level"* — and `create()` refused to blur these meshes on the
- * grounds that "blurring a mesh whose only content is *yes* produces a soft-edged yes, which is not
- * a softer boundary but a partially transparent one."
- *
- * **That is exactly what is wanted here, and the objection had the sign backwards.** The quantity
- * this mesh carries *is* coverage: it writes `vec4(1.0)` and composites `ERASE`. A blurred rim is a
- * partially transparent erase, which is a *partial reveal* — a gradient in precisely the variable
- * the boundary is made of. It is the one place in this module where blurring alpha is the correct
- * operation rather than a substitute for a gradient, and that is why it survives §6.4.3's removal
- * of every other filter.
+ * The sign was backwards. The quantity this mesh carries is coverage: it writes `vec4(1.0)` and
+ * composites `ERASE`, so a blurred rim is a partially transparent erase — a partial reveal, a
+ * gradient in exactly the variable the boundary is made of. The one place in this module where
+ * blurring alpha is correct rather than a substitute for a gradient, which is why it survives
+ * §6.4.3's removal of every other filter.
  *
  * Matched to the field blur's strength so the reveal boundary and the brightness boundary fade over
- * the same distance; they are the same edge to look at.
+ * the same distance; they are one edge to look at.
  */
 function syncEraseFilter(entry) {
   const mesh = entry.il;
@@ -243,15 +237,15 @@ function syncEraseFilter(entry) {
     canvas.addBlurFilter(entry.eraseBlur);
   }
 
-  // **The filter composites, not the mesh.** PIXI renders a filtered display object into a
-  // temporary texture and then draws *that* with `filter.blendMode`, which defaults to `NORMAL`.
-  // So attaching a blur to an `ERASE`-blended mesh quietly converts it into a normal-blended one:
-  // it stops erasing and starts painting white into the global light's mask, which is either
-  // invisible or the exact opposite of the intent depending on what lies under it.
+  // The filter composites, not the mesh. PIXI renders a filtered display object into a temporary
+  // texture and draws that with `filter.blendMode`, which defaults to `NORMAL` — so attaching a
+  // blur to an `ERASE`-blended mesh quietly makes it normal-blended: it stops erasing and starts
+  // painting white into the global light's mask, either invisible or the exact opposite of the
+  // intent depending on what lies under it.
   //
-  // Read off the mesh rather than assumed, because core owns it — `#refreshDynamicIllumination`
+  // Read off the mesh rather than assumed, because core owns it: `#refreshDynamicIllumination`
   // assigns `ERASE` or `MAX_COLOR` per mesh depending on whether the region falls outside the
-  // global light's band (`visibility.mjs:643-651`), and it runs on its own clock.
+  // global light's band (`visibility.mjs:643-651`), on its own clock.
   entry.eraseBlur.blendMode = mesh.blendMode;
 
   if (mesh.filters?.[0] !== entry.eraseBlur) mesh.filters = [entry.eraseBlur];
@@ -261,10 +255,10 @@ function syncEraseFilter(entry) {
  * A cell's outer ring and holes as Clipper paths.
  *
  * @remarks
- * A near-twin of `paint.mjs`'s function of the same name, and kept separate for the reason
- * `geometry.mjs`'s header already gives about `field.mjs`: the two call sites want the same
- * conversion at different moments in the pipeline, and sharing it would create a dependency
- * between the umbra pass and the texture for the sake of six lines.
+ * A near-twin of `paint.mjs`'s function of the same name, kept separate for the reason
+ * `geometry.mjs`'s header gives about `field.mjs`: the two call sites want the same conversion at
+ * different moments in the pipeline, and sharing it would create a dependency between the umbra
+ * pass and the texture for the sake of six lines.
  */
 function cellPaths(cell) {
   const paths = [toClipperPath(cell.polygon, CLIPPER_SCALE)];
@@ -279,31 +273,30 @@ function cellPaths(cell) {
  * Union every cell that resolves to the same darkness level into one region.
  *
  * @remarks
- * **Required by the blur, and it is the fix for the halo (found 2026-08-24).**
+ * Required by the blur, and the fix for the halo (2026-08-24).
  *
- * The model's cells partition the scene by *treatment* (§6.1), not by brightness, so two cells
- * that abut can carry the identical level. Inside an umbra that is the normal case rather than
- * an edge case: `applyShadows` skips any cell already at or below the clamp, so a *darkness*
- * disc stays its own `dark` cell while the surrounding ambient is cut down to the same Dark by
- * the shadow. Two meshes, one brightness, sharing an exact boundary.
+ * The model's cells partition the scene by treatment (§6.1), not by brightness, so two abutting
+ * cells can carry an identical level. Inside an umbra that is the normal case: `applyShadows`
+ * skips any cell already at or below the clamp, so a darkness disc stays its own `dark` cell while
+ * the surrounding ambient is cut to the same Dark by the shadow. Two meshes, one brightness, one
+ * exact shared boundary.
  *
- * Unblurred that is invisible, because the two meshes are opaque and abut exactly. Blurred it is
- * not: a `BlurFilter` fades a mesh's **alpha** at its rim, both meshes fade at the shared edge,
- * and neither covers it fully — so the composite there is partly the container's clear colour,
- * which is `canvas.environment.darknessLevel`. On a lit map that clear is much *brighter* than
- * either neighbour, and it shows through as a bright ring around every darkness inside a shadow.
- * Hamilcarbarcas reported exactly that, and the tell was that the rings appeared on ground that was
- * uniformly dark on both sides — a feather cannot brighten a boundary between two equal values,
- * so whatever was showing through had to be coming from underneath.
+ * Unblurred that is invisible — both meshes are opaque and abut exactly. Blurred it is not: a
+ * `BlurFilter` fades a mesh's alpha at its rim, both fade at the shared edge, and neither covers it
+ * fully, so the composite there is partly the container's clear colour
+ * (`canvas.environment.darknessLevel`). On a lit map that clear is much brighter than either
+ * neighbour and shows through as a bright ring around every darkness inside a shadow. The tell was
+ * that the rings appeared on ground uniformly dark on both sides: a feather cannot brighten a
+ * boundary between two equal values, so whatever showed through had to come from underneath.
  *
- * Merging removes the boundary rather than papering over it. It is also the honest geometry:
- * a region at one brightness is one region, and the split into two cells was an artefact of how
- * the field arrived at the answer.
+ * Merging removes the boundary rather than papering over it, and is the honest geometry — a region
+ * at one brightness is one region, and the split into two cells was an artefact of how the field
+ * arrived at the answer.
  *
- * **Level, not tier.** Dark and Supernatural Dark share a level by design
- * (`TIER_TO_DARKNESS`), and the difference between them is carried by the darkness source's own
- * overlay, not by this texture — so merging them here loses nothing. `erase` is derived from the
- * level too, so a merged group has one answer for that as well.
+ * Level, not tier. Dark and Supernatural Dark share a level by design (`TIER_TO_DARKNESS`), and
+ * the difference between them is carried by the darkness source's own overlay rather than this
+ * texture, so merging them loses nothing. `erase` derives from the level too, so a merged group
+ * has one answer for that as well.
  *
  * Cost is one Clipper union per distinct level, at most five, and usually one or two. Groups of
  * a single cell skip Clipper entirely — which is the common case on a scene with no umbra.
@@ -314,10 +307,10 @@ function cellPaths(cell) {
 function mergeByLevel(cells) {
   const groups = new Map();
   // §7.0 step 5. A spill band the umbra left alone is drawn by its window's gradient mesh, which
-  // covers the same ground continuously; painting the flat version as well would put a stripe back
-  // over the ramp. A band the umbra **clamped** is a constant again and belongs here, and it lands
-  // *above* the gradient in the sort — that overpainting is what saves re-cutting the gradient's
-  // geometry every time a token moves. See `render/gradient.mjs`.
+  // covers the same ground continuously; painting the flat version too would put a stripe back over
+  // the ramp. A band the umbra clamped is a constant again and belongs here, landing above the
+  // gradient in the sort — that overpainting is what saves re-cutting the gradient's geometry every
+  // time a token moves. See `render/gradient.mjs`.
   const skipSpill = gradient.isActive();
   for (const cell of cells) {
     if (skipSpill && cell.spill === true && cell.clamped !== true) continue;
@@ -326,17 +319,16 @@ function mergeByLevel(cells) {
     if (!(cell?.polygon?.points?.length >= 6)) continue;
     if (cell.tier === undefined) continue;
     const { level, erase } = darknessFor(cell.tier);
-    // **Part of the key, not just a passenger.** Two cells at one level merge because the
-    // boundary between them is an artefact; but a feathered cell and a hard-edged one at the
-    // same level are two different *treatments*, and unioning them would have to pick one.
-    // In practice they rarely meet — an ambient area whose tier equals its surroundings emits
-    // no cell at all (`domainNeedsCell`) — so this costs nothing and cannot silently blur a
-    // wall.
+    // Part of the key, not a passenger. Two cells at one level merge because the boundary between
+    // them is an artefact, but a feathered cell and a hard-edged one at the same level are two
+    // treatments and unioning them would have to pick one. They rarely meet in practice — an
+    // ambient area whose tier equals its surroundings emits no cell at all (`domainNeedsCell`) —
+    // so this costs nothing and cannot silently blur a wall.
     const hardEdge = cell.hardEdge === true;
-    // **`spill` is no longer part of the key.** It was, while a band took a wider feather than
-    // ordinary ground and merging the two would have had to pick a width. Everything that reaches
-    // here now takes the same one: an un-clamped band is skipped above, and a clamped one is a
-    // flat region like any other.
+    // `spill` is no longer part of the key. It was, while a band took a wider feather than ordinary
+    // ground and merging the two would have had to pick a width. Everything reaching here now takes
+    // the same one: an un-clamped band is skipped above, a clamped one is a flat region like any
+    // other.
     const key = `${level}|${hardEdge ? 1 : 0}`;
     let group = groups.get(key);
     if (!group) groups.set(key, (group = { level, erase, hardEdge, cells: [] }));
@@ -369,42 +361,42 @@ function mergeByLevel(cells) {
  * A scene-wide region at the darkest level present, to sit under every seam.
  *
  * @remarks
- * The second half of the halo fix, for the case {@link mergeByLevel} cannot reach: two regions
- * at **different** levels that are both darker than the container's clear colour. Merging does
- * not apply — they really are different brightnesses — but their shared boundary still shows the
- * clear through the seam once both rims are blurred, and on a lit map the clear is brighter than
- * either. A Dim region abutting a Dark one on Normal-lit ground is the case.
+ * The second half of the halo fix, for the case {@link mergeByLevel} cannot reach: two regions at
+ * different levels, both darker than the container's clear colour. Merging does not apply — they
+ * really are different brightnesses — but their shared boundary still shows the clear through the
+ * seam once both rims are blurred, and on a lit map the clear is brighter than either. A Dim region
+ * abutting a Dark one on Normal-lit ground is the case.
  *
- * A backstop removes the possibility rather than the instance. Sorting is **descending by
- * level** (`illumination-effects.mjs:106-110`), so the darkest child draws first: a region at
- * `max(level)` covering the scene rect lands underneath everything and is covered by every other
- * mesh's opaque interior. What changes is only what a seam reveals — the darkest level present
- * instead of the scene's own. That biases every soft boundary very slightly dark, which is the
- * right direction: one side of any such boundary *is* the darker value, so the seam reads as
- * part of the feather rather than as a line of its own.
+ * A backstop removes the possibility rather than the instance. Sorting is descending by level
+ * (`illumination-effects.mjs:106-110`), so the darkest child draws first: a region at `max(level)`
+ * covering the scene rect lands underneath everything, covered by every other mesh's opaque
+ * interior. Only what a seam reveals changes — the darkest level present instead of the scene's
+ * own. That biases every soft boundary slightly dark, the right direction: one side of any such
+ * boundary is the darker value, so the seam reads as part of the feather rather than a line of its
+ * own.
  *
  * Three things it deliberately is not:
  *
- * - **Not `erase`.** The illumination half of a pair cuts global light out of a region, and a
+ * - Not `erase`. The illumination half of a pair cuts global light out of a region, and a
  *   scene-wide one would cut it out of the map. This mesh makes no claim about revelation.
- * - **Not a claimant.** Its `rings` are left empty so `region.document.testPoint` answers false
- *   and `canvas.effects.getDarknessLevel` never returns its level. Core walks the children
- *   backwards and returns the first that claims the point (`effects.mjs:391-396`), so the
- *   backstop would only ever be reached where no cell covers the point — and there the honest
- *   answer is the scene's own darkness, which is what the clear already gives.
- * - **Not present unless it can do something.** No blur or a single level means no seam to fill,
- *   and the mesh would be pure cost.
+ * - Not a claimant. Its `rings` stay empty so `region.document.testPoint` answers false and
+ *   `canvas.effects.getDarknessLevel` never returns its level. Core walks the children backwards
+ *   and returns the first that claims the point (`effects.mjs:391-396`), so the backstop would
+ *   only be reached where no cell covers the point — and there the honest answer is the scene's
+ *   own darkness, which the clear already gives.
+ * - Not present unless it can do something. No blur, or a single level, means no seam to fill and
+ *   the mesh is pure cost.
  *
  * @param {{level: number}[]} regions
  * @returns {object|null}
  */
 function backstopFor(regions) {
-  // **Nothing left to back up, since §6.4.3.** This existed for one failure: two blurred meshes
-  // fading at a shared boundary, neither covering it, letting the container's clear colour through
-  // as a bright seam. With the blur gone the meshes are opaque to their own edges and there is no
-  // seam to fill — and §7.0 step 6 made the ground cover the scene rect unconditionally, so the
-  // clear is unreachable anyway. Kept as a guarded no-op rather than deleted, because its two
-  // reasons are worth reading before anyone reintroduces a filter here.
+  // Nothing left to back up, since §6.4.3. This existed for one failure: two blurred meshes fading
+  // at a shared boundary, neither covering it, letting the container's clear colour through as a
+  // bright seam. With the blur gone the meshes are opaque to their own edges and there is no seam
+  // to fill — and §7.0 step 6 made the ground cover the scene rect unconditionally, so the clear is
+  // unreachable anyway. Kept as a guarded no-op rather than deleted: the two reasons are worth
+  // reading before reintroducing a filter here.
   return null;
   // eslint-disable-next-line no-unreachable
   if (regions.length < 2) return null;
@@ -440,10 +432,10 @@ function backstopFor(regions) {
  * Detach and unregister an entry's blur filter.
  *
  * @remarks
- * `Canvas#blurFilters` is a `Set` the canvas walks on **every zoom** to rescale each member
- * (`board.mjs:1670`). Core clears it on teardown, but a pool dropped by {@link stale} — the case
- * where `canvasTearDown` did not reach us before the layers were rebuilt — would otherwise leave
- * filters in it whose meshes are gone, rescaled forever and holding their GPU textures.
+ * `Canvas#blurFilters` is a `Set` the canvas walks on every zoom to rescale each member
+ * (`board.mjs:1670`). Core clears it on teardown, but a pool dropped by {@link stale} — where
+ * `canvasTearDown` did not run before the layers were rebuilt — would leave filters in it whose
+ * meshes are gone, rescaled forever and holding their GPU textures.
  */
 function dropFilter(entry) {
   if (entry?.eraseBlur) {
@@ -466,11 +458,11 @@ function dropFilter(entry) {
  * Re-sync every pooled mesh's filter and repaint the container.
  *
  * @remarks
- * Wired to the setting's `onChange` through `soften.setGroundRefresh`. Deliberately does **not**
- * recompute the field or re-initialise any source: the filter is a property of a mesh that is
- * already drawn, so the whole change is a `filters` assignment and a cached-container
- * invalidation. That is the property that makes this affordable where §6.4.2's geometric feather
- * was not — that one rebuilt 41 cells into 166 meshes on every repaint.
+ * Wired to the setting's `onChange` through `soften.setGroundRefresh`. Deliberately does not
+ * recompute the field or re-initialise any source: the filter is a property of an already-drawn
+ * mesh, so the whole change is a `filters` assignment and a cached-container invalidation. That is
+ * what makes this affordable where §6.4.2's geometric feather was not — that one rebuilt 41 cells
+ * into 166 meshes on every repaint.
  */
 export function refreshFilters() {
   if (!canvas?.ready) return 0;
@@ -480,8 +472,8 @@ export function refreshFilters() {
     syncFilter(entry);
     touched++;
   }
-  // The gradient meshes take the same anti-aliasing blur off the same setting, and they are in the
-  // same container — so one refresh covers both rather than two settings hooks racing each other.
+  // The gradient meshes take the same anti-aliasing blur off the same setting and live in the same
+  // container, so one refresh covers both rather than two settings hooks racing.
   touched += gradient.refreshFilters();
   refresh();
   return touched;
@@ -496,8 +488,8 @@ export function refreshFilters() {
  *
  * @remarks
  * Listed rather than discovered. A stub that satisfies the constructor but not a later reader
- * throws inside the render loop, so "add the next missing property when it crashes" costs a
- * canvas blackout and a reload per property.
+ * throws inside the render loop, so adding the next missing property when it crashes costs a canvas
+ * blackout and a reload per property.
  *
  * | Property | Read by |
  * | --- | --- |
@@ -511,10 +503,10 @@ export function refreshFilters() {
  * `canvas.effects.getDarknessLevel()` never reports a level from a mesh that is not drawing.
  */
 function regionStub(entry) {
-  // Even-odd across outer and holes together, not "inside the outer ring". A point in an
-  // ambient cell's hole is inside a *darkness*, and answering `true` there would make
+  // Even-odd across outer and holes together, not "inside the outer ring". A point in an ambient
+  // cell's hole is inside a darkness, and answering `true` there makes
   // `canvas.effects.getDarknessLevel()` report the ambient level over a darkness — the exact
-  // inversion, and in the one place a caller has no way to notice.
+  // inversion, in the one place a caller cannot notice.
   const inside = (point) =>
     entry.active && containsPoint(entry.rings, { x: point.x, y: point.y });
 
@@ -525,9 +517,9 @@ function regionStub(entry) {
       testPoint: inside,
       polygonTree: { testPoint: inside },
 
-      // **Required, and its absence throws once per frame.** `_preRender` destructures it
-      // unguarded. Unbounded is safe: `mapElevation` binary-searches a sorted table and
-      // returns 0 below its first entry (`masks/depth.mjs:55-57`), converging to the extremes.
+      // Required; its absence throws once per frame, since `_preRender` destructures it unguarded.
+      // Unbounded is safe: `mapElevation` binary-searches a sorted table and returns 0 below its
+      // first entry (`masks/depth.mjs:55-57`), converging at the extremes.
       elevation: { bottom: -Infinity, top: Infinity },
     },
   };
@@ -537,18 +529,17 @@ function regionStub(entry) {
  * Triangulate a cell into the buffers `RegionGeometry` exposes, updating them in place.
  *
  * @remarks
- * **Holes are the point.** `PIXI.utils.earcut(vertices, holeIndices, 2)` takes them natively,
- * which is what lets an `ambient` cell stay a single mesh — "the scene, less every darkness on
- * it" is one outer ring with N holes, and that shape is the entire reason §6.2.1's annulus
- * splitting existed. A mesh does not need it; a light source did. Every full-width horizontal
- * artefact of 2026-08-23 came from those cuts, so removing them is the fix rather than making
- * the seams meet better.
+ * Holes are the point. `PIXI.utils.earcut(vertices, holeIndices, 2)` takes them natively, which is
+ * what lets an `ambient` cell stay a single mesh — "the scene, less every darkness on it" is one
+ * outer ring with N holes, and that shape is the whole reason §6.2.1's annulus splitting existed. A
+ * mesh does not need it; a light source did. Every full-width horizontal artefact of 2026-08-23
+ * came from those cuts, so removing them is the fix rather than making the seams meet better.
  *
- * Clipper already emits holes with the opposite winding to their outer, which is what earcut
- * wants, so the rings pass through untouched.
+ * Clipper already emits holes wound opposite to their outer, which is what earcut wants, so the
+ * rings pass through untouched.
  *
- * Buffers are updated rather than replaced so the pool never churns GPU allocations. PIXI
- * re-uploads on `Buffer#update` and grows the underlying store when the data outgrows it
+ * Buffers are updated rather than replaced so the pool never churns GPU allocations. PIXI re-uploads
+ * on `Buffer#update` and grows the underlying store when the data outgrows it
  * (`GeometrySystem#updateBuffers`), so a cell changing vertex count needs nothing special.
  */
 function setGeometry(entry, outer, holes) {
@@ -600,10 +591,10 @@ function meshClass() {
 function create(index) {
   const RegionMesh = meshClass();
   const shaders = foundry.canvas.rendering?.shaders;
-  const ours = classes();
+  const custom = classes();
   const dlContainer = canvas.effects?.illumination?.darknessLevelMeshes;
   const ilContainer = canvas.visibility?.vision?.light?.global?.meshes;
-  if (!RegionMesh || !shaders || !ours || !dlContainer || !ilContainer) {
+  if (!RegionMesh || !shaders || !custom || !dlContainer || !ilContainer) {
     console.error(`${MODULE_ID} | darkness texture: canvas is missing a required container.`);
     return null;
   }
@@ -618,7 +609,7 @@ function create(index) {
   // `RegionMesh` manages this and disposes the geometry when it reaches zero.
   geometry.refCount = 0;
   // Foundry's own `RegionGeometry` defines this; PIXI does not, and `_render` calls it
-  // unconditionally. Our buffers are uploaded by PIXI's own dirty tracking, so it is a no-op.
+  // unconditionally. These buffers are uploaded by PIXI's own dirty tracking, so it is a no-op.
   geometry._updateBuffers = () => {};
 
   const entry = {
@@ -642,10 +633,10 @@ function create(index) {
   };
   entry.stub = regionStub(entry);
 
-  // **Ours, not core's, and the difference is one getter.** `SortableDarknessRegionShader` splits
-  // the sort key from the painted level so the backstop can be pinned below the gradient meshes
-  // (§7.0 step 5). Everything else about it is core's shader.
-  entry.dl = new RegionMesh(entry.stub, ours.sortable);
+  // Not core's shader, and the difference is one getter: `SortableDarknessRegionShader` splits the
+  // sort key from the painted level so the backstop can be pinned below the gradient meshes
+  // (§7.0 step 5). Everything else about it is core's.
+  entry.dl = new RegionMesh(entry.stub, custom.sortable);
   entry.il = new RegionMesh(entry.stub, shaders.IlluminationDarknessLevelRegionShader);
   entry.dl.name = `${MODULE_ID}.dl.${index}`;
   entry.il.name = `${MODULE_ID}.il.${index}`;
@@ -653,9 +644,9 @@ function create(index) {
     mesh.shader.mode = MODE_OVERRIDE;
     mesh.visible = false;
   }
-  // The blur is opt-in and lives on `entry.dl` only — see {@link syncFilter}. This used to be a
-  // flat refusal ("§6.2 wants suppressor edges sharp"), which was the right call for the
-  // *reveal* boundary and got applied to the brightness one by association.
+  // The blur is opt-in and lives on `entry.dl` only — see {@link syncFilter}. Previously a flat
+  // refusal on the grounds that §6.2 wants suppressor edges sharp, which was right for the reveal
+  // boundary and got applied to the brightness one by association.
   syncFilter(entry);
 
   dlContainer.addChild(entry.dl);
@@ -669,14 +660,13 @@ function take(index) {
 }
 
 /**
- * Has the canvas replaced the containers under us?
+ * Has the canvas replaced the containers this pool is attached to?
  *
  * @remarks
- * The layers are rebuilt on every scene draw, so a pool held across one points at meshes that
- * were destroyed with their parent. `canvasTearDown` normally clears it first, but hook order
- * is not ours to guarantee and the failure is silent — a full pool of dead meshes paints
- * nothing and reports itself healthy. Checking the first entry is enough: they are all attached
- * and detached together.
+ * The layers are rebuilt on every scene draw, so a pool held across one points at meshes destroyed
+ * with their parent. `canvasTearDown` normally clears it first, but hook order is not guaranteed
+ * and the failure is silent — a full pool of dead meshes paints nothing and reports itself healthy.
+ * Checking the first entry is enough: they attach and detach together.
  */
 function stale() {
   const first = pool[0];
@@ -694,8 +684,8 @@ function park(entry) {
   entry.level = null;
   entry.erase = false;
   // Sticky per-entry state across pool reuse is this project's recurring pooling bug
-  // (`HARD_EDGES`, 2026-08-23). `apply` reassigns it too; clearing here keeps a *parked* entry
-  // from telling `refreshFilters` it is something it is no longer going to be.
+  // (`HARD_EDGES`, 2026-08-23). `apply` reassigns it too; clearing here keeps a parked entry from
+  // telling `refreshFilters` it is something it is no longer going to be.
   entry.backstop = false;
   entry.hardEdge = false;
   entry.dl.visible = false;
@@ -708,18 +698,18 @@ function park(entry) {
  * Debug switch: paint brightness but never cut global illumination's reveal.
  *
  * @remarks
- * An A/B for one specific confusion, added 2026-08-23. Every region painted darker than Dim
- * gets a **second** mesh in the visibility mask, blended `ERASE`, which removes it from what
- * global light reveals (`groups/visibility.mjs:643-651`). That boundary is binary and lives in
- * a different container from the brightness — so the §6.4.1 blur cannot touch it, and a
- * *darkness* disc can keep a hard rim while every other transition on the map is soft.
+ * An A/B for one specific confusion, added 2026-08-23. Every region painted darker than Dim gets a
+ * second mesh in the visibility mask, blended `ERASE`, removing it from what global light reveals
+ * (`groups/visibility.mjs:643-651`). That boundary is binary and lives in a different container
+ * from the brightness, so the §6.4.1 blur cannot touch it and a darkness disc can keep a hard rim
+ * while every other transition on the map is soft.
  *
- * The distinguishing experiment, because the two candidate causes need opposite fixes: turn the
- * erase off and see whether the disc softens. If it does, the reveal boundary is the culprit.
- * If it does not, the blur is not reaching the texture at all.
+ * The distinguishing experiment, since the two candidate causes need opposite fixes: turn the erase
+ * off and see whether the disc softens. If it does, the reveal boundary is the culprit; if not, the
+ * blur is not reaching the texture at all.
  *
- * Not a setting — with this on, a *darkness* on a globally-lit map stops being dark, which is
- * the whole thing §7.0 exists to fix.
+ * Not a setting — with this on, a darkness on a globally-lit map stops being dark, which is the
+ * whole thing §7.0 exists to fix.
  */
 let eraseDisabled = false;
 
@@ -734,40 +724,40 @@ export const isEraseDisabled = () => eraseDisabled;
 function apply(entry, outer, holes, level, erase, backstop = false, hardEdge = false) {
   if (eraseDisabled) erase = false;
   entry.active = true;
-  // **Empty for the backstop, on purpose.** `rings` is what `regionStub`'s `testPoint` answers
-  // from, and a scene-wide claimant would put its level in front of `getDarknessLevel` for any
-  // point no cell covers. See {@link backstopFor}.
+  // Empty for the backstop, on purpose. `rings` is what `regionStub`'s `testPoint` answers from,
+  // and a scene-wide claimant would put its level in front of `getDarknessLevel` for any point no
+  // cell covers. See {@link backstopFor}.
   entry.rings = backstop ? [] : holes?.length ? [outer, ...holes] : [outer];
   entry.level = level;
   entry.erase = erase;
   entry.backstop = backstop;
-  // **Assigned unconditionally, like every other per-entry flag.** A pooled entry that carried
-  // `hardEdge` from a previous rebuild and is reused for an ordinary darkness would silently
-  // lose its feather — the fourth instance of this project's recurring pooling bug, after
-  // `animation`, `HARD_EDGES` and `HIDDEN`.
+  // Assigned unconditionally, like every other per-entry flag. A pooled entry carrying `hardEdge`
+  // from a previous rebuild and reused for an ordinary darkness would silently lose its feather —
+  // the fourth instance of this project's recurring pooling bug, after `animation`, `HARD_EDGES`
+  // and `HIDDEN`.
   entry.hardEdge = hardEdge;
 
   setGeometry(entry, outer, holes);
 
-  // Cheap, and it covers the one case `refreshFilters` cannot: an entry created while the
-  // setting was zero, then painted after it was raised. A parked mesh needs no sync — PIXI
-  // skips an invisible child before it reaches the filter stack. Order matters: `backstop` is
-  // read inside, so it has to be assigned above.
+  // Cheap, and covers the one case `refreshFilters` cannot: an entry created while the setting was
+  // zero, then painted after it was raised. A parked mesh needs no sync — PIXI skips an invisible
+  // child before it reaches the filter stack. Order matters: `backstop` is read inside, so it has
+  // to be assigned above.
   syncFilter(entry);
 
   entry.dl.visible = true;
   entry.dl.shader.modifier = level;
-  // **Where this mesh sits in the container's draw order** — the ladder lives in
+  // Where this mesh sits in the container's draw order. The ladder lives in
   // `render/darkness-shaders.mjs` and is the composition rule for the whole texture (§7.0 step 6).
   // Sorting is descending, so the biggest number draws first and sits at the bottom. Ground cells
-  // take `GROUND_SORT + level`, which keeps their old relative order — irrelevant anyway, since
-  // they partition space — while leaving the two bands below them free for the light and clamp
-  // passes, which must composite *over* finished ground. The backstop goes under everything,
-  // including the spill gradients it exists to sit beneath.
+  // take `GROUND_SORT + level`, keeping their old relative order — irrelevant anyway, since they
+  // partition space — and leaving the two bands below free for the light and clamp passes, which
+  // must composite over finished ground. The backstop goes under everything, the spill gradients
+  // it exists to sit beneath included.
   entry.dl.shader.sortLevel = backstop ? BACKSTOP_SORT : GROUND_SORT + level;
-  // `getDarknessLevel` reads the *uniform*, which `_preRender` only writes when the mesh is
-  // drawn (`effects.mjs:395`). Setting it here keeps a point query correct on the same tick
-  // the cell was painted, rather than one frame behind.
+  // `getDarknessLevel` reads the uniform, which `_preRender` writes only when the mesh is drawn
+  // (`effects.mjs:395`). Setting it here keeps a point query correct on the tick the cell was
+  // painted rather than one frame behind.
   entry.dl.shader.uniforms.darknessLevel = level;
 
   entry.il.visible = erase;
@@ -840,14 +830,14 @@ export function clear() {
  * Ask the container to re-render and re-sort.
  *
  * @remarks
- * `force`, because `hasDynamicDarknessLevel` is a child *count* and our children are pooled —
- * they stay attached while parked, so the count never reaches zero and never proves anything
- * either way. It also marks the vision mask dirty when global light is active, which is what
- * carries an `ERASE` change through.
+ * `force`, because `hasDynamicDarknessLevel` is a child count and these children are pooled: they
+ * stay attached while parked, so the count never reaches zero and never proves anything either way.
+ * It also marks the vision mask dirty when global light is active, which is what carries an `ERASE`
+ * change through.
  *
- * Deliberately **not** a `canvas.perception.update` call: the renderer makes exactly one at the
- * end of its rebuild, and adding a second here is how the last cycle of self-triggering
- * rebuilds started (see `renderer.rebuild`).
+ * Deliberately not a `canvas.perception.update` call: the renderer makes exactly one at the end of
+ * its rebuild, and adding a second here is how the last cycle of self-triggering rebuilds started
+ * (see `renderer.rebuild`).
  */
 function refresh() {
   canvas.effects?.illumination?.invalidateDarknessLevelContainer(true);
@@ -858,9 +848,9 @@ function refresh() {
  *
  * @remarks
  * Guarded, because the containers these live in belong to the canvas layers and are rebuilt on
- * every scene change — so by the time this runs the meshes may already have been destroyed
- * from underneath us. Dropping our references is the part that has to happen; the `destroy()`
- * is a courtesy to the GPU buffers when we get there first.
+ * every scene change — so by the time this runs the meshes may already be destroyed. Dropping the
+ * references is the part that has to happen; `destroy()` is a courtesy to the GPU buffers when this
+ * gets there first.
  */
 export function dispose() {
   for (const entry of pool) {
@@ -879,18 +869,18 @@ export function dispose() {
 }
 
 /**
- * Which pooled mesh claims a point, and what the **rendered texture** actually says there.
+ * Which pooled mesh claims a point, and what the rendered texture actually says there.
  *
  * @remarks
- * **`canvas.effects.getDarknessLevel` and the shader do not read the same thing**, and that gap
- * is where a whole class of bug hides. The JS query walks our meshes calling
- * `region.document.testPoint` — a ring test on the *polygon* — and returns a shader uniform.
- * Every shader that cares samples `texture2D(darknessLevelTexture, …)`, which is the polygon
- * **after earcut, rasterisation and the container's sort**. A mesh whose geometry failed to
- * triangulate, or that never rendered, answers the first and not the second.
+ * `canvas.effects.getDarknessLevel` and the shader do not read the same thing, and that gap hides a
+ * whole class of bug. The JS query walks these meshes calling `region.document.testPoint` — a ring
+ * test on the polygon — and returns a shader uniform. Every shader that cares samples
+ * `texture2D(darknessLevelTexture, …)`, which is the polygon after earcut, rasterisation and the
+ * container's sort. A mesh whose geometry failed to triangulate, or that never rendered, answers
+ * the first and not the second.
  *
- * Worth having because the difference is invisible from every other angle: the model is right,
- * the cell is right, the point query is right, and the screen is wrong.
+ * Worth having because the difference is invisible from every other angle: the model is right, the
+ * cell is right, the point query is right, and the screen is wrong.
  *
  * `pixel` costs a GPU→CPU readback, so this is a console tool and nothing else may call it.
  *
@@ -933,7 +923,7 @@ export function meshAt(x, y) {
     claims,
     // What the JS query answers — `effects.mjs:391-396`.
     queried: canvas.effects.getDarknessLevel({ x: point.x, y: point.y, elevation: 0 }),
-    // **What the shaders actually sample.** Disagreeing with `queried` is the finding.
+    // What the shaders actually sample. Disagreeing with `queried` is the finding.
     pixel,
     sceneDarkness: canvas.environment?.darknessLevel ?? null,
   };
@@ -942,30 +932,30 @@ export function meshAt(x, y) {
 }
 
 /**
- * Read the texture along a horizontal line through the cursor. **The boundary discriminator.**
+ * Read the texture along a horizontal line through the cursor. The boundary discriminator.
  *
  * @remarks
- * Written to end a class of question that had cost several rounds: *this edge looks hard — is it
- * hard in the brightness field, or is something else drawing over it?* Those need completely
- * different fixes and the map cannot be asked which.
+ * Written to end a question that cost several rounds: an edge looks hard — is it hard in the
+ * brightness field, or is something else drawing over it? Those need opposite fixes and the map
+ * cannot be asked which.
  *
- * Every layer that can put a visible edge on screen is either **in** this texture or **not**:
+ * Every layer that can put a visible edge on screen is either in this texture or not:
  *
- * | In it, and softened by §6.4.4's field blur | Not in it |
+ * | In it, softened by §6.4.4's field blur | Not in it |
  * | --- | --- |
- * | ground cells, spill, light zones, halos, clamps | a light's **coloration** mesh |
- * | | a **darkness source**'s own disc and rim |
- * | | the **visibility** mask, binary by nature |
- * | | the `il` **erase** meshes — §6.4.5 blurs those separately |
+ * | ground cells, spill, light zones, halos, clamps | a light's coloration mesh |
+ * | | a darkness source's own disc and rim |
+ * | | the visibility mask, binary by nature |
+ * | | the `il` erase meshes — §6.4.5 blurs those separately |
  *
- * Hover the edge, call this, read `biggestStep`. A **ramp** means the field is smooth and the hard
- * edge belongs to the right-hand column — chase it there, not here. A **step** means the blur is
- * not reaching that boundary, which is this file's problem.
+ * Hover the edge, call this, read `biggestStep`. A ramp means the field is smooth and the hard edge
+ * belongs to the right-hand column — chase it there, not here. A step means the blur is not
+ * reaching that boundary, which is this file's problem.
  *
- * One `extract.pixels` call for the whole strip rather than one per sample: a readback is a
- * GPU→CPU stall, and forty of them would take longer than the frame being measured.
+ * One `extract.pixels` call for the whole strip rather than one per sample: a readback is a GPU→CPU
+ * stall, and forty of them would take longer than the frame being measured.
  *
- * @param {number} [length=200] - Width of the transect in **screen** pixels, centred on the cursor
+ * @param {number} [length=200] - Width of the transect in screen pixels, centred on the cursor
  * @param {number} [samples=21]
  */
 export function transect(length = 200, samples = 21) {
@@ -998,8 +988,8 @@ export function transect(length = 200, samples = 21) {
     at: { x: Math.round(point.x), y: Math.round(point.y) },
     screenPixels: width,
     values,
-    // **The number that answers it.** A field blurred over `transitionWidth` cannot produce a big
-    // jump between neighbouring samples; a step in the texture is exactly a big one.
+    // The number that answers it. A field blurred over `transitionWidth` cannot produce a big jump
+    // between neighbouring samples; a step in the texture is exactly that.
     biggestStep: +biggest.toFixed(3),
   };
   console.error(`${MODULE_ID} | transect`, report);
@@ -1010,8 +1000,8 @@ export function transect(length = 200, samples = 21) {
  * Debug readout.
  *
  * @remarks
- * Reports the *sample* alongside the pool because "the mesh exists" and "the texture carries
- * its value" are different claims, and only the second one is what any shader sees.
+ * Reports the sample alongside the pool because "the mesh exists" and "the texture carries its
+ * value" are different claims, and only the second is what any shader sees.
  */
 export function status(x, y) {
   const point =
@@ -1019,10 +1009,9 @@ export function status(x, y) {
 
   const report = {
     painted: used,
-    // Cells the level merge collapsed. **Above zero is what keeps the blur honest** — every one
-    // of these was a boundary between two meshes at the same brightness, and a blurred boundary
-    // like that shows the container's clear colour through the seam (§6.4.2a). Inside an umbra
-    // it is normally several.
+    // Cells the level merge collapsed. Above zero is what keeps the blur honest: every one was a
+    // boundary between two meshes at the same brightness, and blurring such a boundary shows the
+    // container's clear colour through the seam (§6.4.2a). Inside an umbra, normally several.
     merged,
     // The second half of the same fix — a scene-wide mesh at the darkest level, under every
     // seam. Only present with the blur on and more than one level in play.
@@ -1030,8 +1019,8 @@ export function status(x, y) {
     pooled: pool.length,
     erasing: pool.filter((e) => e.active && e.erase).length,
     levels: pool.filter((e) => e.active).map((e) => e.level),
-    // Above zero is the observable proof that the ambient complement is one mesh rather than
-    // a stack of full-width strips — the difference §6.2.1's splitting used to force.
+    // Above zero is observable proof that the ambient complement is one mesh rather than a stack of
+    // full-width strips — the difference §6.2.1's splitting used to force.
     holes: pool.reduce((sum, e) => sum + (e.active ? e.holes : 0), 0),
     triangles: pool.reduce((sum, e) => sum + (e.active ? e.triangles : 0), 0),
     // The ground's softening is one blur on the whole container now — `render.blur()` reports it.
@@ -1087,11 +1076,11 @@ const LAYERS = {
  * Hide one rendering layer, to find which one owns a visible edge.
  *
  * @remarks
- * **Built after `transect` proved the field was smooth and the line was still there.** At that
- * point the question is no longer *is the gradient right* but *which layer is drawing over it*,
- * and every candidate is a separate mechanism with its own softening: a light's coloration has
- * `edgeSoftness`, a darkness disc has `darknessPadding`, the vision mask has none by design. They
- * are indistinguishable by eye and immediate by bisection.
+ * Built after `transect` proved the field was smooth and the line was still there. At that point
+ * the question is no longer whether the gradient is right but which layer is drawing over it, and
+ * every candidate is a separate mechanism with its own softening: a light's coloration has
+ * `edgeSoftness`, a darkness disc has `darknessPadding`, the vision mask has none by design.
+ * Indistinguishable by eye, immediate by bisection.
  *
  * Purely visual and entirely reversible — nothing is recomputed, so a layer switched off and on
  * leaves no trace.

@@ -1,18 +1,18 @@
 /**
  * Field-cell debug overlay.
  *
- * Draws `field()`'s output on the canvas so the subdivision can be *seen* rather than
- * inferred from `field.stats()` integers. Not part of the shipped feature set — this is
- * the verification tool for §8.2 step 3.
+ * Draws `field()`'s output on the canvas so the subdivision can be seen rather than inferred from
+ * `field.stats()` integers. Not part of the shipped feature set — the verification tool for §8.2
+ * step 3.
  *
- * It exists because everything downstream is geometry, and geometry is the one thing a
- * console readout is bad at. An annulus split into two halves, a suppressor region
- * carved by a *daylight*, a cell that should have been clipped at a wall — all of those
- * are obvious at a glance and nearly invisible as counts.
+ * It exists because everything downstream is geometry, and geometry is the one thing a console
+ * readout is bad at. An annulus split into two halves, a suppressor region carved by a daylight, a
+ * cell that should have been clipped at a wall — all obvious at a glance and nearly invisible as
+ * counts.
  *
- * It is also a dry run for the renderer: same cells, same polygons, same per-kind
- * treatment. What differs is that this paints flat debug colour and the renderer will
- * assign pooled light sources (§9.5).
+ * It is also a dry run for the renderer: same cells, same polygons, same per-kind treatment. What
+ * differs is that this paints flat debug colour where the renderer assigns pooled light sources
+ * (§9.5).
  */
 
 import { MODULE_ID } from "../constants.mjs";
@@ -36,14 +36,14 @@ export const SETTING_OVERLAY = "cellOverlay";
 
 /** Fill and line colour per cell kind. */
 const STYLE = {
-  // Faint, and drawn first. An ambient cell covers most of the scene, so anything more
-  // assertive would wash out the three kinds that describe a *specific* light.
+  // Faint, and drawn first. An ambient cell covers most of the scene, so anything more assertive
+  // would wash out the three kinds describing a specific light.
   ambient: { fill: 0x88dd99, line: 0x449966, alpha: 0.06 },
   clip: { fill: 0x66ccff, line: 0x2288cc, alpha: 0.12 },
   reduced: { fill: 0xffaa33, line: 0xcc7700, alpha: 0.18 },
   dark: { fill: 0x9d6bd8, line: 0x6a3ba8, alpha: 0.25 },
-  // Where two or more relative bands overlap (§3.2.1). Drawn last and hottest: it is the one
-  // kind whose *existence* is the interesting fact, since the shader cannot show it unaided.
+  // Where two or more relative bands overlap (§3.2.1). Drawn last and hottest: the one kind whose
+  // existence is the interesting fact, the shader being unable to show it unaided.
   stack: { fill: 0xffe066, line: 0xd4a017, alpha: 0.3 },
 };
 
@@ -63,32 +63,31 @@ const active = () => {
 /**
  * Draw the current field.
  *
- * Cells are drawn in kind order — the two **ground** kinds beneath, then the light that stands on
- * them. That is the same ordering question the renderer has to answer, and getting it visibly
- * wrong here is cheap.
+ * Cells are drawn in kind order — the two ground kinds beneath, then the light standing on them.
+ * The same ordering question the renderer has to answer, and getting it visibly wrong here is cheap.
  *
- * **`dark` moved under `clip` on 2026-08-29**, with the rule it illustrates (§4.1.1a). It used to
- * sit on top, which was right while a region was carved away wherever surviving light fell — the
- * violet never overlapped the yellow, so the order was only ever a statement about the *fill*.
- * A `dark` cell is now the whole region and does overlap, and drawing it last would bury every
- * light inside a darkness under violet: the picture would say the darkness replaced the light
- * when what it did was give it a darker floor to work from.
+ * `dark` moved under `clip` on 2026-08-29, with the rule it illustrates (§4.1.1a). It used to sit on
+ * top, which was right while a region was carved away wherever surviving light fell — the violet
+ * never overlapped the yellow, so the order was only a statement about the fill. A `dark` cell is
+ * now the whole region and does overlap, and drawing it last would bury every light inside a
+ * darkness under violet: the picture would say the darkness replaced the light, when what it did was
+ * give it a darker floor to work from.
  */
 export function draw({ force = false, log = false } = {}) {
   if (!canvas?.ready) return { drawn: false, reason: "canvas not ready" };
 
   if (!active()) {
     clear();
-    // **Reported rather than returned bare** (Hamilcarbarcas, 2026-08-27: *"I get undefined for
-    // `overlay.draw()`"*). This is the hook path's correct behaviour — the overlay is off — but
-    // from the console it was indistinguishable from a broken function, because nothing was drawn
-    // and nothing was said. {@link show} is the console door and turns the setting on first.
+    // Reported rather than returned bare: `overlay.draw()` returning undefined (2026-08-27) is the
+    // hook path's correct behaviour, the overlay being off, but from the console it was
+    // indistinguishable from a broken function — nothing drawn and nothing said. {@link show} is the
+    // console door and turns the setting on first.
     return { drawn: false, reason: `${SETTING_OVERLAY} is off — use game.pf1Lighting.overlay.draw()` };
   }
 
-  // `field.get()` returns the same object when nothing it depends on has changed, so this
-  // is the whole reason the overlay can be hooked to something as frequent as token
-  // refresh: a redraw during a drag that changed no geometry costs one reference compare.
+  // `field.get()` returns the same object when nothing it depends on has changed, which is why the
+  // overlay can be hooked to something as frequent as token refresh: a redraw during a drag that
+  // changed no geometry costs one reference compare.
   const current = field.get();
   if (!force && graphics && current === lastDrawn) return { drawn: false, reason: "unchanged" };
   lastDrawn = current;
@@ -103,11 +102,10 @@ export function draw({ force = false, log = false } = {}) {
   graphics.clear();
 
   const { cells, stats } = current;
-  // **`stack` last, and its absence here was a bug for as long as the kind has existed.**
-  // `STYLE.stack` was written with a comment saying it is "drawn last and hottest… the one kind
-  // whose *existence* is the interesting fact, since the shader cannot show it unaided" — and then
-  // the kind was left out of this list, so the cells were computed, counted in `byKind`, and never
-  // drawn. Found 2026-08-27 from a scene reporting `5 stack` with nothing on screen to match.
+  // `stack` last, and its absence here was a bug for as long as the kind has existed. `STYLE.stack`
+  // was written with a comment calling it drawn last and hottest, then the kind was left out of this
+  // list — so the cells were computed, counted in `byKind`, and never drawn. Found 2026-08-27 from a
+  // scene reporting `5 stack` with nothing on screen to match.
   const order = ["ambient", "dark", "clip", "reduced", "stack"];
 
   for (const kind of order) {
@@ -119,10 +117,9 @@ export function draw({ force = false, log = false } = {}) {
       graphics.lineStyle(2, style.line, 0.9);
       graphics.beginFill(style.fill, style.alpha);
       graphics.drawPolygon(points);
-      // Punched, not painted. An `ambient` cell is the scene *less* every darkness on it, so
-      // filling its holes would shade the overlay most strongly exactly where ambient does
-      // **not** apply — the overlay asserting the opposite of the model, in the one place it
-      // is being consulted about.
+      // Punched, not painted. An `ambient` cell is the scene less every darkness on it, so filling
+      // its holes would shade the overlay most strongly exactly where ambient does not apply — the
+      // overlay asserting the opposite of the model in the one place it is being consulted about.
       for (const hole of cell.holes ?? []) {
         if (!hole.points?.length) continue;
         graphics.beginHole();
@@ -133,8 +130,8 @@ export function draw({ force = false, log = false } = {}) {
     }
   }
 
-  // Only on request. Automatic redraws happen on token refresh, and a log line per step
-  // of a drag would bury everything else in the console.
+  // Only on request. Automatic redraws happen on token refresh, and a log line per step of a drag
+  // would bury everything else in the console.
   if (log) {
     console.error(
       `PF1 Lighting | cell overlay — ${stats.cells} cells ` +
@@ -147,22 +144,20 @@ export function draw({ force = false, log = false } = {}) {
 }
 
 /**
- * The console door for the cell overlay — **same signature as {@link levels}**.
+ * The console door for the cell overlay — same signature as {@link levels}.
  *
  * `show()` toggles, `show(true)` turns it on, `show(false)` turns it off.
  *
  * @remarks
- * {@link draw} is also the **hook** path, called on token refresh, where self-enabling would turn
- * the overlay on for anyone who moved a token. So the enabling lives here instead, and {@link
- * levels} needs no equivalent because it owns its own visibility rather than a setting.
+ * {@link draw} is also the hook path, called on token refresh, where self-enabling would turn the
+ * overlay on for anyone who moved a token. So the enabling lives here instead, and {@link levels}
+ * needs no equivalent, owning its visibility rather than a setting.
  *
- * **Deliberately identical to `levels` in behaviour, not merely in spelling.** Two debug overlays
- * on the same feature, driven by two different mechanisms, cost this project two rounds in one
- * session: `draw()` silently no-opped with the setting off and returned `undefined` (Hamilcarbarcas,
- * 2026-08-27: *"I get undefined for `game.pf1Lighting.overlay.draw()`"*), and then there was no
- * obvious way to turn it back off (*"how do I turn off the cell overlay?"*). The underlying
- * asymmetry is real and cannot go away — one is a persisted setting, the other is not — so it is
- * hidden behind a matching signature instead.
+ * Deliberately identical to `levels` in behaviour rather than merely in spelling. Two debug overlays
+ * on the same feature driven by two mechanisms cost two rounds in one session (2026-08-27): `draw()`
+ * silently no-opped with the setting off and returned `undefined`, and then there was no obvious way
+ * to turn it back off. The underlying asymmetry is real and cannot go away — one is a persisted
+ * setting, the other is not — so it is hidden behind a matching signature instead.
  *
  * @param {boolean} [on] - Omit to toggle
  */
@@ -192,9 +187,9 @@ let levelsOn = false;
  * One colour per tier, brightest to darkest, for {@link levels}.
  *
  * @remarks
- * Deliberately **not** greyscale. A greyscale overlay of a brightness field is unreadable against
- * the brightness field it describes — the thing being debugged and the tool debugging it would be
- * the same colour. Hue carries the tier; the map underneath stays visible through the alpha.
+ * Deliberately not greyscale. A greyscale overlay of a brightness field is unreadable against the
+ * brightness field it describes — the thing being debugged and the tool debugging it would be the
+ * same colour. Hue carries the tier; the map underneath stays visible through the alpha.
  */
 const TIER_STYLE = {
   4: { fill: 0xfff1a8, name: "Bright" },
@@ -208,19 +203,18 @@ const TIER_STYLE = {
  * Draw **what the painter was actually given** — the ground regions and their tiers.
  *
  * @remarks
- * Hamilcarbarcas, 2026-08-27: *"Do I have a function available to see the lighting model backend that
- * we're drawing the lighting based on?"* He did not, and that gap is why the last three rounds of
- * this were diagnosed from screenshots.
+ * Added 2026-08-27, no function having existed to see the lighting model behind the drawn lighting —
+ * a gap that left the previous three rounds diagnosed from screenshots.
  *
- * {@link draw} is not it and never was. It draws `field()`'s cells by **kind** — is this ambient,
- * a clip, a suppressor's region — which is the question §8.2 was asking. The question now is
- * *what brightness is this piece of ground, and where exactly does it stop being that*, and the
- * cells that answer it are the ones after the umbra and unseen clamps have been cut in. Those live
- * in `render/paint.mjs`, not in the field.
+ * {@link draw} is not it and never was. It draws `field()`'s cells by kind — ambient, clip,
+ * suppressor region — which is the question §8.2 was asking. The question now is what brightness a
+ * piece of ground is and where exactly it stops being that, and the cells answering it are the ones
+ * after the umbra and unseen clamps have been cut in. Those live in `render/paint.mjs`, not in the
+ * field.
  *
- * Every boundary drawn here is a real boundary in the model. **If a transition on screen does not
- * sit on a line in this overlay, the renderer invented it** — which is the single most useful
- * thing this can tell you, and it is not answerable any other way.
+ * Every boundary drawn here is a real boundary in the model. A transition on screen that does not
+ * sit on a line in this overlay was invented by the renderer, which is the most useful thing this
+ * can report and is not answerable any other way.
  *
  * @param {boolean} [on] - Omit to toggle
  * @returns {object|null} What was drawn, by tier
@@ -247,23 +241,22 @@ export function refreshLevels() {
  * Every claim on a piece of ground, resolved into **one region per tier, with no overlaps**.
  *
  * @remarks
- * Hamilcarbarcas, 2026-08-27, twice: *"are we able to do away with the overlaps in the overlay?"*
+ * The overlaps were reported twice on 2026-08-27.
  *
  * The first version layered its sources — ground cells, then light zones, then spill bands — which
- * is how they are *drawn* and not how they *resolve*. A light sits on ground that already has a
- * tier and its band sits on its own inner zone, so a faithful layered drawing has overlaps
- * everywhere by construction, and an overlap in a debug overlay is indistinguishable from a fault.
- * Reading it meant doing the resolution in your head, which is the thing the tool exists to avoid.
+ * is how they are drawn and not how they resolve. A light sits on ground that already has a tier and
+ * its band sits on its own inner zone, so a faithful layered drawing has overlaps everywhere by
+ * construction, and an overlap in a debug overlay is indistinguishable from a fault. Reading it
+ * meant doing the resolution by hand, the thing the tool exists to avoid.
  *
- * So the claims are resolved here the same way the renderer resolves them — **brightest wins** —
- * and by exactly the mechanism the texture uses, since `MIN_COLOR` over a darkness level *is*
- * brightest-wins (§7.0 step 6). Taking the tiers from brightest down and subtracting everything
- * already claimed yields a genuine partition: every point is drawn once, in one colour, and
- * **any overlap left on screen is now a real fault.**
+ * So the claims resolve here the way the renderer resolves them, brightest wins, by exactly the
+ * mechanism the texture uses — `MIN_COLOR` over a darkness level is brightest-wins (§7.0 step 6).
+ * Taking the tiers from brightest down and subtracting everything already claimed yields a genuine
+ * partition: every point drawn once, in one colour, so any overlap left on screen is a real fault.
  *
- * Deliberately *not* how the renderer computes its meshes. This is a second, independent answer to
- * the same question, in flat regions — so where it disagrees with the map, one of the two is wrong
- * and the disagreement itself is the finding.
+ * Deliberately not how the renderer computes its meshes. A second, independent answer to the same
+ * question in flat regions, so where it disagrees with the map one of the two is wrong and the
+ * disagreement is the finding.
  */
 function resolvedPartition(cells, ramps) {
   const claims = new Map();
@@ -291,8 +284,8 @@ function resolvedPartition(cells, ramps) {
     const region = pathsOf(d.region);
     if (!region.length) continue;
 
-    // The band covers the whole region; the inner zone is a true circle cut to it. Claiming both
-    // and letting the resolution sort them out is what keeps this from re-deriving the geometry.
+    // The band covers the whole region; the inner zone is a true circle cut to it. Claiming both and
+    // letting the resolution sort them out keeps this from re-deriving the geometry.
     claim(d.bandTier, region);
     if (d.inner > 0) {
       const circle = new PIXI.Circle(d.x, d.y, d.inner).toPolygon({ density: 60 });
@@ -352,8 +345,8 @@ function drawLevels({ log = false } = {}) {
       }
       graphics.endFill();
 
-      // At the ring's own first vertex rather than its centroid: a centroid can land outside a
-      // C-shaped region, and after the subtraction most of these are C-shaped.
+      // At the ring's first vertex rather than its centroid: a centroid can land outside a C-shaped
+      // region, and after the subtraction most of these are C-shaped.
       const text = new PIXI.Text(style.name, {
         fontSize: 15,
         fill: style.fill,
@@ -365,8 +358,8 @@ function drawLevels({ log = false } = {}) {
     }
   }
 
-  // A dot per light, so it is obvious *why* a region is the shape it is without an outline that
-  // would put an overlap back.
+  // A dot per light, so why a region is the shape it is stays obvious without an outline that would
+  // put an overlap back.
   graphics.lineStyle(0);
   for (const ramp of ramps) {
     if (ramp.kind !== "light" || !ramp.debug) continue;
@@ -376,8 +369,8 @@ function drawLevels({ log = false } = {}) {
   }
 
   const report = {
-    // Regions in the **resolved partition**, so this is how many distinct pieces of ground there
-    // are — not how many meshes were painted, which is `render.texture().painted`.
+    // Regions in the resolved partition, so this is how many distinct pieces of ground there are —
+    // not how many meshes were painted, which is `render.texture().painted`.
     regions: regions.reduce((n, r) => n + r.paths.length, 0),
     byTier: counts,
     lights: ramps.filter((r) => r.kind === "light").length,
@@ -385,9 +378,9 @@ function drawLevels({ log = false } = {}) {
     clamps: ramps.filter((r) => r.kind === "clamp").length,
     lightsRejected: lightRamps.stats().rejected,
     spillBands: spill.spillAreas().length,
-    // **The first thing to check if gradients look absent**, and reported in parts rather than as
-    // one product: `screenPixels` in single digits is a hard edge however correct the geometry is,
-    // and `squares` says whether that is the setting or the grid.
+    // The first thing to check when gradients look absent, reported in parts rather than as one
+    // product: `screenPixels` in single digits is a hard edge however correct the geometry is, and
+    // `squares` says whether that is the setting or the grid.
     transition: transitionStatus(),
   };
   if (log) console.error(`${MODULE_ID} | brightness map`, report);
@@ -416,9 +409,8 @@ export function registerSettings() {
       "Draws the lighting model's computed cells over the canvas: violet for the ground a darkness " +
       "produced, blue for the light standing on it. Development aid, not a play feature.",
     scope: "client",
-    // **No control surface, by decision (Hamilcarbarcas, 2026-08-26).** It was always a development
-    // aid rather than a play feature; `game.pf1Lighting.overlay.toggle()` is its real interface
-    // and always was.
+    // No control surface (2026-08-26): always a development aid rather than a play feature, with
+    // `game.pf1Lighting.overlay.toggle()` as its real interface.
     config: false,
     type: Boolean,
     default: false,
@@ -427,18 +419,18 @@ export function registerSettings() {
 }
 
 export function registerHooks() {
-  // The brightness map follows the painter rather than the field: it shows what was *drawn*, which
-  // includes the umbra and vision clamps, and those move on every step an observer takes. One hook,
-  // fired at the end of a repaint, and it early-outs when the overlay is off.
+  // The brightness map follows the painter rather than the field: it shows what was drawn, umbra and
+  // vision clamps included, and those move on every step an observer takes. One hook, fired at the
+  // end of a repaint, early-outing when the overlay is off.
   Hooks.on(tierPaint.PAINTED_HOOK, () => refreshLevels());
 
-  // `initializeLightSources` is the broad signal, but it deliberately does *not* fire for
-  // an ordinary light-bearing token moving (`placeables/token.mjs:792-798`) — so hooking
-  // it alone would leave the overlay stale exactly when the geometry is changing most.
-  // `refreshToken` covers that, and is safe to hook because `draw` early-outs on an
-  // unchanged field.
-  // Coalesced to one redraw per frame for the same reason the renderer is: these hooks
-  // fire well above frame rate while the lighting layer is active.
+  // `initializeLightSources` is the broad signal but deliberately does not fire for an ordinary
+  // light-bearing token moving (`placeables/token.mjs:792-798`), so hooking it alone would leave the
+  // overlay stale exactly when the geometry changes most. `refreshToken` covers that and is safe to
+  // hook, `draw` early-outing on an unchanged field.
+  //
+  // Coalesced to one redraw per frame for the reason the renderer is: these hooks fire well above
+  // frame rate while the lighting layer is active.
   let scheduled = false;
   const schedule = () => {
     if (scheduled) return;

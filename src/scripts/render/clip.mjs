@@ -1,24 +1,20 @@
 /**
  * Clipping real light sources to their assigned cell. DESIGN.md §6.1, §6.2.4.
  *
- * **Clip, don't replace.** The whole point of the renderer's design is that a torch
- * inside a partially-overlapping *darkness* is still the torch — same flicker, same
- * colour, same falloff — with a bite taken out of it. Replacing it with a synthetic fill
- * would lose all of that, and losing it was never acceptable.
+ * Clip, don't replace: a torch inside a partially-overlapping darkness stays the torch — same
+ * flicker, colour and falloff — with a bite taken out of it. A synthetic fill loses all of that.
  *
- * **The clip must never touch `shape`.** That was the hardest lesson of the renderer's
- * first day. `shape` has three consumers and only one is drawing:
+ * The clip must never touch `shape`, which has three consumers and only one of them draws:
  *
  * | Consumer | Reads | Effect of clipping it |
  * | --- | --- | --- |
  * | `testPoint` | `base-effect-source.mjs:343-345` | the model forgets where its own lights reach |
- * | visibility mask | `groups/visibility.mjs:562` | **holes in what tokens can see** — black discs that block darkvision |
- * | `_updateGeometry` | `point-effect-source.mjs:173-189` | the one we actually want |
+ * | visibility mask | `groups/visibility.mjs:562` | holes in what tokens can see — black discs blocking darkvision |
+ * | `_updateGeometry` | `point-effect-source.mjs:173-189` | the wanted one |
  *
- * So the clipped polygon lives in `RENDER_SHAPE` and is swapped in only around
- * `_updateGeometry`. `applyConstraint` clones and preserves `config` and `bounds`
- * (`source-polygon.mjs:222`), which the mesher needs; assigning a bare `PIXI.Polygon`
- * would lose both.
+ * So the clipped polygon lives in `RENDER_SHAPE` and is swapped in only around `_updateGeometry`.
+ * `applyConstraint` clones and preserves `config` and `bounds` (`source-polygon.mjs:222`), which the
+ * mesher needs; a bare `PIXI.Polygon` would lose both.
  */
 
 import {
@@ -47,40 +43,34 @@ let applied = false;
 let visibilityPatched = false;
 
 /**
- * Give the **visibility mask** the clipped shape too. DESIGN.md §6.2.4, §7.0.
+ * Give the visibility mask the clipped shape too. DESIGN.md §6.2.4, §7.0.
  *
  * @remarks
- * The third consumer in this file's own table, and the one that stayed harmless for months.
- * `CanvasVisibility#refreshVisibility` draws `lightSource.shape` — the *unclipped* polygon —
- * into `vision.light.sources`, `vision.light.mask` and the light cache
- * (`groups/visibility.mjs:542-562`). So a torch clipped away from a darkness still marks its
- * full raw circle as directly seen.
+ * The third consumer in this file's table. `CanvasVisibility#refreshVisibility` draws
+ * `lightSource.shape` — the unclipped polygon — into `vision.light.sources`, `vision.light.mask`
+ * and the light cache (`groups/visibility.mjs:542-562`), so a torch clipped away from a darkness
+ * still marks its full raw circle as directly seen.
  *
- * Before §7.0 that was invisible: global illumination covered the whole scene, so "revealed"
- * and "not revealed" looked identical on a lit map. Once ambient is cut out of a darkness, the
- * difference becomes a **bright crescent exactly where a light overlaps the darkness** — an
- * area the model calls Dark, that no source paints, and that still renders lit. Reported
- * 2026-08-23, and it survived four wrong hypotheses because every diagnostic to hand described
- * the illumination pipeline, which was working perfectly.
+ * Before §7.0 that was invisible: global illumination covered the whole scene, so revealed and not
+ * revealed looked identical on a lit map. Once ambient is cut out of a darkness the difference
+ * becomes a bright crescent exactly where a light overlaps the darkness — an area the model calls
+ * Dark, that no source paints, and that still renders lit (2026-08-23).
  *
- * ## Why this is not the mistake §6.2.4 warns about
- *
- * That warning is against clipping `shape` **as a property**, which also narrows `testPoint`
- * and the model's own view of each light, and which left "black discs that blocked darkvision".
- * This swaps the field for the duration of *one method* and puts it back, so:
+ * Not the mistake §6.2.4 warns about. That warning is against clipping `shape` as a property, which
+ * also narrows `testPoint` and the model's own view of each light. This swaps the field for the
+ * duration of one method and puts it back, so:
  *
  *   - `testPoint` and the registry are untouched — they never run inside this call;
- *   - **darkvision still reveals the region**, because it comes from the vision-source loop
- *     further down the same method (`visibility.mjs:571+`), which reads a vision source's own
- *     polygon and not a light's.
+ *   - darkvision still reveals the region, coming from the vision-source loop further down the same
+ *     method (`visibility.mjs:571+`), which reads a vision source's own polygon and not a light's.
  *
- * A hole in a *light's* mask contribution is the correct answer: inside a darkness that light
- * genuinely does not let you see. That is the whole claim of the model.
+ * A hole in a light's mask contribution is the correct answer: inside a darkness that light
+ * genuinely does not let anything be seen.
  *
- * **Self-gating.** Only sources carrying a `RENDER_SHAPE` are swapped, and only the renderer
- * ever sets one — so with the renderer off this is a loop over the light sources and nothing
- * else. A prototype patch rather than a class mixin, so it neither races the canvas group's
- * construction nor cares who else has touched `CanvasVisibility`.
+ * Self-gating — only sources carrying a `RENDER_SHAPE` are swapped, and only the renderer ever sets
+ * one, so with the renderer off this is a loop over the light sources and nothing else. A prototype
+ * patch rather than a class mixin, so it neither races the canvas group's construction nor cares who
+ * else has touched `CanvasVisibility`.
  */
 export function patchVisibility() {
   if (visibilityPatched) return;
@@ -100,9 +90,9 @@ export function patchVisibility() {
     try {
       return original.apply(this, args);
     } finally {
-      // Restored unconditionally. A throw inside core's method leaving every light on its
-      // clipped shape would break `testPoint` and the model with it — the exact failure
-      // §6.2.4 exists to prevent, arrived at from the other direction.
+      // Restored unconditionally: a throw inside core's method leaving every light on its clipped
+      // shape would break `testPoint` and the model with it — the failure §6.2.4 exists to prevent,
+      // arrived at from the other direction.
       for (const [source, shape] of swapped) source.shape = shape;
     }
   };
@@ -113,17 +103,17 @@ export function patchVisibility() {
  * default.
  *
  * @remarks
- * **Two levels, since §3.2.1.** A light's inner zone provides a set level and its outer band
- * raises the prevailing one, so the two zones genuinely differ in tier and Foundry exposes
- * exactly that: `dimLevelCorrection` and `brightLevelCorrection` are separate uniforms
- * (`base-lighting.mjs:368-369`). Passing one value keeps both in step, which is what a flat
- * fill wants.
+ * Two levels, per §3.2.1: a light's inner zone provides a set level and its outer band raises the
+ * prevailing one, so the two zones differ in tier. Foundry exposes exactly that —
+ * `dimLevelCorrection` and `brightLevelCorrection` are separate uniforms
+ * (`base-lighting.mjs:368-369`). Passing one value keeps both in step, which is what a flat fill
+ * wants.
  *
  * @param {object} source
  * @param {number|undefined} level - The inner zone's level
  * @param {number|undefined} [bandLevel=level] - The outer band's, when it differs
  * @param {{inner: number, band: number, base: number}|undefined} [tiers] - The same two zones as
- *   **tiers**, plus the ground tier beneath them, for the absolute path (§6.2.9). See {@link TIERS}.
+ *   tiers, plus the ground tier beneath them, for the absolute path (§6.2.9). See {@link TIERS}.
  * @returns {boolean} Whether the assignment changed anything
  */
 export function setLevel(source, level, bandLevel = level, tiers = undefined) {
@@ -152,13 +142,13 @@ export const SETTING_ABSOLUTE = "absoluteLightLevels";
  * Are a light's zones painted at a fixed brightness per tier?
  *
  * @remarks
- * **Gated on the global-illumination takeover, not on the renderer.** With the takeover off,
- * Foundry's own darkness level drives the ground and the tier table describes nothing that is on
- * screen — pinning lights to it would make them the one thing ignoring the scene. The same
- * reasoning ties `levels.applyLightWeights` to that setting, and this is the other half of it.
+ * Gated on the global-illumination takeover, not on the renderer. With the takeover off Foundry's
+ * own darkness level drives the ground and the tier table describes nothing on screen, so pinning
+ * lights to it would make them the one thing ignoring the scene. Same reasoning ties
+ * `levels.applyLightWeights` to that setting.
  *
  * Read here rather than imported from `render/ambient.mjs`, which imports this file's neighbours;
- * `render/paint.mjs` reads the renderer's switch the same way and for the same reason.
+ * `render/paint.mjs` reads the renderer's switch the same way.
  */
 function absolute() {
   try {
@@ -194,10 +184,10 @@ export function registerSettings() {
  * The colour a tier's ground is painted, as the baseline sampler computes it.
  *
  * @remarks
- * The **same formula, deliberately**: `baseline-illumination.mjs:21` is
- * `mix(ambientDaylight, ambientDarkness, level)`, and `Color#mix(other, w)` is `a + (b - a) * w`.
- * A light asking for Normal therefore lands on exactly the pixel value ground at Normal has, and
- * the two cannot drift because there is one expression of the ladder.
+ * Deliberately the same formula: `baseline-illumination.mjs:21` is `mix(ambientDaylight,
+ * ambientDarkness, level)` and `Color#mix(other, w)` is `a + (b - a) * w`. A light asking for Normal
+ * lands on exactly the pixel value ground at Normal has, and the two cannot drift because there is
+ * one expression of the ladder.
  *
  * @param {number} tier
  * @returns {object|null} A `Color`
@@ -214,45 +204,44 @@ function tierColor(tier) {
  * Hand a source's shader the three zone colours outright, bypassing the relative computation.
  *
  * @remarks
- * **Core's own branch, not a patch.** `COMPUTE_ILLUMINATION` already has an `else` that takes
- * `colorBackground`, `colorDim` and `colorBright` as uniforms (`base-lighting.mjs:373-378`); all
- * `computeIllumination = false` does is select it. That branch also skips `getCorrectedColor`
- * entirely, which is why nothing here goes through `levelForTier` — the tier *is* the answer, and
- * translating it into one of Foundry's four levels first would put the relative step back.
+ * Core's own branch, not a patch. `COMPUTE_ILLUMINATION` already has an `else` taking
+ * `colorBackground`, `colorDim` and `colorBright` as uniforms (`base-lighting.mjs:373-378`);
+ * `computeIllumination = false` just selects it. That branch also skips `getCorrectedColor`, which
+ * is why nothing here goes through `levelForTier` — the tier is the answer, and translating it into
+ * one of Foundry's four levels first would put the relative step back.
  *
- * **A per-source constant is exact here rather than an approximation**, and that is §6.1 paying
- * off: every source is clipped to a cell, and a cell is a region of uniform treatment, so the
- * ground tier under a source does not vary across the part of it that draws. The relative path
- * needs a per-fragment background precisely because it has no such guarantee.
+ * A per-source constant is exact rather than approximate, which is §6.1 paying off: every source is
+ * clipped to a cell, a cell is a region of uniform treatment, so the ground tier under a source does
+ * not vary across the part of it that draws. The relative path needs a per-fragment background
+ * precisely because it has no such guarantee.
  *
- * A zone no brighter than the ground it falls on is given the ground's own colour, which is what
+ * A zone no brighter than the ground it falls on gets the ground's own colour, which is what
  * `levelForTier`'s `UNLIT` means on the other path: `FRAGMENT_END` mixes toward
- * `computedBackgroundColor`, so all three equal leaves the ground exactly as the texture painted
- * it — a torch at noon draws nothing, as it should.
+ * `computedBackgroundColor`, so all three equal leaves the ground exactly as the texture painted it
+ * — a torch at noon draws nothing.
  */
 function applyAbsoluteZones(shader, tiers) {
   const u = shader.uniforms;
 
-  // **The illumination layer only, selected by capability rather than by name.** All three layers
-  // — background, illumination, coloration — share `_updateCommonUniforms`, and the GLSL declares
-  // all three colours for each of them (`base-lighting.mjs:107-112`); but only the illumination
-  // shader seeds `colorDim`/`colorBright` in `defaultUniforms`, so on the other two they are
-  // `undefined` in JS and `Color#applyRGB` throws inside the ticker (reported 2026-08-27).
+  // The illumination layer only, selected by capability rather than by name. All three layers —
+  // background, illumination, coloration — share `_updateCommonUniforms`, and the GLSL declares all
+  // three colours for each (`base-lighting.mjs:107-112`); but only the illumination shader seeds
+  // `colorDim`/`colorBright` in `defaultUniforms`, so on the other two they are `undefined` in JS
+  // and `Color#applyRGB` throws inside the ticker (2026-08-27).
   //
-  // Testing for them is the fix and it is also the right selection, not merely a safe one. Those
-  // two colours are read by exactly one thing, `TRANSITION` (`base-lighting.mjs:341`), which only
-  // the illumination shader's fragment program includes — the other two layers paint the map
-  // artwork and the light's tint, neither of which was ever part of §6.2.9's problem. The
-  // background layer computes `computedBackgroundColor` per fragment from our texture, which is
-  // already absolute; switching it to a per-source constant would be a change nobody asked for.
+  // Testing for them is the right selection, not merely a safe one. Those two colours are read by
+  // exactly one thing, `TRANSITION` (`base-lighting.mjs:341`), which only the illumination shader's
+  // fragment program includes — the other two layers paint the map artwork and the light's tint,
+  // neither of which is part of §6.2.9's problem. The background layer computes
+  // `computedBackgroundColor` per fragment from the module's texture, which is already absolute.
   if (!u?.colorBright || !u?.colorDim || !u?.colorBackground) return;
 
   const base = tierColor(tiers.base);
   if (!base) return;
 
-  // `max`, because a light may not darken. The model already refuses to lower a level with a
-  // light source (§3.2.1); this is the render side of the same rule and it is what reproduces
-  // `UNLIT` without a second code path.
+  // `max`, because a light may not darken. The model already refuses to lower a level with a light
+  // source (§3.2.1); this is the render side of the same rule, and it reproduces `UNLIT` without a
+  // second code path.
   const inner = tierColor(Math.max(tiers.inner, tiers.base)) ?? base;
   const band = tierColor(Math.max(tiers.band, tiers.base)) ?? base;
 
@@ -267,15 +256,15 @@ function applyAbsoluteZones(shader, tiers) {
 }
 
 /**
- * Debug readout — **what each light's zones actually resolved to**, as luminance.
+ * Debug readout — what each light's zones resolved to, as luminance.
  *
  * @remarks
- * Written for one question, because it is the question the whole of §6.2.9 turns on and it cannot
- * be answered by looking at the map: *does the same tier come out the same colour on two different
- * grounds?* The ladder is reported alongside, so a zone can be read against it directly — a Normal
- * ring should equal the `Normal` entry, and under the relative path it will not.
+ * Written for the question §6.2.9 turns on, which cannot be answered by looking at the map: does the
+ * same tier come out the same colour on two different grounds? The ladder is reported alongside, so
+ * a zone can be read against it directly — a Normal ring should equal the `Normal` entry, and under
+ * the relative path it will not.
  *
- * Rec. 709, matching `levels.deriveWeights`, so the numbers here and the weights it solves are
+ * Rec. 709, matching `levels.deriveWeights`, so these numbers and the weights it solves are
  * comparable.
  */
 export function zones() {
@@ -305,9 +294,9 @@ export function zones() {
         synthetic: isSynthetic(source),
         // What the model decided.
         tiers: tiers ? { ...tiers } : null,
-        // **What the shader is running.** `computeIllumination: true` here with `absolute: true`
-        // above is the failure this readout exists for — the uniforms were set and something
-        // re-uploaded them afterwards.
+        // What the shader is running. `computeIllumination: true` here with `absolute: true` above
+        // is the failure this readout exists for: the uniforms were set and something re-uploaded
+        // them afterwards.
         computeIllumination: u?.computeIllumination,
         inner: u ? +lum(u.colorBright).toFixed(3) : null,
         band: u ? +lum(u.colorDim).toFixed(3) : null,
@@ -340,22 +329,22 @@ export function setStrength(source, strength, animationOnly = false) {
 /**
  * Assign a clip polygon to a source. Pass `null` to clear it.
  *
- * Does **not** re-initialise the source — the caller is expected to be mid-rebuild and
- * to refresh once at the end rather than once per source.
+ * Does not re-initialise the source — the caller is expected to be mid-rebuild and to refresh once
+ * at the end rather than once per source.
  *
  * @param {object} source
  * @param {PIXI.Polygon|null} polygon
  * @returns {boolean} Whether the assignment changed anything
  */
 export function assign(source, polygon) {
-  // **Identity only, and deliberately not compared against `source.shape`.** An earlier version
-  // filtered out a self-clip here by testing `polygon !== source.shape`, which reads as a tidy
-  // optimisation and is a feedback loop: re-initialising a source reallocates `shape`, so the
-  // test's answer changes underneath a cached cell and the clip oscillates between the polygon
-  // and `null`, restaging the source every frame forever.
+  // Identity only, and deliberately not compared against `source.shape`. An earlier version
+  // filtered out a self-clip by testing `polygon !== source.shape`, which reads as a tidy
+  // optimisation and is a feedback loop: re-initialising a source reallocates `shape`, so the test's
+  // answer changes underneath a cached cell and the clip oscillates between the polygon and `null`,
+  // restaging the source every frame forever.
   //
-  // Whether a cell is a real clip is a fact about how `field()` built it, so `field()` states
-  // it — `cell.clipped` — and the caller passes `null` when it is false.
+  // Whether a cell is a real clip is a fact about how `field()` built it, so `field()` states it —
+  // `cell.clipped` — and the caller passes `null` when it is false.
   if (source[CLIP] === polygon) return false;
   source[CLIP] = polygon ?? null;
   return true;
@@ -393,10 +382,9 @@ export function setHardEdges(source, hard) {
 /**
  * Mix clipping into whatever light source class is installed.
  *
- * Called at `canvasInit`, after `limits` and after our own suppression mixin, so this
- * sits on top of both. Note `limits` also narrows `_createShapes` — it constrains, we
- * constrain — so the two compose rather than conflict, and the order only decides which
- * constraint is applied to the other's output.
+ * Called at `canvasInit`, after `limits` and after this module's suppression mixin, so it sits on
+ * top of both. `limits` also narrows `_createShapes`; both constrain, so the two compose rather than
+ * conflict and the order only decides which constraint is applied to the other's output.
  */
 export function applyMixin() {
   if (applied) return;
@@ -417,18 +405,17 @@ export function applyMixin() {
        * Widen a darkness source's fade band before core derives its border distance from it.
        *
        * @remarks
-       * `PointDarknessSource._initialize` computes `borderDistance = radius / (radius +
-       * _padding)` (`point-darkness-source.mjs:118`), and `_padding` is a class field fixed at
-       * construction — so the fade is a constant number of pixels and a large disc gets a
-       * proportionally sharper rim. Assigning here rather than in the constructor is what makes
-       * the setting live: `_initialize` re-reads it on every source initialisation.
+       * `PointDarknessSource._initialize` computes `borderDistance = radius / (radius + _padding)`
+       * (`point-darkness-source.mjs:118`), and `_padding` is a class field fixed at construction, so
+       * the fade is a constant number of pixels and a large disc gets a proportionally sharper rim.
+       * Assigning here rather than in the constructor is what makes the setting live: `_initialize`
+       * re-reads it on every source initialisation.
        *
-       * **Only real darkness sources.** `_padding` means something else on a light source, and
-       * our own pooled fills bypass the machinery it feeds — their `_createShapes` returns early
-       * on `directPolygon` and never builds the padded `_visualShape` the fade band lives in
-       * (`render/pool.mjs`). Widening it there would change `borderDistance` with no padded
-       * shape to spend it on, which is a fade eating into the fill rather than sitting outside
-       * it.
+       * Only real darkness sources. `_padding` means something else on a light source, and the
+       * pooled fills bypass the machinery it feeds — their `_createShapes` returns early on
+       * `directPolygon` and never builds the padded `_visualShape` the fade band lives in
+       * (`render/pool.mjs`). Widening it there changes `borderDistance` with no padded shape to
+       * spend it on: a fade eating into the fill rather than sitting outside it.
        */
       _initialize(data) {
         if (this.constructor.pf1LightingDarkness && !isSynthetic(this)) {
@@ -442,15 +429,14 @@ export function applyMixin() {
        * How far this source's clipped edge feathers.
        *
        * @remarks
-       * A **getter**, not a value, because it is a live setting: `_updateGeometry` reads
-       * `this.constructor.EDGE_OFFSET` afresh each time it meshes
-       * (`point-effect-source.mjs:176`), so a getter takes effect on the next source rebuild
-       * with nothing to invalidate.
+       * A getter, not a value, because it is a live setting: `_updateGeometry` reads
+       * `this.constructor.EDGE_OFFSET` afresh each time it meshes (`point-effect-source.mjs:176`),
+       * so a getter takes effect on the next source rebuild with nothing to invalidate.
        *
-       * Foundry's own is `-8`, which §6.4 already called "tuned very small" — small enough that
-       * a clipped light abutting one of our regions read as a hard step (2026-08-23). Every
-       * soft-edged source inherits this, our pooled synthetics included, which is the point: a
-       * `stack` clone has to feather at the same rate as the light it stands in for.
+       * Foundry's own is `-8`, tuned small enough (§6.4) that a clipped light abutting a module
+       * region read as a hard step (2026-08-23). Every soft-edged source inherits this, the pooled
+       * synthetics included, which is the point: a `stack` clone has to feather at the same rate as
+       * the light it stands in for.
        */
       static get EDGE_OFFSET() {
         return edgeOffset();
@@ -461,15 +447,14 @@ export function applyMixin() {
        * Render at a per-source lighting level when one has been assigned.
        *
        * @remarks
-       * `_dimLightingLevel` and `_brightLightingLevel` read like instance properties but
-       * are taken off `this.constructor` (`base-light-source.mjs:213-214`), so assigning
-       * them on a source does nothing — a correction to DESIGN.md §6.2.3, which said to
-       * do exactly that. The override therefore goes one layer down, onto the uniforms
-       * those statics feed.
+       * `_dimLightingLevel` and `_brightLightingLevel` read like instance properties but are taken
+       * off `this.constructor` (`base-light-source.mjs:213-214`), so assigning them on a source does
+       * nothing — a correction to DESIGN.md §6.2.3, which said to do exactly that. The override goes
+       * one layer down instead, onto the uniforms those statics feed.
        *
-       * This is what lets a **darkness** source darken a region by a *specific amount*
-       * rather than all the way to black — the mechanism a *darkness* spell needs on a
-       * lit map, where the answer is "one step down from ambient", not "unlit".
+       * Lets a darkness source darken a region by a specific amount rather than all the way to
+       * black, which is what a darkness spell needs on a lit map: one step down from ambient, not
+       * unlit.
        */
       _updateCommonUniforms(shader) {
         super._updateCommonUniforms(shader);
@@ -483,8 +468,8 @@ export function applyMixin() {
         );
 
         // §6.2.9. Both paths are kept and the corrections above are set either way: the absolute
-        // one is switched off with the takeover, and then the relative one is Foundry's own
-        // behaviour rather than a fallback we have to maintain.
+        // one switches off with the takeover, leaving the relative one, which is Foundry's own
+        // behaviour rather than a fallback to maintain.
         const tiers = this[TIERS];
         if (tiers && absolute()) applyAbsoluteZones(shader, tiers);
       }
@@ -500,16 +485,16 @@ export function applyMixin() {
       _initializeSoftEdges() {
         super._initializeSoftEdges();
 
-        // **Undo Foundry's complete-circle exemption for a clipped source**, which §6.2.4's own
-        // design otherwise triggers by accident. `_initializeSoftEdges` tests `this.shape`, and
-        // `shape` is deliberately left *unclipped* — the cut lives in `RENDER_SHAPE` and reaches
-        // only `_updateGeometry`. So a light with a bite taken out of it still reports as a
-        // perfect circle, Foundry disables soft edges on that basis, and the one boundary that
-        // actually needs a feather — the cut — is the one that never gets one.
+        // Undo Foundry's complete-circle exemption for a clipped source, which §6.2.4's design
+        // otherwise triggers by accident. `_initializeSoftEdges` tests `this.shape`, and `shape` is
+        // deliberately left unclipped — the cut lives in `RENDER_SHAPE` and reaches only
+        // `_updateGeometry`. So a light with a bite taken out of it still reports as a perfect
+        // circle, Foundry disables soft edges on that basis, and the one boundary needing a feather
+        // — the cut — never gets one.
         //
-        // Reported 2026-08-23: a *darkness* adjacent to a torch has a sharp border at scene
-        // darkness 1, where the texture has no brightness step to feather and the visible edge
-        // is entirely the clipped light's.
+        // 2026-08-23: a darkness adjacent to a torch has a sharp border at scene darkness 1, where
+        // the texture has no brightness step to feather and the visible edge is entirely the clipped
+        // light's.
         //
         // Only the circle test is undone; the performance-mode and preview gates stand.
         if (this[RENDER_SHAPE]) {
@@ -525,14 +510,12 @@ export function applyMixin() {
        * Scale the darkness layer's alpha to render a *partial* darkening.
        *
        * @remarks
-       * The darkness shader ignores lighting levels — it renders from `color` and
-       * `colorationAlpha` (`point-darkness-source.mjs:206-213`). Alpha is therefore the
-       * only way to say "darken this area one step" rather than "darken it to black",
-       * which is what a *darkness* spell over lit ground needs.
+       * The darkness shader ignores lighting levels, rendering from `color` and `colorationAlpha`
+       * (`point-darkness-source.mjs:206-213`). Alpha is therefore the only way to darken an area one
+       * step rather than to black, which is what a darkness spell over lit ground needs.
        *
-       * Applied here rather than by editing `data.alpha`, so the document's authored
-       * value stays intact and nothing has to be restored when the renderer is switched
-       * off.
+       * Applied here rather than by editing `data.alpha`, so the document's authored value stays
+       * intact and nothing has to be restored when the renderer is switched off.
        */
       _updateDarknessUniforms() {
         super._updateDarknessUniforms?.();
@@ -542,31 +525,30 @@ export function applyMixin() {
         // Put back the vision mode's colour adjustment, which this shader skips by sampling
         // `canvas.primary.renderTexture` directly. See `render/desaturate.mjs`.
         //
-        // **Except when the source is only carrying an animation** (§6.2.6). Desaturating is
-        // what darkvision does to *a darkness*, and an animation-only source is not one — the
-        // ground under it is at whatever tier the texture says, Normal included. Left in, a
-        // *darkness* reducing Bright to Normal went grey for a darkvision observer purely
-        // because the GM had picked an animation for it (reported 2026-08-24).
+        // Except when the source is only carrying an animation (§6.2.6). Desaturating is what
+        // darkvision does to a darkness, and an animation-only source is not one — the ground under
+        // it is at whatever tier the texture says, Normal included. Left in, a darkness reducing
+        // Bright to Normal went grey for a darkvision observer purely because the GM had picked an
+        // animation for it (2026-08-24).
         if ("saturation" in u) u.saturation = this[DARK_ANIMATION] ? 0 : currentSaturation();
 
         const strength = this[STRENGTH];
         if (strength === undefined) return;
 
-        // **Animation only: neutralise the darkening rather than reduce it.**
+        // Animation only: neutralise the darkening rather than reduce it.
         //
         // `finalColor *= mix(color, color * 0.33, darknessLevel) * colorationAlpha`
         // (`darkness-lighting.mjs:119`), where `finalColor` starts as the rendered scene and the
-        // animation has already modified it. So the identity is *white at alpha 1* — the source
-        // then draws the scene back exactly as it found it, animated.
+        // animation has already modified it. So the identity is white at alpha 1 — the source draws
+        // the scene back exactly as it found it, animated.
         //
         // `strength` is the tint: 0 keeps the source out of the way entirely, 1 restores its
-        // authored colour and the darkness that comes with it. Interpolating the **colour** is
-        // what makes that a dial; interpolating the alpha, which is what the name suggested,
-        // runs from "authored" to "pitch black" and has no neutral in it at all.
+        // authored colour and the darkness with it. Interpolating the colour is what makes that a
+        // dial; interpolating the alpha runs from authored to pitch black with no neutral in it.
         if (this[DARK_ANIMATION]) {
-          // Read back what `super` just wrote rather than rebuilding it from `data.color`:
-          // it is already the resolved rgb, and a fresh array each call, so pulling it toward
-          // white cannot compound frame over frame.
+          // Read back what `super` just wrote rather than rebuilding from `data.color`: already the
+          // resolved rgb, and a fresh array each call, so pulling it toward white cannot compound
+          // frame over frame.
           const tint = Math.clamp(strength, 0, 1);
           const rgb = u.color ?? [1, 1, 1];
           u.color = [
@@ -587,9 +569,9 @@ export function applyMixin() {
        *
        * @remarks
        * An animation's `darknessShader` supersedes the layer's `defaultShader`
-       * (`rendered-effect-source.mjs:278`), so a GM who picked *Roiling Darkness* would get
-       * an unwrapped shader if we substituted a fixed class here. Wrapping the *result*
-       * covers the default and all four animated variants with one substitution.
+       * (`rendered-effect-source.mjs:278`), so substituting a fixed class here would leave a GM who
+       * picked Roiling Darkness with an unwrapped shader. Wrapping the result covers the default and
+       * all four animated variants with one substitution.
        */
       _configureShaders() {
         const shaders = super._configureShaders();
@@ -610,12 +592,11 @@ export function applyMixin() {
        * through something else as well.
        *
        * @remarks
-       * The second condition is **blindsight**, and withholding is the whole mechanism —
-       * see `observerIgnoresDarkness`. Two attempts to neutralise the bubble *inside* the
-       * shader both failed, because what the surrounding ground looks like is painted by the
-       * vision source and no term available to a darkness shader reproduces it. Letting the
-       * ordinary pipeline draw the ground is not a workaround; it is the only way to get the
-       * same answer as the ground next to it.
+       * The second condition is blindsight, and withholding is the whole mechanism — see
+       * `observerIgnoresDarkness`. Two attempts to neutralise the bubble inside the shader both
+       * failed: what the surrounding ground looks like is painted by the vision source, and no term
+       * available to a darkness shader reproduces it. Letting the ordinary pipeline draw the ground
+       * is the only way to get the same answer as the ground next to it.
        */
       _drawMesh(layerId) {
         const suppressed = layerId === "darkness" && observerIgnoresDarkness();
@@ -627,7 +608,7 @@ export function applyMixin() {
 
       /**
        * @override
-       * Compute the clipped polygon, but **do not install it as `shape`**.
+       * Compute the clipped polygon, but do not install it as `shape`.
        *
        * @see RENDER_SHAPE — `shape` also drives `testPoint` and the visibility mask, and
        * clipping it made lights invisible rather than merely unlit.
@@ -636,8 +617,8 @@ export function applyMixin() {
         super._createShapes();
         this[RENDER_SHAPE] = null;
 
-        // Synthetic sources carry their own geometry already; clipping them again would
-        // be applying the cell to itself.
+        // Synthetic sources carry their own geometry already; clipping them again applies the cell
+        // to itself.
         if (isSynthetic(this)) return;
 
         const clip = this[CLIP];
@@ -648,10 +629,10 @@ export function applyMixin() {
         const base = this._visualShape ?? this.shape;
         if (!base?.applyConstraint) return;
 
-        // `applyConstraint` returns a **new** polygon and preserves `config` and `bounds`
-        // (`source-polygon.mjs:222`), which the mesher needs. Never mutate in place:
-        // an earlier version emptied a shape the model held a reference to, which
-        // removed that suppressor from the field, which blanked all the others.
+        // `applyConstraint` returns a new polygon and preserves `config` and `bounds`
+        // (`source-polygon.mjs:222`), which the mesher needs. Never mutate in place: an earlier
+        // version emptied a shape the model held a reference to, removing that suppressor from the
+        // field and blanking all the others.
         this[RENDER_SHAPE] = base.applyConstraint(clip);
       }
 
@@ -660,9 +641,9 @@ export function applyMixin() {
        * Mesh the clipped polygon rather than `shape`.
        *
        * @remarks
-       * Swapping the field around `super` rather than reimplementing the meshing keeps
-       * Foundry's own maths — including `PointDarknessSource`'s padded variant — as the
-       * single source of truth for how a source becomes geometry.
+       * Swapping the field around `super` rather than reimplementing the meshing keeps Foundry's own
+       * maths — including `PointDarknessSource`'s padded variant — as the single source of truth for
+       * how a source becomes geometry.
        */
       _updateGeometry() {
         const render = this[RENDER_SHAPE];
@@ -696,9 +677,8 @@ let wallsPatched = false;
  * Let a darkness source respect the *light* restriction of the walls it sweeps.
  *
  * @remarks
- * **A core oversight, not one of ours** — but this module leans on darkness sources harder than
- * core does, so it surfaces here. Reported by Hamilcarbarcas 2026-08-26: darkness was being blocked by
- * windows and by **open doors**.
+ * A core oversight, surfacing here because this module leans on darkness sources harder than core
+ * does. Found 2026-08-26: darkness was blocked by windows and by open doors.
  *
  * `ClockwiseSweepPolygon#_testEdgeInclusion` decides whether an edge blocks by indexing the edge
  * with the polygon's own type (`clockwise-sweep.mjs:244`):
@@ -707,36 +687,31 @@ let wallsPatched = false;
  * if ( edge[type] === CONST.WALL_SENSE_TYPES.NONE ) return false;
  * ```
  *
- * That works for `sight`, `light`, `sound` and `move`, because those are the four
- * `WALL_RESTRICTION_TYPES` and `Edge` carries one property per restriction
- * (`edges/edge.mjs:40-43`). **`darkness` is not one of them.** It is a *source* type —
- * `PointDarknessSource.sourceType` — and `Edge` has no such property, so `edge.darkness` is
- * `undefined`, which is not `NONE`, so **every edge blocks every darkness source**.
+ * That works for `sight`, `light`, `sound` and `move` — the four `WALL_RESTRICTION_TYPES`, and
+ * `Edge` carries one property per restriction (`edges/edge.mjs:40-43`). `darkness` is not one of
+ * them. It is a source type, `PointDarknessSource.sourceType`, and `Edge` has no such property, so
+ * `edge.darkness` is `undefined`, which is not `NONE`, so every edge blocks every darkness source.
  *
- * The open door is what makes it unambiguous rather than a matter of taste. `Wall#createEdge`
- * zeroes all four restrictions on an open door (`placeables/wall.mjs:225`) — the edge remains,
- * blocking nothing. A darkness sweep asks for a fifth restriction that was never zeroed because
- * it never existed, and stops at the doorway.
+ * The open door makes it unambiguous rather than a matter of taste. `Wall#createEdge` zeroes all
+ * four restrictions on an open door (`placeables/wall.mjs:225`) — the edge remains, blocking
+ * nothing. A darkness sweep asks for a fifth restriction that was never zeroed because it never
+ * existed, and stops at the doorway.
  *
- * `applyThreshold` has the same shape one level down (`edges/edge.mjs:213-215`): it reads
+ * `applyThreshold` has the same shape one level down (`edges/edge.mjs:213-215`), reading
  * `this.threshold[sourceType]`, so a proximity or attenuation wall configured for light never
  * applies to darkness either.
  *
- * ## Swapping the type, rather than teaching `Edge` a new word
+ * Both problems are one string used as two kinds of name, so the fix goes where the string is read
+ * rather than where the data lives. `edgeTypes` is still computed from `"darkness"` before this
+ * runs, and must stay that way: it is what makes a darkness sweep respect `light`-type edges at
+ * `priority + 1` (`clockwise-sweep.mjs:132-134`), unrelated to wall restrictions.
  *
- * Both problems are the *same* one — one string used as two kinds of name — so the fix is
- * applied where the string is read rather than where the data lives. `edgeTypes` is still
- * computed from `"darkness"` before this runs, which is the part that must not change: it is
- * what makes a darkness sweep respect `light`-type edges at `priority + 1`
- * (`clockwise-sweep.mjs:132-134`) and is unrelated to wall restrictions.
+ * The alternative, a `darkness` accessor on `Edge.prototype` aliasing `light`, cannot reach
+ * `threshold.darkness` — a plain per-instance object — so it would fix half the bug and leave the
+ * half that is harder to notice.
  *
- * The alternative was a `darkness` accessor on `Edge.prototype` aliasing `light`. Rejected: it
- * cannot reach `threshold.darkness`, which is a plain per-instance object, so it would fix half
- * the bug and leave the half that is harder to notice.
- *
- * **Darkness spreads like light** is the semantic being asserted, and it is the one a GM already
- * expects — a window that lets light through lets a *darkness* through, and an open doorway
- * stops neither.
+ * The semantic asserted is that darkness spreads like light, which is what a GM expects: a window
+ * that lets light through lets a darkness through, and an open doorway stops neither.
  */
 export function patchDarknessWalls() {
   if (wallsPatched) return;
@@ -749,8 +724,8 @@ export function patchDarknessWalls() {
 
     /** @override */
     _testEdgeInclusion(edge, edgeTypes) {
-      // Synchronous, restored in `finally`, and confined to one call — the same idiom
-      // `patchVisibility` and `umbra-mask` use for swapping a property around core's own method.
+      // Synchronous, restored in `finally`, confined to one call — the same idiom `patchVisibility`
+      // and `umbra-mask` use for swapping a property around core's own method.
       const config = this.config;
       if (config?.type !== "darkness") return super._testEdgeInclusion(edge, edgeTypes);
       config.type = "light";
