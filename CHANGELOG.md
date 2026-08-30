@@ -7,7 +7,7 @@
   release body. If no matching section exists, the release fails.
 -->
 
-## [0.1.0] - 2026-08-29
+## [0.1.1] - 2026-08-29
 
 ### Added
 - Beta release.
