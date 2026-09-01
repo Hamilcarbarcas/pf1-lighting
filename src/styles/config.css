@@ -12,7 +12,9 @@
  * | Class | On | For |
  * | --- | --- | --- |
  * | `.pf1-lighting-rows` | both forms | how a row of controls lays out |
- * | `.pf1-lighting.preset-editor` | our own window | that window's own furniture |
+ * | `.pf1-lighting.preset-editor`, `.pf1-lighting.light-item-editor` | our own windows | their own furniture |
+ * | `.pf1-lighting-emits` | a PF1 item sheet | the light descriptor's section |
+ * | `.pf1-lighting-hud` | the Token HUD | the light button and its picker |
  * | `.pf1-lighting-moved`, `.pf1-lighting-scene-tier` | core's own elements | what we hid or drove |
  *
  * `.pf1-lighting-config` is **not** in that list and carries no rules at all any more. It is the
@@ -211,16 +213,244 @@
 }
 
 /* -------------------------------------------- */
-/*  The preset editor only                      */
+/*  The two list windows                        */
 /* -------------------------------------------- */
 
-/* The New / Duplicate / Delete cluster beside the preset select. `flex: 0 0 auto` so they keep
- * their size while the select takes the row, and a fixed square so the three read as a group
- * rather than as three differently-sized buttons. */
-.pf1-lighting.preset-editor .form-fields > button.icon {
+/* The New / Duplicate / Delete cluster beside the select. `flex: 0 0 auto` so they keep their size
+ * while the select takes the row, and a fixed square so the three read as a group rather than as
+ * three differently-sized buttons. Shared by both list windows — the preset editor and the light
+ * source editor are the same furniture around a different list, and they must not drift. */
+.pf1-lighting.preset-editor .form-fields > button.icon,
+.pf1-lighting.light-item-editor .form-fields > button.icon {
   flex: 0 0 auto;
   width: 2rem;
   height: 2rem;
   padding: 0;
   line-height: 1;
 }
+
+/* The Edit light button: its own row under Name, with no label of its own — the preset's type and
+ * everything else about it is chosen on the light sheet the button opens, so a label here would be
+ * naming a row that holds one verb. Full width, because a lone right-aligned button under a
+ * full-width text field reads as an afterthought. */
+.pf1-lighting.preset-editor .pf1-lighting-preset-edit .form-fields > button {
+  flex: 1;
+}
+
+/* -------------------------------------------- */
+/*  A preset opened in the real light sheet     */
+/* -------------------------------------------- */
+
+/* Placement fields have no meaning for a preset and are hidden rather than disabled — a control
+ * that submits into nothing invites a value that silently evaporates. `pf1-lighting-off` is the
+ * module's own hiding class; see `ui/preset-light-config.mjs`. */
+.application.pf1-lighting-preset-light .pf1-lighting-off {
+  display: none !important;
+}
+
+/* -------------------------------------------- */
+/*  The Token HUD light button                  */
+/* -------------------------------------------- */
+
+/* The preset list. `.palette` is core's class and brings the positioning, the background and the
+ * hidden/visible states with it (`foundry2.css:8093-8121`), so only the contents need styling.
+ * Scoped to our own palette class throughout: a bare `.palette a` rule would repaint core's status
+ * effects and movement actions, which share the class. */
+/* `width: max-content` with no `min-width` is what keeps every name on one line: the panel is
+ * positioned from its right edge (`right: calc(var(--column-width) + 8px)`), so growing to fit its
+ * widest row extends it leftwards into open canvas rather than wrapping. */
+/* No `top` here on purpose — `ui/token-hud.place()` sets it, because the button's own position in
+ * the column moves as other modules add controls and the panel has to follow it. A rule here would
+ * be a second opinion about the same number, and the wrong one whenever the column changed. */
+#token-hud .pf1-lighting-hud-palette {
+  display: flex;
+  flex-direction: column;
+  width: max-content;
+  max-width: 24rem;
+  /* A last resort only. `place()` keeps a panel's top on screen by rising as far as it needs to, so
+   * this is reached only when a list is taller than the viewport itself — a table with a great many
+   * presets on a short screen. Scrolling beats being unreachable. */
+  max-height: calc(100vh - 1rem);
+  overflow-y: auto;
+  padding: 3px;
+  gap: 2px;
+}
+
+/* A row is a flex line, not text with an image in it, so the icon and the label are one target and
+ * both are clickable — the `inert` span they started as made only the padding hit the anchor. */
+#token-hud .pf1-lighting-hud-choice {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 3px;
+  color: var(--control-icon-color);
+  white-space: nowrap;
+  cursor: var(--cursor-pointer);
+}
+
+#token-hud .pf1-lighting-hud-choice:hover {
+  color: var(--control-hover-icon-color);
+  background: var(--control-hover-bg-color);
+}
+
+/* The preset currently lit, so reopening the picker says what is burning. */
+#token-hud .pf1-lighting-hud-choice.active {
+  color: var(--control-active-icon-color);
+  background: var(--control-active-bg-color);
+}
+
+/* A carried light source's icon in the player-facing picker. */
+#token-hud .pf1-lighting-hud-icon {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  height: 1.25rem;
+  border: none;
+  object-fit: contain;
+}
+
+/* The GM's override row, above the carried list. Separated by a rule rather than by wording,
+ * because it is a different kind of thing: everything below it is what this actor has, and this one
+ * ignores that entirely. */
+#token-hud .pf1-lighting-hud-override {
+  margin-bottom: 2px;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--control-border-color);
+  font-style: italic;
+}
+
+#token-hud .pf1-lighting-hud-override > i {
+  flex: 0 0 auto;
+  width: 1.25rem;
+  text-align: center;
+}
+
+/* Out of fuel: shown rather than omitted, because a picker that drops the lantern in your hand
+ * reads as a fault in the picker. Greyed and inert says "you are out of oil" instead. */
+#token-hud .pf1-lighting-hud-choice.disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* -------------------------------------------- */
+/*  The item sheet's light descriptor           */
+/* -------------------------------------------- */
+
+/* Scoped to the sheet and to this feature's own class throughout. Module CSS is unlayered and
+ * outranks every core `@layer`, so a bare `.form-group` or `.notes` rule here would repaint the
+ * whole application (`feedback_css_scope_every_selector`). Hint text is left entirely to core's
+ * `p.notes` — a lighting module has no opinion about how a PF1 sheet's hints look, and matching the
+ * sheet is the point. */
+.app.sheet.item .pf1-lighting-emits {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The header is the disclosure control, and the section's own bulb is the only state cue: full
+ * strength open, dimmed closed, so an expanded header looks exactly as it would without the
+ * mechanism. Deliberately the same interaction and the same cues as `astora-mod`'s collapsible
+ * sheet sections — reproduced rather than shared, since this module must not depend on that one. */
+.app.sheet.item .pf1-lighting-emits-header {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: var(--cursor-pointer);
+  user-select: none;
+  transition: opacity 120ms ease;
+}
+
+.app.sheet.item .pf1-lighting-emits-collapsed .pf1-lighting-emits-header {
+  opacity: 0.55;
+}
+
+.app.sheet.item .pf1-lighting-emits-header:hover {
+  opacity: 1;
+}
+
+/* What the section holds, readable while it is shut. A count would say "1" forever here, so this
+ * carries the preset's name instead. */
+.app.sheet.item .pf1-lighting-emits-badge {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--color-underline-header, #782e22);
+  color: #fff;
+  font-size: var(--font-size-11, 11px);
+  font-weight: normal;
+}
+
+/* Switched off: the dependent rows go immediately rather than on the next render, or a control that
+ * stays visible after being unchecked reads as one that did not take. Hidden rather than disabled —
+ * a preset that submits into a descriptor nobody reads is a value that quietly evaporates. */
+.app.sheet.item .pf1-lighting-emits-off .pf1-lighting-emits-row {
+  display: none;
+}
+
+/* The fuel row is a name and a duration, and the name is the half that needs the room. */
+.app.sheet.item .pf1-lighting-emits input[name$=".fuel.hours"] {
+  flex: 0 0 5rem;
+}
+
+/* *Dead end, recorded so it is not retried.* Chromium's datalist arrow on `input[list]` sits low in
+ * the box — Foundry gives every input `height` **and** `line-height` of `var(--input-height)`
+ * (`foundry2.css:3361-3362`), so the line box fills the control and its baseline is low in it.
+ * Neither `align-self: center` (it is not a flex item) nor `vertical-align: middle` on
+ * `::-webkit-calendar-picker-indicator` moved it at all, 2026-08-30. Cosmetic and left alone; if it
+ * ever becomes worth solving, the next thing to try is absolute positioning inside the input's
+ * padding box, and the fallback is `display: none` — the list still opens on typing, losing only
+ * the click-to-see-all affordance. */
+
+/* -------------------------------------------- */
+/*  The light-effect management window          */
+/* -------------------------------------------- */
+
+/* Scoped to the window's own root throughout. A bare `table` or `th` rule here would repaint every
+ * table in the application layer, this module's CSS being unlayered. */
+.pf1-lighting.effects-window .pf1-lighting-effects-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--font-size-13, 0.8125rem);
+}
+
+.pf1-lighting.effects-window .pf1-lighting-effects-table th {
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid var(--color-underline-header, #782e22);
+  text-align: left;
+  font-weight: bold;
+  white-space: nowrap;
+}
+
+.pf1-lighting.effects-window .pf1-lighting-effects-table td {
+  padding: 0.25rem 0.4rem;
+  border-bottom: 1px solid var(--color-border-light-tertiary, rgb(0 0 0 / 15%));
+  vertical-align: middle;
+}
+
+/* Anything the record does not say, said once and quietly. An em dash at full strength reads as a
+ * value rather than as the absence of one. */
+.pf1-lighting.effects-window .pf1-lighting-effects-none {
+  opacity: 0.5;
+}
+
+/* An effect whose owner is gone, or whose owning buff is switched off. Marked rather than hidden:
+ * the reaper collects these on its own schedule, and a row that vanished would leave a GM unable to
+ * tell "already tidied" from "never there". */
+.pf1-lighting.effects-window .pf1-lighting-effects-orphan {
+  color: var(--color-level-warning, #c9a227);
+}
+
+.pf1-lighting.effects-window .pf1-lighting-effects-row-orphan {
+  background: rgb(201 162 39 / 8%);
+}
+
+.pf1-lighting.effects-window .pf1-lighting-effects-controls {
+  width: 2rem;
+  text-align: center;
+}
+
+.pf1-lighting.effects-window .pf1-lighting-effects-footer {
+  margin-top: 0.5rem;
+}
+

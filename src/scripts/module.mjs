@@ -34,6 +34,14 @@ import * as sceneConfig from "./ui/scene-config.mjs";
 import * as publicApi from "./api.mjs";
 import * as presets from "./model/presets.mjs";
 import * as presetEditor from "./ui/preset-editor.mjs";
+import * as companion from "./model/companion.mjs";
+import * as lightingSocket from "./socket.mjs";
+import * as tokenHud from "./ui/token-hud.mjs";
+import * as lightItems from "./model/light-items.mjs";
+import * as buffDriver from "./model/buff-driver.mjs";
+import * as itemDescriptor from "./ui/item-descriptor.mjs";
+import * as lightItemEditor from "./ui/light-item-editor.mjs";
+import * as effectsWindow from "./ui/effects-window.mjs";
 import * as visuals from "./ui/visuals.mjs";
 import * as clip from "./render/clip.mjs";
 import * as pool from "./render/pool.mjs";
@@ -98,6 +106,11 @@ Hooks.once("init", () => {
   // rather than a row in the flat list, so its control surface is the menu.
   presets.registerSettings();
   presetEditor.registerSettings();
+  // The light-item table and the fuel-use switch (§12.8). After `presets`, since an entry names a
+  // preset and `resolve` drops one whose preset the world has deleted.
+  lightItems.registerSettings();
+  // The window that edits that table. After the key it edits exists, same rule as every other menu.
+  lightItemEditor.registerSettings();
   // The appearance numbers, edited in their own window (§10.6). Registered after the
   // modules that own the keys, so the menu never opens on a key that does not exist yet.
   soften.registerSettings();
@@ -162,6 +175,37 @@ Hooks.once("init", () => {
 
   synthetic.registerHooks();
   registry.registerHooks();
+  // §12 light effects. After `registry`, so a rebuild it triggers finds the registry's own
+  // invalidation hooks already listening — `sync` invalidates directly, but the ordinary
+  // `initializeLightSources` path has to reach both.
+  companion.registerHooks();
+  // The GM relay (§12.5). Operations are registered before the channel opens at `ready`, so a
+  // request cannot arrive for a handler that is not there yet.
+  companion.registerOperations();
+  lightingSocket.registerHooks();
+  // The Token HUD light button (§12.9) and the fuel clock (§12.8).
+  tokenHud.registerHooks();
+  // The record reader, injected rather than imported: `light-items` is read *by* `companion`'s
+  // consumers and must not import it back. Same seam and same reason as `suppression.setVisionModel`
+  // and `perception.setUmbraModel`.
+  lightItems.setRecordReader(companion.list);
+  lightItems.registerHooks();
+  // The per-item descriptor (§12.7): its section on the item sheet's Advanced tab, and the driver
+  // that turns a buff's active state into a light. The driver's `canvasReady` hook must be
+  // registered after `companion`'s, so the sources for the scene exist before anything reconciles
+  // against them.
+  itemDescriptor.registerHooks();
+  buffDriver.registerHooks();
+  // No on-use trigger, and there is not meant to be one (Hamilcarbarcas, 2026-08-31). The descriptor
+  // belongs on exactly two things — a physical item that is lit, and a buff that emits while active.
+  // Lighting a spell's targets is `api.lights.apply`, or a buff carrying a descriptor and delivered
+  // to the target. Built, withdrawn and deleted; DESIGN.md §12.13 step 10 says why before anyone
+  // rebuilds it.
+  // The management window (§12.10), as a button on the Lighting scene controls. Registration order
+  // against `sceneConfig.registerSceneControls` does not matter — that one deletes and renumbers
+  // core's tools while this only adds a key, and the two never touch the same entry. `order: 5.5`
+  // is what places it, after the four tier buttons and before core's reset and clear.
+  effectsWindow.registerSceneControls();
   // A region's *shape* changes on `updateRegion` and its *values* on `updateRegionBehavior`,
   // which does not touch the region document at all — so both, or editing the tier does nothing
   // until the region is nudged.
@@ -361,6 +405,65 @@ Hooks.once("ready", () => {
       reset: presets.resetTable,
     },
 
+    // §12 light effects — a spell or a lantern that follows its bearer. Step 1 of §12.13: the
+    // sources are real and the records persist, but every write is a direct document update, so
+    // this is a GM console surface until step 2 puts the relay in.
+    //
+    //   game.pf1Lighting.effects.status()
+    //   game.pf1Lighting.effects.apply(token, { preset: "darkness", label: "Darkness" })
+    //   game.pf1Lighting.effects.clear(token, { source: item.uuid })
+    //   game.pf1Lighting.effects.place({ x: 1000, y: 800 }, { preset: "torch" })
+    effects: {
+      apply: companion.apply,
+      clear: companion.clear,
+      clearAll: companion.clearAll,
+      list: companion.list,
+      // A real AmbientLight, not an effect — §12.11. Deliberately a different verb, because what it
+      // makes is owned by the scene from then on.
+      place: companion.place,
+      // Reconcile by hand. Nothing should need this; if it does, that is the bug.
+      sync: companion.sync,
+      status: companion.status,
+      // Upkeep, both GM-only and both run on their own. By hand for when a diagnosis needs the
+      // report rather than the effect (§12.5.2).
+      reap: companion.reap,
+      sweep: companion.sweep,
+      // The GM relay every write goes through (§12.5). `declared` must be true, or the server never
+      // bound the channel and emits are discarded in silence.
+      socket: lightingSocket.status,
+
+      // The management window (§12.10) — what is lit on this scene, and why. Also on the Lighting
+      // scene controls; this is the console route to the same list.
+      window: effectsWindow.open,
+      onScene: effectsWindow.status,
+
+      // Buffs that emit light (§12.7). `status()` lists the records this driver owns on the current
+      // scene — every one of them `emit:<itemId>` — and `reconcile(actor)` runs the comparison by
+      // hand, which is what to reach for when a buff is active and its light is not there.
+      //
+      //   game.pf1Lighting.effects.buffs.status()
+      //   game.pf1Lighting.effects.buffs.reconcile(token.actor)
+      buffs: {
+        reconcile: buffDriver.reconcile,
+        status: buffDriver.status,
+      },
+
+      // The name-keyed light-source table (§12.8). `status().customised: false` means this world
+      // has never saved the editor and still tracks the module's built-ins.
+      //
+      //   game.pf1Lighting.effects.items.status()
+      //   game.pf1Lighting.effects.items.edit()
+      items: {
+        table: lightItems.table,
+        resolve: lightItems.resolve,
+        carriedBy: lightItems.carriedBy,
+        edit: lightItemEditor.open,
+        status: lightItemEditor.status,
+        // Charge every lit source for the time that has passed, by hand. GM only.
+        burn: lightItems.burn,
+      },
+    },
+
     // Resolved snapshot of everything affecting light level (DESIGN.md §8.2 step 1)
     registry: {
       emitters: registry.emitters,
@@ -463,6 +566,9 @@ Hooks.once("ready", () => {
       // real and every cell it lands on was already at or below the clamp.
       paint: tierPaint.stats,
       repaint: () => tierPaint.repaint({ force: true }),
+      // §4.3.1's clamp as a point query — is this point outside every observer's line of sight, and
+      // so drawn Dark whatever the model says is there. `true` where the readout reads Dark.
+      unseenAt: tierPaint.unseenAt,
 
       // §3.4's falloffs as one interpolated mesh each (DESIGN.md §7.0 step 5). `ramps` below
       // `spill.stats().windows` means a window failed to triangulate and is being painted flat;

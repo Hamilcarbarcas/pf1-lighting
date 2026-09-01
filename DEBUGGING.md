@@ -199,6 +199,7 @@ The whole-scene cell decomposition — what the renderer consumes. Cells partiti
 | `game.pf1Lighting.render.pool()` | The synthetic-source pool |
 | `game.pf1Lighting.render.repaint()` | Forces one repaint |
 | `game.pf1Lighting.render.paint()` | Per-stage cost of the last repaint, plus `fieldStable` — `true` when the repaint was triggered by an observer moving rather than by the scene changing. Also reports the observer's shadow: tiers found, cells cut, cost |
+| `game.pf1Lighting.render.unseenAt(canvas.mousePosition)` | Is this point outside every observer's line of sight, and so drawn Dark whatever the model says is there (§4.3.1)? `true` where the readout reads Dark |
 
 ### The darkness-level texture
 
@@ -248,7 +249,7 @@ The whole-scene cell decomposition — what the renderer consumes. Cells partiti
 | `game.pf1Lighting.perception.sees(point)` | Whether ordinary sight works at a point |
 | `game.pf1Lighting.perception.darkvisionSees(point)` | The same for darkvision |
 | `game.pf1Lighting.perception.tierAt(point, source)` | The tier at a point as one observer sees it |
-| `game.pf1Lighting.perception.viewerTier()` | The tier as the current view sees it — what the readout reports |
+| `game.pf1Lighting.perception.viewerTier()` | The tier as the current view sees it, umbra included. The readout reports this floored by `render.unseenAt()`, which is render-only and so not part of this answer |
 | `game.pf1Lighting.perception.blinds(source)` | Whether the model blinds this vision source |
 | `game.pf1Lighting.perception.darkSightRange(source)` | The observer's light-independent sight range |
 | `game.pf1Lighting.perception.refresh()` | Re-runs perception |

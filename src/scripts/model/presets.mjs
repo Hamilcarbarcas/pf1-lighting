@@ -73,7 +73,44 @@ export const GOVERNED = Object.freeze([
  * @property {boolean} negative  - Is this a darkness? Decides which branch of the sheet applies
  * @property {object} config     - Flag values to write under `flags.pf1-lighting.config`
  * @property {object} [light]    - Native `LightData` values to write alongside, in **feet**
+ * @property {object} [placement] - `AmbientLightDocument` root fields (`rotation`, `walls`,
+ *   `vision`). Written only for an ambient light; a token's light has no home for them.
  */
+
+/* -------------------------------------------- */
+/*  Appearance (§12.13 step 5)                  */
+/* -------------------------------------------- */
+
+/**
+ * **Every preset states every appearance field, or none may state any.**
+ *
+ * @remarks
+ * `applyPreset` copies whatever `preset.light` holds and writes nothing for what it omits, so a
+ * field one preset sets and another leaves out *persists across a change of preset*. Re-preset a
+ * torch to a sunrod and it stays orange; the light claims to be a sunrod and is not one.
+ *
+ * This is the same trap the bullseye lantern's cone is left out for — see `lanternBullseye` below,
+ * which has carried the argument since before there was anything to apply it to — and the same shape
+ * as `render/pool.mjs`'s rule that every property a pooled source can carry must be assigned on
+ * every fill, a default of "leave whatever the last tenant set" never being right. Three separate
+ * instances of one mistake, so it is worth stating as a rule rather than as a caution.
+ *
+ * The consequence is that {@link NEUTRAL} exists: a preset with nothing to say about colour says so
+ * explicitly. `color: null` is a real `LightData` value meaning *untinted*, not an absence.
+ *
+ * `angle` is still **not** here, and now for a second reason as well as the first: §12.8 gives it to
+ * the item table, where a bullseye lantern is always a bullseye lantern.
+ */
+export const APPEARANCE = Object.freeze(["color", "alpha", "attenuation", "animation"]);
+
+/** No animation, spelled out. Assigning this is what stops a previous preset's flicker persisting. */
+const STILL = Object.freeze({ type: null, speed: 5, intensity: 5, reverse: false });
+
+/** A flame. `torch` is Foundry's *Flickering Light*; `flame` is its *Torch* (`client/config.mjs:753`). */
+const flicker = (speed, intensity) => Object.freeze({ type: "torch", speed, intensity, reverse: false });
+
+/** What a preset with no opinion about its appearance writes. */
+const NEUTRAL = Object.freeze({ color: null, alpha: 0.5, attenuation: 0.5, animation: STILL });
 
 /**
  * The table as shipped. Keys are stored verbatim in `config.preset`.
@@ -106,7 +143,7 @@ export const BUILT_IN = Object.freeze({
       cap: TIER.NORMAL,
     },
     // No inner zone at all — the whole of a candle is its one-step band.
-    light: { bright: 0, dim: 5 },
+    light: { bright: 0, dim: 5, color: "#ff9329", alpha: 0.22, attenuation: 0.65, animation: flicker(2, 2) },
   },
 
   torch: {
@@ -120,7 +157,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    light: { bright: 20, dim: 40 },
+    light: { bright: 20, dim: 40, color: "#ff9329", alpha: 0.32, attenuation: 0.5, animation: flicker(3, 3) },
   },
 
   lampCommon: {
@@ -134,7 +171,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    light: { bright: 15, dim: 30 },
+    light: { bright: 15, dim: 30, color: "#ffb066", alpha: 0.3, attenuation: 0.5, animation: flicker(1, 1) },
   },
 
   lanternBullseye: {
@@ -154,7 +191,7 @@ export const BUILT_IN = Object.freeze({
     // re-presetted from bullseye to torch stuck in a cone. Either every preset carries an angle or
     // none does, and what a cone is worth is a table decision. Set Angle by hand after applying
     // this one.
-    light: { bright: 60, dim: 120 },
+    light: { bright: 60, dim: 120, color: "#ffd6a0", alpha: 0.3, attenuation: 0.4, animation: STILL },
   },
 
   lanternHooded: {
@@ -168,7 +205,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    light: { bright: 30, dim: 60 },
+    light: { bright: 30, dim: 60, color: "#ffb066", alpha: 0.3, attenuation: 0.5, animation: STILL },
   },
 
   sunrod: {
@@ -182,7 +219,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    light: { bright: 30, dim: 60 },
+    light: { bright: 30, dim: 60, color: "#cfe4ff", alpha: 0.35, attenuation: 0.5, animation: STILL },
   },
 
   continualFlame: {
@@ -200,7 +237,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    light: { bright: 20, dim: 40 },
+    light: { bright: 20, dim: 40, color: "#b8d8ff", alpha: 0.35, attenuation: 0.5, animation: flicker(2, 2) },
   },
 
   light: {
@@ -214,7 +251,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.NORMAL,
     },
-    light: { bright: 20, dim: 40 },
+    light: { bright: 20, dim: 40, ...NEUTRAL },
   },
 
   daylight: {
@@ -230,7 +267,7 @@ export const BUILT_IN = Object.freeze({
       steps: 1,
       cap: TIER.BRIGHT,
     },
-    light: { bright: 60, dim: 120 },
+    light: { bright: 60, dim: 120, color: "#fff4e0", alpha: 0.4, attenuation: 0.5, animation: STILL },
   },
 
   darkness: {
@@ -242,7 +279,7 @@ export const BUILT_IN = Object.freeze({
       transform: { op: "reduce", steps: 1 },
       floor: TIER.DARK,
     },
-    light: { bright: 0, dim: 20 },
+    light: { bright: 0, dim: 20, ...NEUTRAL },
   },
 
   deeperDarkness: {
@@ -254,7 +291,7 @@ export const BUILT_IN = Object.freeze({
       transform: { op: "reduce", steps: 2 },
       floor: TIER.SUPERNATURAL_DARK,
     },
-    light: { bright: 0, dim: 60 },
+    light: { bright: 0, dim: 60, ...NEUTRAL },
   },
 });
 
@@ -313,6 +350,8 @@ export function table() {
       negative: preset.negative === true,
       config: preset.config,
       light: preset.light && typeof preset.light === "object" ? preset.light : undefined,
+      placement:
+        preset.placement && typeof preset.placement === "object" ? preset.placement : undefined,
     };
   }
   return Object.keys(out).length ? out : BUILT_IN;
@@ -420,6 +459,19 @@ export function applyPreset(name, { prefix = "config", radii = true } = {}) {
   if (radii && preset.light) {
     for (const [key, value] of Object.entries(preset.light)) {
       update[`${prefix}.${key}`] = value;
+    }
+  }
+
+  // `placement` holds the fields that live at an `AmbientLightDocument`'s **root** rather than
+  // inside its `config` — rotation, walls, vision (§10.2.2). They are written only for an ambient
+  // light: a `TokenDocument` has no `walls` on its light and takes its rotation from the token, so
+  // writing `light.rotation` there would put a key into `LightData` that is not one of its fields.
+  //
+  // `angle` is not among them and never will be: it *is* `LightData`, so it rides in `light` with
+  // the radii and reaches a token's light correctly.
+  if (prefix === "config" && preset.placement) {
+    for (const [key, value] of Object.entries(preset.placement)) {
+      update[key] = value;
     }
   }
 

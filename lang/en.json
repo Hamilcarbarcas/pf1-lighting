@@ -42,6 +42,13 @@
       "readoutDetail": {
         "Name": "Light level details",
         "Hint": "Includes explanations to the light level tooltip when multiple sources affects the value. I.e. 'reduced from normal', 'darkness cancelled by daylight'. GM only."
+      },
+      "fuelConsumption": {
+        "Name": "Fuel use",
+        "Hint": "What happens when a lit light source expends its fuel.",
+        "consume": "Remove the fuel silently",
+        "both": "Remove the fuel and announce it",
+        "announce": "Announce it only, and leave the fuel alone"
       }
     },
     "Menu": {
@@ -59,6 +66,11 @@
         "Name": "Lighting Presets",
         "Label": "Edit Presets",
         "Hint": "Preset light and darkness configurations offered on a light's Lighting Configuration section."
+      },
+      "lightItemEditor": {
+        "Name": "Light Sources",
+        "Label": "Edit Light Sources",
+        "Hint": "Which items give off light when lit, what they give off, and what they burn."
       }
     },
     "Keybind": {
@@ -146,7 +158,6 @@
       "New": "New preset",
       "None": "No presets",
       "NoneYet": "No presets.",
-      "Untitled": "Untitled",
       "Create": "New preset",
       "Duplicate": "Duplicate",
       "Delete": "Delete",
@@ -154,26 +165,8 @@
         "Hint": "Changing a preset here does not alter any existing lights."
       },
       "Name": "Name",
-      "Source": "Type",
-      "Kind": {
-        "light": "Light",
-        "darkness": "Darkness"
-      },
-      "SourceHint": "Darkness types lower the light level in its area instead of raising it.",
       "Magical": "Magical",
-      "MagicalHint": "Magical light of a higher level than a darkness overrides it.",
-      "Daylight": "Counts as <em>Daylight</em>",
-      "DaylightHint": "Follows the rules of the <em>daylight</em> spell, cancelling out magical darkness that overlaps its area.",
-      "Brightness": "Brightness",
-      "BrightnessHint": "The level this light provides outright, and its radius.",
-      "Increase": "Increase Brightness",
-      "Steps": "Steps",
       "Maximum": "Maximum",
-      "IncreaseHint": "How many steps the light level is increased beyond its inner radius, to what maximum value, and how far.",
-      "DarkLevelHint": "Level 0 darkens without shadowing. Level 1 and above casts an umbra that shadows areas viewed through it.",
-      "Effect": "Effect",
-      "EffectHint": "<em>Set level to</em> never brightens: over ground that is already darker, it leaves it alone. <em>Floor</em> is the darkest this can drive an area - under <em>set level to</em> the target is the floor, so it is not offered separately.",
-      "Floor": "Floor",
       "Remove": {
         "Title": "Delete preset",
         "Body": "<p>Delete <strong>{label}</strong>?</p><p>Lights already placed from it keep their settings and will simply read as Custom.</p>"
@@ -183,7 +176,10 @@
         "Body": "<p>Discard this world's preset table and go back to the module's own?</p><p>The world will then track the built-in presets as the module changes them.</p>"
       },
       "Saved": "PF1 Lighting | {count} lighting presets saved.",
-      "ActivationHint": "The light switches off outside this range, tested against the <strong>scene's ambient</strong> light level. Bright to Dark means the light is never disabled by ambient light."
+      "EditLight": "Edit light",
+      "EditTitle": "Lighting Preset: {label}",
+      "SaveEdits": "Save Preset",
+      "EditHint": "Opens the light configuration menu for this preset."
     },
     "LightConfig": {
       "Legend": "Lighting Configuration",
@@ -236,7 +232,8 @@
       "NoEffect": "darkness present, no effect",
       "ReducedFrom": "reduced from {tier}",
       "Suppressed": "suppressed",
-      "SeenThroughDarkness": "viewed through darkness"
+      "SeenThroughDarkness": "viewed through darkness",
+      "Unseen": "out of sight behind a wall"
     },
     "Notify": {
       "ReadoutShown": "PF1 Lighting | Readout shown.",
@@ -253,6 +250,78 @@
       "NoUmbra": "PF1 Lighting | No umbra - needs perception on, an observer without see-in-darkness, and a magical (level >= 1) darkness source.",
       "SceneDarknessLocked": "PF1 Lighting: darkness is locked on {scene}, so its light level cannot be changed.",
       "ScenesLocked": "PF1 Lighting: {count} scene(s) have darkness locked and were left unchanged."
+    },
+    "Hud": {
+      "Tooltip": "Light source",
+      "Override": "Any light source…"
+    },
+    "Effects": {
+      "Title": "Light Effects",
+      "Control": "Light effects on this scene",
+      "Empty": "Nothing on this scene is carrying a light effect.",
+      "Anchor": "On",
+      "Label": "Light",
+      "Source": "From",
+      "Expires": "Ends",
+      "NoSource": "nothing",
+      "Orphaned": "source gone",
+      "NoExpiryTip": "Lasts until something puts it out.",
+      "Due": "overdue",
+      "FuelTip": "One unit lasts {hours}h. Burning for {burnt}.",
+      "PanTo": "Show me",
+      "Clear": "Put this out",
+      "Refresh": "Refresh",
+      "ClearOrphans": "Clear orphans ({count})",
+      "Reaped": "PF1 Lighting | {count} orphaned light effects cleared.",
+      "Seconds": "{n}s",
+      "Minutes": "{n} min",
+      "Hours": "{n}h",
+      "Days": "{n}d"
+    },
+    "Items": {
+      "Title": "Light Sources",
+      "Which": "Light source",
+      "WhichHint": "Items matched by name. An item with its own light configuration ignores this list.",
+      "New": "New light source",
+      "None": "No light sources",
+      "NoneYet": "No light sources.",
+      "Unnamed": "(unnamed)",
+      "Create": "New light source",
+      "Name": "Item name",
+      "NameHint": "Matched against the item's name, case insensitive.",
+      "Aliases": "Also called",
+      "AliasesHint": "Other names to identify the item by, separated by semicolons.",
+      "MissingPreset": "{key} (missing)",
+      "Duplicate": "PF1 Lighting | Two light sources are both called \"{name}\". Rename one before saving.",
+      "Saved": "PF1 Lighting | {count} light sources saved.",
+      "Remove": {
+        "Title": "Delete light source",
+        "Body": "<p>Delete <strong>{label}</strong>?</p><p>Items of that name stop being offered in the token light picker unless they carry their own light settings.</p>"
+      },
+      "Reset": {
+        "Title": "Restore default light sources",
+        "Body": "<p>Discard this world's light source list and go back to the module's default?</p><p>The world will only apply updates from the module if it matches the default.</p>"
+      }
+    },
+    "Emits": {
+      "Header": "Light",
+      "Enabled": "Emits light",
+      "ActiveHint": "While this buff is active, its actor's tokens emit light or darkness as configured. Emissions only take effect when enabled.",
+      "LitHint": "Offers this item in the token light picker. This overrides whatever the light source table says about an item of this name.",
+      "Preset": "Light preset",
+      "PresetHint": "The lighting preset this gives off. Edit the presets themselves under Configure Settings.",
+      "Fuel": "Fuel",
+      "FuelNone": "Burns indefinitely",
+      "FuelHours": "Hours",
+      "FuelHint": "The item consumed while this burns, and how many hours one of them lasts. Name this item itself for something that consumes itself, such as a torch. Leave the name blank to burn indefinitely."
+    },
+    "Fuel": {
+      "Spent": "{actor}'s {light} used {count} × {fuel}.",
+      "Would": "{actor}'s {light} has expended {count} × {fuel}. Automatic use is switched off, items must be removed manually.",
+      "RanDry": "{actor}'s {light} used its last {fuel} and has gone out."
+    },
+    "Socket": {
+      "NoGM": "No GM is connected: lighting change was not made."
     }
   }
 }

@@ -326,6 +326,41 @@ function unseenOnly(sources) {
 }
 
 /**
+ * Is this point outside every observer's line of sight, and so drawn dark?
+ *
+ * @remarks
+ * The point-query form of {@link unseenOnly}, for the readout. §4.3.1's clamp is render-only and
+ * deliberately never reaches `perceivedTier` — see {@link unseenRegionFor} — so the readout, which is
+ * a view rather than a rules query, had no term for it and went on calling a walled-off room Bright
+ * while the picture correctly had it dark (reported 2026-08-30). Exactly the failure §4.3's own
+ * god's-eye bug was, one clamp later: the chip has to carry every term the picture carries.
+ *
+ * Exported from here rather than reimplemented in `ui/readout.mjs` so the two cannot drift — §6.1,
+ * and the reason the readout does not simply test `los` itself. Three behaviours have to match and
+ * none of them is obvious from outside: the `hideUnseen` gate, god's eye clamping nothing (§5.4), and
+ * an observer with no `los` disabling the clamp everywhere rather than only for itself.
+ *
+ * @param {{x: number, y: number}} point
+ * @returns {boolean}
+ */
+export function unseenAt(point) {
+  if (!hideUnseen()) return false;
+
+  const sources = observers();
+  // God's eye. No observer, no fog, nothing to hide — §5.4.
+  if (!sources.length) return false;
+
+  for (const source of sources) {
+    // Parity with `unseenOnly`, which answers `[]` — no clamp anywhere — for a source with no line
+    // of sight, rather than treating it as an observer who sees nothing.
+    if (!source.los) return false;
+    // §5.3: seen by one observer is seen. The first hit ends it.
+    if (source.los.contains(point.x, point.y)) return false;
+  }
+  return true;
+}
+
+/**
  * Cumulative shadow regions, darkest tier first.
  *
  * @returns {{clamp: number, paths: object[][]}[]} Each entry is everywhere clamped to this tier or

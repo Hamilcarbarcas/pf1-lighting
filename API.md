@@ -14,13 +14,12 @@ const api = game.modules.get("pf1-lighting")?.api;
 - [Subjects and shapes](#subjects-and-shapes)
 - [Brightness](#brightness)
 - [Sampling](#sampling)
-- [Who can see whom](#who-can-see-whom)
+- [Who can see who](#who-can-see-who)
 - [The scene's light level](#the-scenes-light-level)
+- [Light effects](#light-effects)
 - [Hooks](#hooks)
 - [Cost](#cost)
-- [Not in the API](#not-in-the-api)
 - [Examples](#examples)
-
 
 # Versioning
 
@@ -28,8 +27,11 @@ const api = game.modules.get("pf1-lighting")?.api;
 | --- | --- |
 | `api.version` | `1`. Incremented on a **breaking** change only |
 
-Feature-detect on this rather than on the module's own version.
+What this build actually exposes:
 
+```js
+console.log(game.modules.get("pf1-lighting")?.api);
+```
 
 # Tiers
 
@@ -152,6 +154,79 @@ this is a registry. An unregistered id answers `null`, not `false` — *this sen
 `Scene#_preUpdate` silently deletes `environment.darknessLevel` from an update when the lock is set,
 so the refusal is the only honest answer. The lock means frozen, not "ignore the clock" — a locked
 scene cannot be changed from the dropdown either.
+
+
+# Light effects
+
+Control *light* or *darkness* effects that are attached to actors, tokens, tiles, or templates.
+Configured effects are separate and independent from a token's own light configuration, and multiple
+effects can be stacked on a single target.
+
+| Function | |
+| --- | --- |
+| `await api.lights.apply(anchor, effect)` | Attach an effect. Returns its **id**, or `null` if nothing was applied |
+| `await api.lights.clear(anchor, ref)` | Remove an effect. `ref` is an id **or** `{ source: uuid }`. Returns how many came off |
+| `await api.lights.clearAll(anchor)` | Remove every effect. Returns how many were removed |
+| `api.lights.list(anchor)` | The effect records currently on an anchor |
+| `await api.lights.place(point, options)` | Create an `AmbientLight`. **Not an effect** — see below |
+
+`anchor` takes a `Token`, `TokenDocument`, token id, `Tile`, `MeasuredTemplate`, or an array of any
+of them. It can also accept an `Actor`, which will apply to all linked tokens (primary use case for
+buffs that apply light or darkness effects). Bare points are not anchors; use `place`, which places
+an actual light object on the scene.
+
+## The effect
+
+Every field is optional.
+
+| Field | |
+| --- | --- |
+| `preset` | A key from the preset table — `"torch"`, `"darkness"`, `"daylight"`… Resolved **once**, at call time |
+| `light` | `LightData` overrides on top of the preset: `{ bright, dim, color, angle, negative, … }`. Radii in scene units |
+| `config` | Module overrides: `{ kind, level, emitTier, steps, cap, cancelsDarkness, transform, floor }` |
+| `label` | What the effect is called in readouts. Defaults to the preset's label |
+| `source` | The uuid that owns this effect (displays in light effects list) |
+| `id` | Defaults to one derived from `source`. **Applying the same id twice replaces rather than stacks** |
+| `expires` | A world-time stamp in seconds. Omit for untimed effects |
+| `followRotation` | Turn the light with the anchor's facing, for lights with limited cones |
+
+## `source`
+
+Pass the owning document's uuid and `clear` takes the same uuid back, so a toggle does not have to
+record what it created:
+
+```js
+const api = game.modules.get("pf1-lighting")?.api;
+if (state) await api.lights.apply(actor, { preset: "light", source: item.uuid, label: item.name });
+else await api.lights.clear(actor, { source: item.uuid });
+```
+
+An effect whose `source` no longer resolves — the item deleted, the owning buff switched off — is
+removed by a GM-side sweep on world load and on scene change. An effect with **no** `source` is never
+swept and lasts until something clears it.
+
+## Ownership
+
+Checked on the GM's side against the caller. For a token that is its **actor's** ownership: a player
+can light their own character and cannot light an NPC. A refusal is a warning notification and a
+`null` return, never a silent no-op.
+
+To light something the caller does not own, raise a prompt for a GM instead of calling `apply`. An
+item with an on-use light descriptor already does this — the chat card carries the button.
+
+**Every write is performed by the active GM.** With no GM connected nothing happens and the caller is
+told. Records live in a document flag, so the single writer also keeps two clients'
+read-modify-writes from overwriting each other.
+
+## `place`
+
+```js
+await api.lights.place({ x, y }, { preset: "torch" });   // → the AmbientLightDocument
+```
+
+Creates an ordinary `AmbientLight` on the scene — permanent, selectable, and editable in the light
+config sheet. It is not an effect: it has no anchor, carries no `source`, and does not appear in
+`list`. GM only.
 
 
 # Hooks

@@ -14,6 +14,7 @@ import { TIER, TIER_NAME } from "./model/tiers.mjs";
 import { evaluate } from "./model/evaluate.mjs";
 import * as perception from "./vision/perception.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
+import * as companion from "./model/companion.mjs";
 
 /**
  * Breaking changes only: a removed function, a changed return shape, a changed meaning. Added
@@ -553,6 +554,34 @@ export function setSceneTier(tier, scene = canvas?.scene) {
 }
 
 /* -------------------------------------------- */
+/*  Light effects                               */
+/* -------------------------------------------- */
+
+/**
+ * Ephemeral light and darkness that follows what it was cast on. DESIGN.md §12.
+ *
+ * @remarks
+ * The whole surface is asynchronous and GM-relayed (§12.5), so every mutator returns a promise and
+ * reports refusal rather than throwing: `apply` answers `null` when nothing was applied, and the two
+ * removers answer how many records came off. A caller is never left believing a write happened.
+ *
+ * **Ownership decides.** A request is honoured for an anchor the caller owns — which for a token
+ * means its actor's ownership — and refused otherwise, with the GM-side check being the one that
+ * counts. Applying to a token the caller does not own is a GM's decision, not an API call (§12.5.1).
+ *
+ * `place` is here rather than under a separate heading because it answers the question callers ask
+ * next, and it is deliberately a different verb: it creates a real `AmbientLight` owned by the scene
+ * from then on, where `apply` attaches something ephemeral to a thing.
+ */
+const lights = Object.freeze({
+  apply: companion.apply,
+  clear: companion.clear,
+  clearAll: companion.clearAll,
+  list: companion.list,
+  place: companion.place,
+});
+
+/* -------------------------------------------- */
 
 /** @type {object|null} Built once; both addresses hand back the same object. */
 let surface = null;
@@ -584,6 +613,10 @@ export function build() {
 
     sceneTier,
     setSceneTier,
+
+    // §12. Added, not changed, so `VERSION` does not move — a consumer feature-detects with
+    // `api.lights !== undefined` rather than on the version.
+    lights,
   }));
 }
 

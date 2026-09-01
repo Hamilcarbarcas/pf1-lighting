@@ -26,6 +26,7 @@ import { t } from "../i18n.mjs";
 import { evaluate } from "../model/evaluate.mjs";
 import { TIER, tierLabel } from "../model/tiers.mjs";
 import { viewerTier } from "../vision/perception.mjs";
+import { PAINTED_HOOK, unseenAt } from "../render/paint.mjs";
 
 export const SETTING_ENABLED = "readoutEnabled";
 export const SETTING_DETAIL = "readoutDetail";
@@ -287,12 +288,23 @@ function update() {
   // right answer rather than a fallback.
   const seen = viewerTier(result.point);
   const clamped = seen !== null && seen < result.tier ? seen : null;
-  const tierShown = clamped ?? result.tier;
+
+  // The second half of the same argument, and the term the umbra clamp does not cover: a wall.
+  // `viewerTier` asks the model, and §4.3.1's unseen clamp is deliberately render-only, so ground the
+  // viewer simply cannot see was reported at whatever the model says is there while the screen drew
+  // it dark. Applied as a floor rather than an assignment, for the reason `applyShadows` skips cells
+  // already below a clamp: a supernatural darkness behind a wall is not made brighter by the wall.
+  const unseen = unseenAt(result.point);
+  const tierShown = unseen
+    ? Math.min(clamped ?? result.tier, TIER.DARK)
+    : (clamped ?? result.tier);
 
   const reason = detailed()
-    ? clamped !== null
-      ? t("Readout.SeenThroughDarkness")
-      : reasonFor(result)
+    ? unseen
+      ? t("Readout.Unseen")
+      : clamped !== null
+        ? t("Readout.SeenThroughDarkness")
+        : reasonFor(result)
     : null;
 
   element.className = `pf1-lighting-readout tier-${TIER_CLASS[tierShown] ?? "dark"}`;
@@ -453,6 +465,11 @@ export function registerHooks() {
   Hooks.on("refreshToken", schedule);
   Hooks.on("refreshAmbientLight", schedule);
   Hooks.on("initializeLightSources", schedule);
+
+  // The picture changing is the one signal that covers everything the chip now reports, the unseen
+  // clamp included — a door opening moves the line of sight under a stationary cursor without moving
+  // a token or a light.
+  Hooks.on(PAINTED_HOOK, schedule);
 
   // A token can stop being hovered by being deleted or by the canvas going away, neither of which
   // fires `hoverToken`.

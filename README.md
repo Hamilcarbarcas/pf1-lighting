@@ -16,6 +16,11 @@
   - [Light sources](#light-sources)
     - [Darkness sources](#darkness-sources)
   - [Presets](#presets)
+  - [Light effects](#light-effects)
+    - [The token light button](#the-token-light-button)
+    - [Fuel](#fuel)
+    - [Light on an item](#light-on-an-item)
+    - [What is lit on this scene](#what-is-lit-on-this-scene)
   - [Overlapping increases](#overlapping-increases)
   - [Ambient lighting changes](#ambient-lighting-changes)
     - [Interior regions](#interior-regions)
@@ -24,6 +29,7 @@
   - [Token Vision](#token-vision)
 - [Configuration](#configuration)
   - [Edit Presets](#edit-presets)
+  - [Edit Light Sources](#edit-light-sources)
   - [Light Spill](#light-spill-1)
   - [Visuals](#visuals)
 - [Compatibility](#compatibility)
@@ -183,6 +189,13 @@ Eleven presets ship with the module:
 
 ![Presets Configuration](assets/config-presets.png)
 
+Each preset also carries an **appearance** - colour, strength, falloff and animation - so a torch
+flickers orange and a sunrod glows cold and steady without any further setup.
+
+Every preset states a full appearance, including the ones that are plainly lit. That is deliberate:
+it means choosing a preset always *replaces* the previous one's colour and animation instead of
+leaving them behind, so a light changed from *Torch* to *Sunrod* does not stay orange.
+
 **Emission angles** are not within the purview of this mod, so items with limited fields of light, such
 as a bullseye lantern must have their emission angle set manually, just as in core Foundry. 
 
@@ -196,6 +209,95 @@ they will not be replaced or updated when the mod updates.
   name.
 - **A preset can carry an activation range, and by default does not.** Leave *Active when scene is*
   spanning Bright to Dark and applying the preset will not disturb a range you set by hand.
+
+## Light effects
+
+A light that **follows what it is attached to**. Cast *light* on a thrown rock, hand a lantern to a
+guard, or drop a *darkness* on a trap, and the light travels with it.
+
+Nothing about the target's own light configuration is touched. The effect is a separate, invisible
+light source pinned to the token, so several can be in force at once, each one ends without
+disturbing the others, and a token's own light is still yours to set by hand.
+
+Effects attach to **anything on the canvas** - tokens, tiles, and measured templates - which includes
+the actor types that have no character sheet to hang a buff on. A vehicle, a trap or a haunt is lit
+the same way a wizard is.
+
+### The token light button
+
+Select a token and there is a **light bulb** in its HUD.
+
+- **Click** it to put out whatever it is carrying, or to open the picker if it is dark.
+- **Right-click** it to open the picker whether or not something is already lit, so a light can be
+  swapped without being put out first.
+
+The picker lists **the light sources on that actor** - the torches, lanterns and sunrods in its
+inventory - with the fuel remaining beside each. A source you have no fuel for is shown greyed out
+rather than hidden, so the lantern in your hand does not silently vanish from the list.
+
+A GM gets one extra row at the top, **Any light source…**, which offers every preset outright and
+ignores inventory and fuel entirely. That is the whole workflow for lighting a trap, a statue or a
+vehicle: select it, choose *Darkness*, done.
+
+A player whose actor is carrying nothing that gives light gets no button at all.
+
+### Fuel
+
+A light burns its fuel in game time, so advancing the clock six hours costs six hours of oil. Partial
+use is carried across: a lantern lit for half an hour and put out has half a flask left in it, and
+picks up there the next time it is lit. A torch, which is its own fuel, works the same way - relight
+the same one and it is consumed on the hour it was always going to be.
+
+What that costs a character is up to you, set by **Fuel use** in the mod's settings:
+
+| Option | Effect |
+| --- | --- |
+| **Announce it only, and leave the fuel alone** (default) | Nothing is taken. A message reports what was used, and you remove it by hand |
+| **Remove the fuel silently** | Fuel comes off the sheet, with no message |
+| **Remove the fuel and announce it** | Both |
+
+Where fuel is actually being removed, a light goes out the moment its last unit is spent rather than
+on the next tick of the clock. On *announce only* nothing is taken, so nothing runs out and the light
+keeps burning.
+
+A stack that runs out is set to zero rather than deleted, so the empty flask slot is still on the
+sheet to refill in town.
+
+Pathfinder's own light sources are known by name and need no setting up - torches, candles, lamps,
+hooded and bullseye lanterns, sunrods, and everburning torches all light correctly the moment they
+are dragged onto a sheet. **Edit Light Sources** in the mod's settings is where that list lives, if
+your table's kit is named differently or burns for longer.
+
+### Light on an item
+
+Anything else - a homebrew lantern, a magic item, a glowing sword - carries its own description, on
+the **Advanced** tab of its item sheet:
+
+| Control | What it does |
+| --- | --- |
+| **Emits light** | Whether this item gives off light at all |
+| **Light preset** | Which preset it gives off |
+| **Fuel** | The item consumed while it burns, and how long one of them lasts |
+
+Leave the fuel name blank and it burns indefinitely; name the item itself and it consumes itself, the
+way a torch does. An item described here overrides anything the built-in list says about an item of
+the same name.
+
+The same section appears on **buffs**, where it means something slightly different: while the buff is
+active, its actor's tokens give off that light. Switch the buff off, delete it, or let its duration
+run out, and the light goes with it. That is *light*, *daylight* and *darkness* as ordinary
+spells - a buff with a duration and a preset, and no scripting anywhere.
+
+### What is lit on this scene
+
+The **lighting controls** have a bulb that opens a list of every light effect on the current scene -
+what it is on, what it emits, what put it there, what it is burning and when it ends. Clicking an
+entry's name pans to it; the **×** puts that one light out.
+
+An effect whose source has gone - a deleted buff, an item that no longer exists - is marked rather
+than dropped, and **Clear orphans** sweeps them. That housekeeping also runs on its own whenever a
+world loads or a scene is opened, across every scene, so the button is a convenience rather than
+something that needs pressing.
 
 ## Overlapping increases
 
@@ -271,9 +373,15 @@ toggles it by default.
 ![Light Level Tooltip](assets/tooltip.png)
 
 The tooltip can also provide context for the cause of a light level, such as "Dim · reduced from 
-normal", "Bright · darkness cancelled by daylight", or "seen through darkness".
+normal", "Bright · darkness cancelled by daylight", "seen through darkness", or "out of sight behind 
+a wall".
 
 ![Light Level Tooltip With Explainer](assets/tooltip-explain.png)
+
+The tooltip reports what the view shows rather than what the scene holds, so ground the viewer 
+cannot see reads **Dark** — a wall between the viewer and a point hides its light level the same way 
+a magical darkness lowers it. A GM with no token selected has a god's-eye view, where nothing is out 
+of sight and every light level is reported as it is.
 
 Hovering a token also shows its name. If a player cannot read the nameplate of a token it instead
 reads `???`.
@@ -299,8 +407,10 @@ This setting has no effect on non-GM users.
 | Setting | Effect |
 | --- | --- |
 | **Lighting Presets** | Edit preset lighting configurations |
+| **Light Sources** | Which items give off light when lit, and what they burn |
 | **Light Spill** | Configure the effects of light spill |
 | **Visuals** | Configure visual effects of lighting |
+| **Fuel use** | Whether lit sources consume fuel, announce it, or both |
 | **Show light level** | light level tooltip. **Alt+L** to toggle by default |
 | **Light level is GM only** | Whether players can enable light level tooltip - on by default |
 | **Light level details** | Tooltip lighting details. GM only |
@@ -311,8 +421,36 @@ This setting has no effect on non-GM users.
 
 ![Edit Presets](assets/config-presets.png)
 
-You can add, duplicate, delete, and edit presets here. It has all the same control surfaces as the
-**Light Configuration** section of a light source.
+You can add, duplicate, delete, and rename presets here. **Edit light** opens Foundry's own light
+configuration sheet for the selected preset, so a preset can hold everything a placed light can -
+radii, angle, rotation, colour, animation, and every advanced option - alongside this module's own
+**Lighting Configuration** section.
+
+Position fields are hidden, since a preset is not anywhere: coordinates and elevation, and the
+elevation row Wall Height adds when it is installed.
+
+Changes made in that sheet are held in the preset window and are only written when you press
+**Save** there.
+
+## Edit Light Sources
+
+Which items give off light when they are lit, what they give off, and what they burn. The list
+ships with Pathfinder's own kit - torches, candles, lamps, both lanterns, sunrods and everburning
+torches - and an untouched world tracks that list as the mod changes it.
+
+| Field | What it does |
+| --- | --- |
+| **Item name** | Matched against the item's name, ignoring capitalisation |
+| **Also called** | Other names for the same thing, separated by semicolons |
+| **Light preset** | What it gives off |
+| **Fuel** | The item consumed while it burns, and how long one of them lasts |
+
+Leave the fuel name blank and it burns indefinitely; name the item itself and it consumes itself,
+the way a torch does.
+
+Items are matched **by name**, so a world playing in another language, or with a differently named
+lantern, edits the list here. An item that carries its own light settings on its **Advanced** tab
+ignores the list entirely - see [Light on an item](#light-on-an-item).
 
 ## Light Spill
 

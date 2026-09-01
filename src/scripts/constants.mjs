@@ -25,6 +25,23 @@ export const SYNTHETIC_MARK = "pf1LightingSynthetic";
 export const isSynthetic = (source) => source?.[SYNTHETIC_MARK] === true;
 
 /**
+ * Property stamped on every **light effect** source — DESIGN.md §12.4.
+ *
+ * Deliberately *not* {@link SYNTHETIC_MARK}, and the distinction is load-bearing. §6.6 excludes
+ * marked sources from the registry so the renderer never reads its own output back; an effect
+ * source is a real spell or a real lantern and must be read like any other light. Reusing the
+ * renderer's mark would produce a source that draws and does not exist — the same failure as the
+ * `isPreview` trap in §12.4, by a different route.
+ *
+ * Nothing in `usable()` tests this. It exists so a readout can tell an effect's source from a
+ * placeable's, and so a future filter has something to name.
+ */
+export const EFFECT_MARK = "pf1LightingEffect";
+
+/** True if a source belongs to a §12 light effect rather than to a placed light or token. */
+export const isEffectSource = (source) => source?.[EFFECT_MARK] === true;
+
+/**
  * The clipped polygon a source is drawn with, leaving `shape` untouched.
  *
  * DESIGN.md §6.2.4. `shape` has three consumers and only one is rendering:
