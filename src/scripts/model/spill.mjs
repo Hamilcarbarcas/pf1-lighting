@@ -32,10 +32,11 @@
  * ({@link apertureInfo}); the geometry lives next door.
  *
  * Walls that pass light never block anything. `geodesic.blockingLinks` cuts a cell-to-cell link only
- * where `edge.light !== NONE`, the same predicate {@link isAperture} reads to find a window in the
- * first place. So a second window, or another open door, lets the spill straight through, and the
- * two cannot disagree. A wall is a severed link rather than blocked ground, so it eats no floor and
- * cannot leak: any 4-connected path across a wall must cross a link the wall cut.
+ * where `constants.passesLight` is false, the same predicate {@link isAperture} reads to find a
+ * window in the first place and `render/wall-mask.mjs` reads to protect the blur. So a second
+ * window, or another open door, lets the spill straight through, and the three cannot disagree. A
+ * wall is a severed link rather than blocked ground, so it eats no floor and cannot leak: any
+ * 4-connected path across a wall must cross a link the wall cut.
  *
  * One ordering constraint: spill folds after the drawn regions. `field.ambientDomains` applies areas
  * in list order and the modes do not commute — a Bright spill into a room clamped Dark is
@@ -44,7 +45,7 @@
  * called last for exactly this reason.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODULE_ID, passesLight } from "../constants.mjs";
 import {
   CLIPPER_SCALE,
   containsPoint,
@@ -185,10 +186,13 @@ export function ramps() {
  * Open doors need no special case. `Wall##createEdge` zeroes all four restrictions while `isOpen`
  * (`placeables/wall.mjs:225`), so a door's edge stays in the collection with its geometry intact and
  * qualifies exactly while it is open.
+ *
+ * Which light restrictions read as open is {@link passesLight}'s decision, shared with the march and
+ * the blur mask so the three cannot disagree — §3.4.2, and where proximity walls are argued.
  */
 export function isAperture(edge) {
   if (edge?.type !== "wall") return false;
-  return edge.light === CONST.WALL_SENSE_TYPES.NONE;
+  return passesLight(edge);
 }
 
 /**
@@ -218,24 +222,44 @@ const reject = (why) => {
 };
 
 /**
- * Is a light-blocking wall between these two points?
+ * Is a light-blocking wall between these two points, other than `self`?
  *
  * @remarks
- * The aperture's own edge cannot register here, which is the property this rests on. It passes light
- * by definition ({@link isAperture}), and `_testEdgeInclusion` drops any edge whose `light` is `NONE`
- * before it can occlude (`geometry/clockwise-sweep.mjs:244`). So a genuine window sees nothing
- * between its two probes, and a wall standing behind another wall sees that other wall.
+ * A direct segment test over the quadtree rather than `testCollision`, since §3.4.2 (2026-09-01).
+ * The sweep answered this exactly while every aperture was `light === NONE`, because
+ * `_testEdgeInclusion` drops such an edge before it can occlude (`geometry/clockwise-sweep.mjs:244`)
+ * — so the aperture could not report itself. A threshold wall is an aperture that the sweep *does*
+ * include: `testCollision` leaves `useThreshold` at `false` (`geometry/shapes/source-polygon.mjs:185`),
+ * and even set, a reverse-proximity wall blocks a source half a grid square away by construction.
+ * Every proximity window would therefore reject itself as `occluded`.
+ *
+ * So the exclusion is named rather than relied upon. The two tests the sweep would have applied and
+ * this segment is short enough to need are kept: an edge that passes light does not occlude, and a
+ * one-directional wall facing away from the probe does not occlude it
+ * (`geometry/clockwise-sweep.mjs:250-254`, in its default `NORMAL` mode).
+ *
+ * Bounds padded by a pixel because the probe segment is perpendicular to the wall and so is
+ * axis-aligned whenever the wall is — a zero-height query rectangle is not a reliable quadtree key.
+ *
+ * @param {Point} a
+ * @param {Point} b
+ * @param {Edge} self The aperture under test, which cannot occlude itself
  */
-function blockedBetween(a, b) {
-  const Poly = CONFIG.Canvas?.polygonBackends?.light;
-  if (typeof Poly?.testCollision !== "function") return false;
-  try {
-    return Poly.testCollision(a, b, { type: "light", mode: "any" }) === true;
-  } catch {
-    // A malformed edge set should not take the whole feature down; erring toward not-blocked keeps a
-    // real window working and at worst lets the old behaviour through.
-    return false;
+function blockedBetween(a, b, self) {
+  const collection = canvas?.edges;
+  if (typeof collection?.getEdges !== "function") return false;
+
+  const x = Math.min(a.x, b.x);
+  const y = Math.min(a.y, b.y);
+  const bounds = new PIXI.Rectangle(x - 1, y - 1, Math.abs(b.x - a.x) + 2, Math.abs(b.y - a.y) + 2);
+
+  for (const edge of collection.getEdges(bounds, { includeOuterBounds: false })) {
+    if (edge === self || !edge.a || !edge.b) continue;
+    if (passesLight(edge)) continue;
+    if (edge.direction && edge.orientPoint(a) === edge.direction) continue;
+    if (foundry.utils.lineSegmentIntersects(a, b, edge.a, edge.b)) return true;
   }
+  return false;
 }
 
 /**
@@ -330,10 +354,9 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
   // therefore poured daylight through it, and dragging the same wall a few feet away turned it off.
   //
   // The honest test is neither the border nor the differential alone: can light actually get from
-  // one sample to the other? The aperture's own edge cannot answer no — it passes light by
-  // definition, so the sweep drops it before it can occlude — which makes this exact rather than
-  // approximate. A real window sees nothing between its probes; a wall behind a wall sees the wall.
-  if (blockedBetween(plus, minus)) return reject("occluded");
+  // one sample to the other? The aperture is excluded by name, so the answer is about what stands
+  // behind it: a real window sees nothing between its probes; a wall behind a wall sees the wall.
+  if (blockedBetween(plus, minus, edge)) return reject("occluded");
 
   // Inward points at the darker side; the brighter side is where the light comes from.
   const inwardSign = tierPlus < tierMinus ? 1 : -1;

@@ -145,6 +145,40 @@ export const HIDDEN = "pf1LightingHidden";
 export const HARD_EDGES = "pf1LightingHardEdges";
 
 /**
+ * Does light cross this edge? The module's one answer — DESIGN.md §3.4.2.
+ *
+ * @remarks
+ * Three places ask it and none may disagree: `spill.isAperture` (which edges are windows),
+ * `geodesic.blockingLinks` (which cell-to-cell links a march may not use) and
+ * `render/wall-mask.blocking` (which edges the brightness field may not blur across). An aperture
+ * that also blocked would seed a fill it then walled off, and a band that stopped at its own
+ * window would be masked away at the edge it came through. Hence one exported predicate rather
+ * than three copies of a comparison.
+ *
+ * `edge.light`, not `edge.sight`: this is a brightness question throughout. A window that blocks
+ * sight but passes light must let spill through, which is the whole feature.
+ *
+ * **Threshold walls count (2026-09-01.)** *Proximity* and *Reverse proximity* are `NONE` for some
+ * sources and blocking for others — Foundry decides per source, by distance from the wall
+ * (`edges/edge.mjs:212` `applyThreshold`). Global illumination has no position, so there is no
+ * distance to measure and no honest per-source answer; the module's ambient either reaches the
+ * room or it does not. Treating them as apertures is the reading that matches what they are drawn
+ * for — a window, configured so a torch outside does not also shine in.
+ *
+ * A threshold of zero is not a threshold. `applyThreshold` returns early on a falsy distance, so
+ * such a wall blocks every source unconditionally and is an ordinary blocker here too.
+ *
+ * `LIMITED` is deliberately not included: it blocks the second time light crosses it, which this
+ * predicate has no way to express, and reading it as open would let daylight through two walls.
+ */
+export function passesLight(edge) {
+  const light = edge?.light ?? CONST.WALL_SENSE_TYPES.NONE;
+  if (light === CONST.WALL_SENSE_TYPES.NONE) return true;
+  if (light < CONST.WALL_SENSE_TYPES.PROXIMITY) return false;
+  return Number(edge?.threshold?.light) > 0;
+}
+
+/**
  * The sight-edge priority ladder: edge rank by tier, darker regions ranking higher.
  * DESIGN.md §4.3, §4.5.2.
  *

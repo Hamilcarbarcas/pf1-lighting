@@ -688,3 +688,53 @@ review — only deletions.
 *The token light button* and *Fuel*, while the `# Contents` list said it came last. Moved to the end
 of `## Light effects`, which is where the contents list already claimed it was. Every in-page anchor
 re-checked and resolving.
+
+---
+
+## 2026-09-01 — `README.md` + `CHANGELOG.md` — proximity walls count as spill openings
+
+Prompted by: Hamilcarbarcas — *"I want walls that have proximity or reverse proximity for light to
+still trigger light spill - currently only wall's whose light blockage is none work."*
+
+### 1. ADDED — `README.md`, `#### Light spill`, one paragraph
+
+Inserted directly after the opening paragraph, before *"This light spreads from an opening…"*.
+
+Before:
+
+```
+An optional feature, **Light Spill** allows light to enter an interior region through windows and open
+doors (or any wall that does not block light). 
+
+This light spreads from an opening rather than providing sharp lines the way normal light sources do.
+```
+
+After:
+
+```
+An optional feature, **Light Spill** allows light to enter an interior region through windows and open
+doors (or any wall that does not block light).
+
+A wall counts as an opening if its **Light** restriction is *None*, *Proximity* or *Reverse
+proximity*. The two proximity settings are how a window that a passing torch should not shine
+through is usually drawn, so they let spill in as well - but a proximity wall whose threshold
+distance is 0 blocks light for everything in Foundry, and blocks spill too.
+
+This light spreads from an opening rather than providing sharp lines the way normal light sources do.
+```
+
+(The only other difference is the trailing space after `light).` on the first paragraph, dropped.)
+
+### 2. ADDED — `CHANGELOG.md`, first bullet under `## Unreleased` → `### Fixed`
+
+New text:
+
+> - **Light spill now comes through proximity windows.** A wall set to *Proximity* or *Reverse
+>   proximity* for light is the usual way to draw a window that a passing torch does not shine
+>   through, and spill ignored every one of them — only *None* counted as an opening. Such a wall is
+>   now an opening for spill, and light passes it everywhere else in the module for the same reason.
+>   A proximity wall left at a threshold of 0 blocks light for everything in Foundry, and still blocks
+>   here.
+
+No `lang/en.json` change — the spill settings carry English labels in `registerSettings`, and none of
+them changed.

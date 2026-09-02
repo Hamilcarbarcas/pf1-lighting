@@ -79,7 +79,7 @@
  * `areas` is deliberately not here yet — see the note on {@link ladder}.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODULE_ID, passesLight } from "../constants.mjs";
 import { TIER } from "./tiers.mjs";
 
 export const SETTING_CELL = "spillCellSize";
@@ -341,20 +341,16 @@ export const emptyLinks = (grid) => ({
  * Every light-blocking edge on the scene, cut into the link set.
  *
  * @remarks
- * `edge.light`, not `edge.sight` — the predicate `render/wall-mask.mjs` uses, for the same reason.
- * This is a brightness field, so the question is whether light crosses. A window that blocks sight
- * but passes light must let spill through, which is the entire feature.
- *
- * Necessarily also the predicate `spill.isAperture` reads, so an aperture can never both seed a fill
- * and block it.
+ * {@link passesLight}, the module's one answer, shared with `spill.isAperture` and
+ * `render/wall-mask.mjs` — an aperture can never both seed a fill and block it, by construction
+ * rather than by two comparisons agreeing.
  */
 export function blockingLinks(grid, { skip = null, links = emptyLinks(grid) } = {}) {
-  const NONE = CONST.WALL_SENSE_TYPES.NONE;
   let edges = 0;
   let cut = 0;
 
   for (const edge of canvas?.edges?.values() ?? []) {
-    if ((edge.light ?? NONE) === NONE) continue;
+    if (passesLight(edge)) continue;
     if (!edge.a || !edge.b) continue;
     if (skip?.(edge)) continue;
     edges++;

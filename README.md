@@ -345,7 +345,12 @@ Core's own *Adjust Darkness Level* behavior is untested will likely not behave w
 #### Light spill
 
 An optional feature, **Light Spill** allows light to enter an interior region through windows and open
-doors (or any wall that does not block light). 
+doors (or any wall that does not block light).
+
+A wall counts as an opening if its **Light** restriction is *None*, *Proximity* or *Reverse
+proximity*. The two proximity settings are how a window that a passing torch should not shine
+through is usually drawn, so they let spill in as well - but a proximity wall whose threshold
+distance is 0 blocks light for everything in Foundry, and blocks spill too.
 
 This light spreads from an opening rather than providing sharp lines the way normal light sources do.
 It will spread around corners and fill the space, reducing in brightness the further it gets from its

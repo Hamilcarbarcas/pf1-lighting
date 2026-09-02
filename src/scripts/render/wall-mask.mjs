@@ -28,7 +28,7 @@
  * same boundary anyway — the light's own cut edge lies along the wall.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODULE_ID, passesLight } from "../constants.mjs";
 import { width as transitionWidth } from "./transition.mjs";
 
 /**
@@ -86,19 +86,21 @@ function ensure() {
  * Which edges block light, and therefore must not be blurred across.
  *
  * @remarks
- * `edge.light`, not `edge.sight`. This protects a brightness field, so the question is whether
- * light crosses the edge — a window that blocks sight but passes light should blur normally, which
- * is what §3.4's spill feature exists for.
+ * {@link passesLight}, the module's one answer. This protects a brightness field, so the question is
+ * whether light crosses the edge — a window that blocks sight but passes light should blur normally,
+ * which is what §3.4's spill feature exists for. Sharing the predicate with `spill.isAperture` is
+ * what stops a band being masked away at the very window it came through.
  *
- * Scene-bounds edges are included rather than filtered out: they restrict light the same way, and
- * the field has no business bleeding past the scene rect either.
+ * No filter on `edge.type`, unlike `spill.isAperture` — anything that restricts light restricts it
+ * the same way here. That admits nothing extra in practice: `#defineBoundaries` builds the scene
+ * rect's edges with no restrictions at all (`geometry/edges/edges.mjs:148`), so the bounds fall out
+ * as light-passing and the blur runs to the edge of the canvas as it always has.
  */
 function* blocking() {
   const edges = canvas?.edges;
   if (!edges) return;
-  const NONE = CONST.WALL_SENSE_TYPES.NONE;
   for (const edge of edges.values()) {
-    if ((edge.light ?? NONE) === NONE) continue;
+    if (passesLight(edge)) continue;
     if (!edge.a || !edge.b) continue;
     yield edge;
   }

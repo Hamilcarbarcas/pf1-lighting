@@ -53,6 +53,12 @@
   preset to them.
 
 ### Fixed
+- **Light spill now comes through proximity windows.** A wall set to *Proximity* or *Reverse
+  proximity* for light is the usual way to draw a window that a passing torch does not shine
+  through, and spill ignored every one of them — only *None* counted as an opening. Such a wall is
+  now an opening for spill, and light passes it everywhere else in the module for the same reason.
+  A proximity wall left at a threshold of 0 blocks light for everything in Foundry, and still blocks
+  here.
 - The light level tooltip no longer reports the light level of ground the viewer cannot see. Area
   behind a wall is drawn dark but was still read at its own level — a lit room past a corner
   reported *Bright* while the screen showed it dark. It now reads *Dark*, with "out of sight behind
