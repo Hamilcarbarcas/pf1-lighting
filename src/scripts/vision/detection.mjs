@@ -36,6 +36,7 @@ import {
   perceives,
   withObserver,
 } from "./perception.mjs";
+import { sourceIsSightless } from "./sightless.mjs";
 
 const PATCH_MARK = "pf1LightingPerceptionPatched";
 
@@ -215,18 +216,52 @@ const NonSightMixin = (Base) =>
     }
   };
 
+/**
+ * A creature with no visual senses fails every sight mode (§4.5.4).
+ *
+ * @remarks
+ * This is core's own rule for the blinded condition — *"Sight-based detection fails when blinded"*,
+ * `detection-mode.mjs:105-107` — reached from a second trigger. The same shape as §4.5.1: the
+ * behaviour was right and only the trigger was missing, so the trigger is added and Foundry's
+ * machinery does the rest.
+ *
+ * **Why not patch `DetectionMode.prototype._canDetect` once.** That was the design, and it does not
+ * work: every mode that matters overrides `_canDetect` without calling `super`
+ * (`detection-modes/light-perception.mjs:12`, `darkvision.mjs:11`, `invisibility-perception.mjs:21`),
+ * so a base-class patch would never run for any of them. Layering above the instance is the only
+ * position that sees the call, and it is where this module already sits.
+ *
+ * Applied by composition over the per-mode mixin rather than folded into each of the three, so a
+ * sight mode this module has no specific rule for — one another module registers — is covered by
+ * the same line.
+ *
+ * `isPerceptionEnabled` deliberately does **not** gate it. That switch turns off the *light-level*
+ * model; whether a creature has eyes is not part of it, and a Sightless grimlock should not start
+ * seeing because a GM turned the tier rules off.
+ */
+const SightlessMixin = (Base) =>
+  class extends Base {
+    static [PATCH_MARK] = true;
+
+    /** @override */
+    _canDetect(visionSource, target) {
+      if (sourceIsSightless(visionSource)) return false;
+      return super._canDetect(visionSource, target);
+    }
+  };
+
 function mixinFor(mode) {
   const SIGHT = foundry.canvas.perception.DetectionMode.DETECTION_TYPES.SIGHT;
   if (mode.type !== SIGHT) return NonSightMixin;
 
-  switch (mode.id) {
-    case "basicSight":
-      return DarkvisionMixin;
-    case "seeInvisibility":
-      return SeeInvisibilityMixin;
-    default:
-      return ObserverScopeMixin;
-  }
+  const specific =
+    mode.id === "basicSight"
+      ? DarkvisionMixin
+      : mode.id === "seeInvisibility"
+        ? SeeInvisibilityMixin
+        : ObserverScopeMixin;
+
+  return (Base) => SightlessMixin(specific(Base));
 }
 
 /**

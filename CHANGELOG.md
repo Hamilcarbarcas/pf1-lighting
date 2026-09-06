@@ -10,6 +10,18 @@
 ## Unreleased
 
 ### Added
+- **Sightless — a creature with no eyes at all.** A new checkbox at the top of the actor's Senses
+  window, for a grimlock, an ooze, or an oracle with the blind curse. It perceives by blindsight,
+  blindsense, tremorsense, scent and lifesense, and by nothing else. It is not the *blinded*
+  condition and carries none of its penalties — it removes senses and nothing more, so a Sightless
+  creature with blindsight still sees out to its blindsight range and one with no other sense sees
+  nothing at all. Pathfinder defines darkvision as "otherwise like normal sight", so Sightless takes
+  that too, along with low-light vision, see in darkness, true seeing and see invisibility; when the
+  box is checked beside a sense it overrides, the window says which, and the values stay on the sheet
+  rather than being hidden or cleared. Everything a Sightless creature perceives is drawn in black
+  and white — it makes out a lit floor and an unlit one identically, so its view is not shaded by
+  light level. The same now applies to a blinded creature perceiving by blindsight. Sightless shows
+  as a tag in the Senses row on the actor's Attributes tab, ahead of the senses it governs.
 - **Light effects — a light that follows what it is attached to.** Cast *light* on a thrown rock,
   hand a lantern to a guard, or drop a *darkness* on a trap, and the light travels with it. The
   target's own light configuration is never touched, so several effects can be in force at once and
@@ -53,6 +65,21 @@
   preset to them.
 
 ### Fixed
+- **Blindsight no longer replaces a creature's ordinary vision.** Pathfinder 1e treats blindsight as
+  a kind of darkvision, which put a blindsighted creature into the black-and-white vision mode and
+  cut its sight range down to its blindsight range — so a scout with normal eyes and blindsight 30
+  saw a thirty-foot grey circle and nothing else. Blindsight is now additive: the creature sees
+  everything it saw before, in colour, and its blindsight fills in what light cannot reach. Ground it
+  makes out by blindsight alone still reads grey, since that is not sight. A creature that also has
+  darkvision is unaffected.
+- **A low-light multiplier below 1 no longer puts out every light on the scene.** Pathfinder 1e takes
+  the multiplier straight from the sheet, so an actor with low-light vision enabled and a multiplier
+  of 0 — the system's own default is 2 — extinguished every light source while that token was
+  selected, for everyone standing with them. The map went genuinely black and the creature looked
+  blinded. Low-light vision can now only ever extend a light.
+- **A darkness across a lit room stays visible to a blindsighted creature.** Darkness that a creature
+  can map by echo is drawn as ordinary floor to it, which was being applied to every darkness on the
+  scene rather than to the ones actually within its blindsight.
 - **Light spill now comes through proximity windows.** A wall set to *Proximity* or *Reverse
   proximity* for light is the usual way to draw a window that a passing torch does not shine
   through, and spill ignored every one of them — only *None* counted as an opening. Such a wall is

@@ -23,6 +23,8 @@ import * as perception from "./vision/perception.mjs";
 import * as detection from "./vision/detection.mjs";
 import * as blindness from "./vision/blindness.mjs";
 import * as llv from "./vision/llv.mjs";
+import * as senses from "./vision/senses.mjs";
+import * as sightless from "./vision/sightless.mjs";
 import * as observer from "./vision/observer.mjs";
 import * as umbra from "./vision/umbra.mjs";
 import * as umbraEdges from "./vision/umbra-edges.mjs";
@@ -132,6 +134,7 @@ Hooks.once("init", () => {
   perception.registerSettings();
   blindness.registerSettings();
   llv.registerSettings();
+  senses.registerSettings();
   umbra.registerSettings();
   observer.registerSettings();
   // §3.4's six numbers, and the window that edits them (§10.10). Same rule as the menus below:
@@ -159,12 +162,20 @@ Hooks.once("init", () => {
     // blindsight survives it, so it needs its own reach. See `blindness.blindsightRadius`.
     blindsightRadius: blindness.blindsightRadius,
     darkSightBrightness: blindness.darkSightBrightness,
+    // §4.5.4. Narrower again than either of the two above: no visual sense at all, so both radii
+    // go and blindsight is what is left. Injected on the same seam for the same reason.
+    sightless: sightless.sourceIsSightless,
     perceptionActive: perception.isPerceptionEnabled,
   });
 
   // The other direction of the same seam. `umbra` already imports `perception` for
   // `darkSightRange`, so perception cannot import it back without a cycle between peers.
   perception.setUmbraModel({ clampAt: umbra.clampAt });
+
+  // §4.5.3. Blindsight withholding is bounded by the sense's own range now that blindsight is no
+  // longer the whole of a creature's vision, and `render/` must not import from `vision/` — so the
+  // reach comes down the same seam as everything else that crosses that line.
+  desaturate.setBlindsightReach(perception.blindsightRange);
 
   // Same injection seam as the two above: `render/darkness-texture.mjs` reads from `soften`, so
   // the settings callback comes back the other way rather than as a second import.
@@ -272,6 +283,17 @@ Hooks.once("init", () => {
   // The third darkening of unseen ground — Foundry's fog overlay, hard-coded at half black.
   // Same CONFIG-slot rule as the filter above: swapped at `init`, before the canvas is drawn.
   darknessMask.applyFowPatch();
+
+  // §4.5.3 — blindsight stops masquerading as darkvision. `init` rather than `setup`, and a
+  // prototype patch rather than a CONFIG subclass, for one reason: every scene's embedded
+  // TokenDocuments are constructed in `Game#initializeDocuments` (`game.mjs:739`) before the
+  // `setup` hook at `:746`, so a class swap would reach only tokens created afterwards. PF1's own
+  // `init` callback is registered first and has already installed `TokenDocumentPF` by now.
+  senses.applyPatch();
+
+  // §4.5.4's Senses-window checkbox. The hook is registered at `init` because it only listens; the
+  // form-handler wrap it depends on goes in at `setup`, where `pf1.applications` exists.
+  sightless.registerHooks();
 });
 
 /**
@@ -297,6 +319,11 @@ Hooks.once("setup", () => {
   // (`pf1.mjs:261`) and anything earlier is overwritten. Zeroes Foundry's five desaturation routes
   // so §6.2.11's single pass is the only thing greying anything.
   greyscale.neutralise();
+
+  // §4.5.4. `setup`, because both reach into `pf1.applications`, which PF1 populates during its own
+  // `init` — the Senses window's save handler, and the sense tag on the Attributes tab.
+  sightless.applyFormPatch();
+  sightless.applySheetPatch();
 });
 
 // Must run after `limits` applies its own source-class mixins, so these sit on top.

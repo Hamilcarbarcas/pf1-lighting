@@ -217,6 +217,30 @@ function patchVisionSource() {
       super._initialize(data);
       if (visionModel?.perceptionActive?.() !== true) return;
 
+      // Sightless (§4.5.4): no eyes at all, so no light perception and no sight FOV — blindsight is
+      // the only reach left. Both radii, because they feed different masks: `lightRadius` paints
+      // through `_createLightPolygon` into `vision.light.mask`, `radius` paints the sight FOV
+      // (`visibility.mjs:577-590`). §4.5.1's lesson a fourth time — gating the detection modes
+      // leaves the ground painted, and the creature makes out every lit room while detecting
+      // nothing in it.
+      //
+      // `blindsightRadius`, never `darkSightRadius`: the latter folds in see-in-darkness and true
+      // seeing, which are sight, so it would hand back the reach this branch just removed.
+      //
+      // Assigned rather than maximised, and no early return past the priority line: zero is the
+      // right answer for a creature with no surviving sense, and `isBlinded` then computes true on
+      // its own — core's blinding, reached by removing senses rather than by asserting a verdict.
+      if (visionModel?.sightless?.(this) === true) {
+        const blindsight = visionModel?.blindsightRadius?.(this) ?? 0;
+        this.data.lightRadius = 0;
+        this.data.radius = blindsight;
+        this.data.priority = Math.max(
+          this.data.priority ?? 0,
+          blindsight > 0 ? VISION_RANK.PIERCING : VISION_RANK.NORMAL
+        );
+        return;
+      }
+
       // Blinded: blindsight and nothing else. The record above reports this creature as unblinded
       // so terrain gets painted at all; this is the other half. Without it the radius left over
       // from `_syncSenses` is `max(base, darkvision, blindsight)`, so a blinded creature would see
@@ -226,6 +250,13 @@ function patchVisionSource() {
       if (this.blinded?.[RAW_BLIND]) {
         const blindsight = visionModel?.blindsightRadius?.(this) ?? 0;
         this.data.radius = blindsight;
+        // The light half of the same removal, added 2026-09-05 alongside §4.5.4. Core reaches it by
+        // a route this record deliberately closes: `lightRadius` returns 0 only for the `blindness`
+        // vision mode (`point-vision-source.mjs:154`), and reporting `blind: false` so terrain gets
+        // painted keeps that mode away — so light perception survived the condition and a blinded
+        // creature still had lit rooms drawn for it. Detection was already right, core gating the
+        // sight modes on the status effect itself.
+        this.data.lightRadius = 0;
         // Same ladder as the ordinary path below, for the same reason: blindsight perceives through
         // a magical darkness, so it sweeps at piercing rank. A creature blinded with no blindsight
         // gets `NORMAL` and a radius of zero, exactly core's behaviour.
@@ -287,6 +318,7 @@ function patchVisionSource() {
  *   darkSightRadius?: (s: object) => number,
  *   blindsightRadius?: (s: object) => number,
  *   darkSightBrightness?: (s: object) => number,
+ *   sightless?: (s: object) => boolean,
  *   perceptionActive?: () => boolean,
  * }|null}
  */

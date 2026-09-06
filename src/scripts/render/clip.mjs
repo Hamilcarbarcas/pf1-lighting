@@ -597,9 +597,13 @@ export function applyMixin() {
        * failed: what the surrounding ground looks like is painted by the vision source, and no term
        * available to a darkness shader reproduces it. Letting the ordinary pipeline draw the ground
        * is the only way to get the same answer as the ground next to it.
+       *
+       * `this` is passed since §4.5.3: the answer is per-source now that blindsight no longer
+       * stands for the whole of a creature's vision, and a bubble beyond its reach must keep
+       * drawing.
        */
       _drawMesh(layerId) {
-        const suppressed = layerId === "darkness" && observerIgnoresDarkness();
+        const suppressed = layerId === "darkness" && observerIgnoresDarkness(this);
         if (!this[HIDDEN] && !suppressed) return super._drawMesh(layerId);
         const mesh = this.layers?.[layerId]?.mesh;
         if (mesh) mesh.visible = mesh.renderable = false;

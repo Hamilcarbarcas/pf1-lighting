@@ -13,6 +13,7 @@
     - [Discrete levels](#discrete-levels)
     - [Umbras](#umbras)
     - [Vision mode reworks](#vision-mode-reworks)
+      - [Sightless](#sightless)
   - [Light sources](#light-sources)
     - [Darkness sources](#darkness-sources)
   - [Presets](#presets)
@@ -48,6 +49,7 @@ Reworked Foundry lighting to match Pathfinder 1e lighting rules.
 - Magical daylight cancels darkness effects in its area
 - Indoor spaces can be defined in scenes that ignore ambient lighting
 - Low-light vision, Darkvision, See in Darkness, True Seeing and Blindsight all tooled to work RAW
+- Creatures with no eyes at all can be marked **Sightless** and perceive only by their other senses
 
 ## New lighting model
 
@@ -99,13 +101,39 @@ Non-magical darkness sources have no umbra, and only affect the area within thei
 - **Darkvision** reveals all areas of non-magical darkness within its radius and renders them in
 greyscale
 - **Low-Light Vision** multiplies the radius of all light sources. It no longer multiplies the radius 
-of darkness sources.
+of darkness sources, and it can only ever extend a light - a multiplier below 1 on an actor's sheet
+no longer shrinks or extinguishes every light on the scene.
 - **Blindsight** reveals all areas of magical or non-magical darkness within its radius and renders
-them in greyscale. Blindsight is not suppressed by the blinded condition.
+them in greyscale. It adds to the creature's ordinary vision rather than replacing it, so a
+blindsighted creature still sees lit areas at any distance, in colour. Blindsight is not suppressed
+by the blinded condition. Pathfinder 1e itself treats blindsight as a form of darkvision, which
+forces the greyscale vision mode on the creature and cuts its sight range down to its blindsight
+range; that is corrected here.
 - **True Seeing** reveals all areas regardless of light level within its radius, rendering them normally.
 - **See in Darkness** reveals all areas in view regardless of light level, rendering them normally.
 - **Normal Vision** hides all areas in darkness or magical darkness, as well as all tokens within those
 areas.
+
+#### Sightless
+
+A new **Sightless** checkbox at the top of the actor's Senses window, for a creature that has no eyes
+at all - a grimlock, an ooze, an oracle with the blind curse. It perceives by blindsight,
+blindsense, tremorsense, scent and lifesense, and by nothing else.
+
+It is not the *blinded* condition and carries none of its penalties. It removes only senses, so a
+Sightless creature with blindsight still sees out to its blindsight range, and one with no other
+sense at all sees nothing.
+
+Everything a Sightless creature perceives is drawn in black and white. It makes out a lit floor and
+an unlit one identically, so unlike a creature with darkvision its view is not shaded by light
+level. The same applies to a creature perceiving by blindsight under the *blinded* condition.
+
+Pathfinder defines darkvision as "black and white only but otherwise like normal sight", low-light
+vision as *seeing* twice as far, and see in darkness as *seeing* perfectly in the dark, so Sightless
+removes those along with normal vision, true seeing and see invisibility. When the box is checked
+beside a sense it overrides, the window says which - the values stay on the sheet rather than being
+hidden or cleared. Sightless appears as a tag in the Senses row of the Attributes tab, ahead of the
+senses it governs.
 
 ## Light sources
 Light sources now have a **Lighting Configuration** section. Some existing controls have been moved 

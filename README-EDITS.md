@@ -738,3 +738,218 @@ New text:
 
 No `lang/en.json` change — the spill settings carry English labels in `registerSettings`, and none of
 them changed.
+
+---
+
+## 2026-09-05 — `README.md` + `CHANGELOG.md` — blindsight is not darkvision (§4.5.3)
+
+### 1. CHANGED — `README.md`, "Vision mode reworks", the Blindsight bullet
+
+Before:
+
+```
+- **Blindsight** reveals all areas of magical or non-magical darkness within its radius and renders
+them in greyscale. Blindsight is not suppressed by the blinded condition.
+```
+
+After:
+
+```
+- **Blindsight** reveals all areas of magical or non-magical darkness within its radius and renders
+them in greyscale. It adds to the creature's ordinary vision rather than replacing it, so a
+blindsighted creature still sees lit areas at any distance, in colour. Blindsight is not suppressed
+by the blinded condition. Pathfinder 1e itself treats blindsight as a form of darkvision, which
+forces the greyscale vision mode on the creature and cuts its sight range down to its blindsight
+range; that is corrected here.
+```
+
+### 2. ADDED — `CHANGELOG.md`, two bullets at the top of `## Unreleased` → `### Fixed`
+
+New text:
+
+> - **Blindsight no longer replaces a creature's ordinary vision.** Pathfinder 1e treats blindsight as
+>   a kind of darkvision, which put a blindsighted creature into the black-and-white vision mode and
+>   cut its sight range down to its blindsight range — so a scout with normal eyes and blindsight 30
+>   saw a thirty-foot grey circle and nothing else. Blindsight is now additive: the creature sees
+>   everything it saw before, in colour, and its blindsight fills in what light cannot reach. Ground it
+>   makes out by blindsight alone still reads grey, since that is not sight. A creature that also has
+>   darkvision is unaffected.
+> - **A darkness across a lit room stays visible to a blindsighted creature.** Darkness that a creature
+>   can map by echo is drawn as ordinary floor to it, which was being applied to every darkness on the
+>   scene rather than to the ones actually within its blindsight.
+
+No `lang/en.json` change. The new `separateBlindsight` setting carries its English name and hint in
+`vision/senses.mjs`'s `registerSettings`, on the `guardNegativeLowLight` precedent — it is
+`config: false` and never appears in the settings list.
+
+---
+
+## 2026-09-05 — `README.md` + `CHANGELOG.md` — low-light vision can only extend a light (§4.4b)
+
+### 1. CHANGED — `README.md`, "Vision mode reworks", the Low-Light Vision bullet
+
+Before:
+
+```
+- **Low-Light Vision** multiplies the radius of all light sources. It no longer multiplies the radius 
+of darkness sources.
+```
+
+After:
+
+```
+- **Low-Light Vision** multiplies the radius of all light sources. It no longer multiplies the radius 
+of darkness sources, and it can only ever extend a light - a multiplier below 1 on an actor's sheet
+no longer shrinks or extinguishes every light on the scene.
+```
+
+(The trailing space after `radius` on the first line is pre-existing and left alone.)
+
+### 2. ADDED — `CHANGELOG.md`, second bullet under `## Unreleased` → `### Fixed`
+
+New text:
+
+> - **A low-light multiplier below 1 no longer puts out every light on the scene.** Pathfinder 1e takes
+>   the multiplier straight from the sheet, so an actor with low-light vision enabled and a multiplier
+>   of 0 — the system's own default is 2 — extinguished every light source while that token was
+>   selected, for everyone standing with them. The map went genuinely black and the creature looked
+>   blinded. Low-light vision can now only ever extend a light.
+
+No `lang/en.json` change — the clamp carries no setting and no new label.
+
+---
+
+## 2026-09-05 — `README.md` + `CHANGELOG.md` + `lang/en.json` — Sightless (§4.5.4)
+
+### 1. ADDED — `README.md`, Contents, under "Vision mode reworks"
+
+New line:
+
+```
+      - [Sightless](#sightless)
+```
+
+### 2. ADDED — `README.md`, "Core features" bullet list, after the RAW vision-modes line
+
+New line:
+
+```
+- Creatures with no eyes at all can be marked **Sightless** and perceive only by their other senses
+```
+
+### 3. ADDED — `README.md`, new `#### Sightless` subsection after the "Vision mode reworks" list
+
+New text:
+
+```
+#### Sightless
+
+A new **Sightless** checkbox at the top of the actor's Senses window, for a creature that has no eyes
+at all - a grimlock, an ooze, an oracle with the blind curse. It perceives by blindsight,
+blindsense, tremorsense, scent and lifesense, and by nothing else.
+
+It is not the *blinded* condition and carries none of its penalties. It removes only senses, so a
+Sightless creature with blindsight still sees out to its blindsight range, and one with no other
+sense at all sees nothing.
+
+Pathfinder defines darkvision as "black and white only but otherwise like normal sight", low-light
+vision as *seeing* twice as far, and see in darkness as *seeing* perfectly in the dark, so Sightless
+removes those along with normal vision, true seeing and see invisibility. When the box is checked
+beside a sense it overrides, the window says which - the values stay on the sheet rather than being
+hidden or cleared.
+```
+
+### 4. ADDED — `CHANGELOG.md`, first bullet under `## Unreleased` → `### Added`
+
+New text:
+
+> - **Sightless — a creature with no eyes at all.** A new checkbox at the top of the actor's Senses
+>   window, for a grimlock, an ooze, or an oracle with the blind curse. It perceives by blindsight,
+>   blindsense, tremorsense, scent and lifesense, and by nothing else. It is not the *blinded*
+>   condition and carries none of its penalties — it removes senses and nothing more, so a Sightless
+>   creature with blindsight still sees out to its blindsight range and one with no other sense sees
+>   nothing at all. Pathfinder defines darkvision as "otherwise like normal sight", so Sightless takes
+>   that too, along with low-light vision, see in darkness, true seeing and see invisibility; when the
+>   box is checked beside a sense it overrides, the window says which, and the values stay on the sheet
+>   rather than being hidden or cleared.
+
+### 5. ADDED — `lang/en.json`, new `PF1LIGHTING.Senses` block
+
+New keys:
+
+```json
+"Senses": {
+  "Sightless": "Sightless",
+  "SightlessOverrides": "No visual senses: {senses} ignored."
+}
+```
+
+`SightlessOverrides` interpolates a comma-joined list of sense names localised from **PF1's own**
+keys (`PF1.Sense.darkvision` and friends), not restated here — the notice names rows a few pixels
+away, and four PF1 labels beside one of ours would read as a bug in the window.
+
+---
+
+## 2026-09-05 — `README.md` + `CHANGELOG.md` — Sightless renders flat black and white (§4.5.4)
+
+### 1. ADDED — `README.md`, `#### Sightless`, new third paragraph
+
+New text:
+
+```
+Everything a Sightless creature perceives is drawn in black and white. It makes out a lit floor and
+an unlit one identically, so unlike a creature with darkvision its view is not shaded by light
+level. The same applies to a creature perceiving by blindsight under the *blinded* condition.
+```
+
+### 2. CHANGED — `CHANGELOG.md`, the Sightless bullet under `## Unreleased` → `### Added`
+
+Before (final sentence):
+
+> …the window says which, and the values stay on the sheet
+> rather than being hidden or cleared.
+
+After (final sentence):
+
+> …the window says which, and the values stay on the sheet
+> rather than being hidden or cleared. Everything a Sightless creature perceives is drawn in black
+> and white — it makes out a lit floor and an unlit one identically, so its view is not shaded by
+> light level. The same now applies to a blinded creature perceiving by blindsight.
+
+No `lang/en.json` change — the flat greyscale carries no setting and no label.
+
+---
+
+## 2026-09-05 — `README.md` + `CHANGELOG.md` — Sightless in the Attributes tab senses row (§4.5.4)
+
+### 1. CHANGED — `README.md`, `#### Sightless`, final paragraph
+
+Before (final sentence):
+
+```
+When the box is checked
+beside a sense it overrides, the window says which - the values stay on the sheet rather than being
+hidden or cleared.
+```
+
+After (final sentence):
+
+```
+When the box is checked
+beside a sense it overrides, the window says which - the values stay on the sheet rather than being
+hidden or cleared. Sightless appears as a tag in the Senses row of the Attributes tab, ahead of the
+senses it governs.
+```
+
+### 2. CHANGED — `CHANGELOG.md`, the Sightless bullet under `## Unreleased` → `### Added`
+
+Before (final sentence):
+
+> The same now applies to a blinded creature perceiving by blindsight.
+
+After (final sentence):
+
+> The same now applies to a blinded creature perceiving by blindsight. Sightless shows
+>   as a tag in the Senses row on the actor's Attributes tab, ahead of the senses it governs.
+
+No `lang/en.json` change — the tag reuses the existing `PF1LIGHTING.Senses.Sightless` key.

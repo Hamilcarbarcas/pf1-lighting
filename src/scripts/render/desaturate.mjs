@@ -180,11 +180,30 @@ export function currentSaturation() {
  * included. `_drawMesh` already has that path (see {@link HIDDEN}), and it is the one lever
  * measured to work — §6.2.3 found alpha does not stop a darkness source drawing.
  *
- * Global, not per-observer-range: the same single-vision-source approximation as
- * {@link currentSaturation}. A distant bubble outside blindsight range also goes unpainted, being
- * beyond `data.radius` and so not drawn as perceived anyway.
+ * **Bounded by blindsight range since §4.5.3, 2026-09-05.** It was global, and the justification
+ * was that a bubble beyond blindsight range "goes unpainted anyway, being beyond `data.radius` and
+ * so not drawn as perceived" — true while PF1 was stamping the darkvision vision mode on
+ * blindsighted creatures, because `data.radius` was then the creature's *whole* reach. With
+ * blindsight made additive, the same creature keeps ordinary eyes and light perception out to the
+ * scene diagonal, so a darkness across a lit room is very much perceived, and withholding its mesh
+ * globally erased it.
+ *
+ * So the question became per-source, and the test is intersection rather than containment: any part
+ * of the disc within blindsight is mapped by echo, and the mesh is one object that either draws or
+ * does not. Erring toward withholding keeps the near case — the creature standing in or beside the
+ * bubble — behaving exactly as it did, which is the case the feature was built for. A darkness
+ * large enough to overlap blindsight and also span the lit half of the room is still withheld
+ * whole; splitting one would mean a shader term for the boundary, which is the thing two attempts
+ * established cannot be written.
+ *
+ * Called with no source it answers the observer-level question — has this creature blindsight at
+ * all — which is what {@link registerHooks} needs to know when to request a refresh, and what
+ * `probe.reveals` reports.
+ *
+ * @param {PointDarknessSource} [darknessSource] - The source whose mesh is being decided
+ * @returns {boolean}
  */
-export function observerIgnoresDarkness() {
+export function observerIgnoresDarkness(darknessSource) {
   // No longer gated on `desaturateDarkness`, as of 2026-08-27. The two halves were switched
   // together because they arrived together; §6.2.11 made the desaturation half inert by default,
   // leaving the switch's only effect a silent disabling of blindsight withholding — a behaviour it
@@ -194,11 +213,58 @@ export function observerIgnoresDarkness() {
   // experience a darkness over it as anything, so there is nothing for a setting to sit either side
   // of.
   const source = canvas?.visibility?.visionModeData?.source;
-  return (source?.object?.actor?.system?.traits?.senses?.bs?.total ?? 0) > 0;
+  if (!source) return false;
+
+  const reach = blindsightReach?.(source) ?? 0;
+  if (reach <= 0) return false;
+  if (!darknessSource) return true;
+
+  const dx = (darknessSource.x ?? 0) - source.x;
+  const dy = (darknessSource.y ?? 0) - source.y;
+  const radius = darknessSource.radius ?? darknessSource.data?.radius ?? 0;
+  return Math.hypot(dx, dy) <= reach + radius;
 }
 
-/** Last value seen, so a refresh is only requested when the answer actually changes. */
+/**
+ * How far the observer's blindsight reaches, in pixels — injected, not imported.
+ *
+ * @remarks
+ * `render/` must not import from `vision/` (see `umbraMask.applyPatch`'s note in `module.mjs`), and
+ * the alternative is a second copy of `perception.blindsightRange`'s unit conversion living here,
+ * where it would be free to drift from the one the rest of the model uses. Same seam as
+ * `soften.setGroundRefresh` and `suppression.setVisionModel`: `module.mjs` wires it at `init`.
+ *
+ * Null until then, and null is answered as "no reach", so the range test degrades to leaving every
+ * darkness mesh alone rather than to withholding them all.
+ *
+ * @type {((source: object) => number)|null}
+ */
+let blindsightReach = null;
+
+/** Wire the vision layer's blindsight range in. Called once at `init`. */
+export function setBlindsightReach(fn) {
+  blindsightReach = fn;
+}
+
+/**
+ * Last answer seen, so a refresh is only requested when it actually changes.
+ *
+ * @remarks
+ * A string rather than a boolean since §4.5.3. The verdict became position-dependent when it became
+ * per-source, so "does this observer withhold anything" is no longer enough to notice a change: a
+ * blindsighted creature walking toward a distant bubble crosses into range without the boolean
+ * moving. The observer's origin joins the key, rounded to whole pixels so a sub-pixel jitter during
+ * an animation does not request a refresh per frame.
+ */
 let lastIgnores = null;
+
+/** The change key: the observer-level verdict, plus where it is being asked from. */
+function ignoreKey() {
+  const ignores = observerIgnoresDarkness();
+  if (!ignores) return "no";
+  const source = canvas?.visibility?.visionModeData?.source;
+  return `yes:${Math.round(source?.x ?? 0)},${Math.round(source?.y ?? 0)}`;
+}
 
 /**
  * Refresh lighting when the observer changes.
@@ -209,14 +275,14 @@ let lastIgnores = null;
  * else dirties the lighting, which reads as the feature working intermittently.
  *
  * Guarded on a real change of answer, so the common case — selecting any token without blindsight
- * when the last one also had none — costs one boolean and requests nothing. Lighting is requested,
- * never vision, so this cannot feed back into the hook that drives it.
+ * when the last one also had none — costs one string compare and requests nothing. Lighting is
+ * requested, never vision, so this cannot feed back into the hook that drives it.
  */
 export function registerHooks() {
   const check = () => {
-    const ignores = observerIgnoresDarkness();
-    if (ignores === lastIgnores) return;
-    lastIgnores = ignores;
+    const key = ignoreKey();
+    if (key === lastIgnores) return;
+    lastIgnores = key;
     if (canvas?.ready) canvas.perception.update({ refreshLighting: true });
   };
 

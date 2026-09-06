@@ -218,12 +218,57 @@ function rungs() {
  *
  * Keyed on `visionMode.id` rather than the source's overrides, {@link neutralise} having set those
  * to zero — see {@link greynessByMode}.
+ *
+ * **Blindsight is a second source of greyness, and has to be asked for separately** (§4.5.3,
+ * 2026-09-05). It used to arrive through the mode id for the wrong reason: PF1 stamped
+ * `visionMode = "darkvision"` on any blindsighted creature, so the lookup above answered for it by
+ * accident. `vision/senses.mjs` stops that, and a creature whose eyes are ordinary correctly reads
+ * back `basic` — at which point the ground its blindsight reveals would render in full colour, as
+ * though lit.
+ *
+ * Grey is the right answer for the same reason it is right for darkvision: the greyscale marks
+ * ground made out by something other than light, and echo is not light. So the fallback is
+ * darkvision's own captured greyness rather than a number of its own — one claim, stated once.
+ *
+ * `byMode` first, so a creature with both senses keeps its eyes' answer and the fallback is only
+ * ever reached by a creature whose mode contributes nothing.
  */
 export function observerGreyness() {
   if (!isEnabled()) return 0;
   const source = canvas?.visibility?.visionModeData?.source;
-  const id = source?.visionMode?.id;
-  return greynessByMode.get(id) ?? 0;
+  const byMode = greynessByMode.get(source?.visionMode?.id) ?? 0;
+  if (byMode > 0) return byMode;
+
+  const blindsight = source?.object?.actor?.system?.traits?.senses?.bs?.total ?? 0;
+  if (blindsight > 0) return greynessByMode.get("darkvision") ?? 0;
+  return 0;
+}
+
+/**
+ * Is the observer's greyness flat rather than graded by light level?
+ *
+ * @remarks
+ * The ramp below — colour where it is lit, grey where it is dark — is a statement about a creature
+ * that has *both* faculties: eyes for the lit half and something else for the rest, with the
+ * brightness field as the boundary between them. Requested 2026-09-05 for Sightless with blindsight,
+ * and the general form is that the ramp has nothing to interpolate when one end of it does not
+ * exist. A creature mapping a room by echo makes out a lit floor and an unlit one identically,
+ * because it is not using light for either, so grading its view by light level asserts a distinction
+ * it cannot perceive.
+ *
+ * Read as `lightRadius === 0`, which is the one fact that means "perceives nothing by light" and is
+ * already where both routes to it converge: §4.5.4's Sightless branch and the blinded condition both
+ * zero it in `suppression.mjs`'s `_initialize`, as does a token whose `lightPerception` mode is
+ * simply switched off. Core never produces a zero by itself — `_initialize` defaults the field to
+ * the scene diagonal (`point-vision-source.mjs:218`) — so this cannot fire by accident.
+ *
+ * The source's *getter* rather than `data`, so the `blindness` vision mode's own override
+ * (`point-vision-source.mjs:154-156`) is honoured too.
+ */
+export function observerGreyIsFlat() {
+  const source = canvas?.visibility?.visionModeData?.source;
+  if (!source) return false;
+  return (source.lightRadius ?? source.data?.lightRadius ?? 0) <= 0;
 }
 
 /* -------------------------------------------- */
@@ -322,6 +367,9 @@ function buildFilterClass() {
       strength: 0,
       colourLevel: 2 / 3,
       darkLevel: 1,
+      // 1 skips the level ramp entirely — see {@link observerGreyIsFlat}. Not named `flat`, which
+      // is a reserved interpolation qualifier in GLSL ES 3.00 and would fail to compile on WebGL2.
+      flatGrey: 0,
       // Overwritten from {@link fogGrey} on the first `apply`; this is only what the filter holds
       // between construction and that call. Tracks {@link FOG_GREY_DEFAULT} so the two cannot
       // disagree during that window.
@@ -339,13 +387,20 @@ function buildFilterClass() {
   uniform float colourLevel;
   uniform float darkLevel;
   uniform float fogGrey;
+  uniform float flatGrey;
 
   void main() {
     vec4 color = texture2D(uSampler, vTextureCoord);
 
     if ( (strength > 0.0) && (color.a > 0.0) ) {
       float level = texture2D(darknessTexture, vMaskTextureCoord).r;
-      float grey = clamp((level - colourLevel) / (darkLevel - colourLevel), 0.0, 1.0) * strength;
+      float ramp = clamp((level - colourLevel) / (darkLevel - colourLevel), 0.0, 1.0);
+
+      // An observer that perceives nothing by light has no lit half for the ramp to interpolate
+      // toward, so the whole of its view is grey. \`mix\` rather than a branch: the value is uniform
+      // across the draw, and a uniform-controlled branch is the one kind a driver still has to
+      // compile both sides of.
+      float grey = mix(ramp, 1.0, flatGrey) * strength;
 
       // \`step(0.001, …)\` rather than \`> 0.0\` is core's own idiom for this texture
       // (\`darkness-lighting.mjs:93\`), and the epsilon matters: the vision mask is antialiased at
@@ -376,6 +431,7 @@ function buildFilterClass() {
       u.colourLevel = colour;
       u.darkLevel = dark;
       u.fogGrey = fogGrey();
+      u.flatGrey = observerGreyIsFlat() ? 1 : 0;
       u.darknessTexture = canvas?.effects?.illumination?.renderTexture ?? PIXI.Texture.WHITE;
       u.visionTexture = canvas?.masks?.vision?.renderTexture ?? PIXI.Texture.WHITE;
       super.apply(filterManager, input, output, clear, currentState);
@@ -504,6 +560,9 @@ export function status(x, y) {
     // fully coloured, one at or above `dark` fully grey.
     colour,
     dark,
+    // True and the two rungs above are inert: the observer perceives nothing by light, so its whole
+    // view is grey at `strength` regardless of level (§4.5.4).
+    flat: observerGreyIsFlat(),
     fogGrey: fogGrey(),
 
     // What the filter samples at the point. See the remarks — the one number separating a wrong

@@ -16,9 +16,15 @@
  * Low-light vision should enlarge light and never darkness: the rules extend how far a creature
  * can use a light source and say nothing about how far a darkness spell reaches — a property of
  * the spell, not the eye.
+ *
+ * The same sentence has a second half, added 2026-09-05 (§4.4b): it can only *enlarge*. PF1 takes
+ * the multiplier from the sheet unvalidated, so an actor with low-light enabled and a multiplier of
+ * 0 zeroes every light on the scene — and, via the `Math.min` across controlled tokens, for everyone
+ * standing with them. See {@link applyMixin}'s `getRadius`.
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { isSightless } from "./sightless.mjs";
 
 export const SETTING_LLV_GUARD = "guardNegativeLowLight";
 
@@ -90,10 +96,49 @@ export function applyMixin() {
     class extends Class {
       static pf1LightingNegativeGuard = true;
 
+      /**
+       * @override
+       * Low-light vision is sight, so a Sightless creature does not have it (§4.5.4).
+       *
+       * @remarks
+       * `TokenPF#actorVision` (`pf1/module/canvas/token.mjs:2-9`) is the only thing PF1's observer
+       * selection reads — `getRadius` filters on `actorVision.lowLight`
+       * (`low-light-vision.mjs:93`) — so denying it here removes the creature from the multiplier
+       * without touching the selection logic.
+       *
+       * Only meaningful on the token class; the `AmbientLight` half of this mixin has no `actor`
+       * and inherits nothing to override, so `super.actorVision` is undefined there and the guard
+       * never fires.
+       */
+      get actorVision() {
+        const vision = super.actorVision;
+        if (!vision || !isSightless(this.actor)) return vision;
+        return { ...vision, lowLight: false };
+      }
+
       /** @override */
       getRadius(dim, bright) {
         if (isGuardEnabled() && isNegative(this)) return { dim, bright };
-        return super.getRadius(dim, bright);
+
+        const result = super.getRadius(dim, bright);
+
+        // Low-light vision extends a light and can only extend it. A multiplier below 1 shrinks
+        // every light on the scene, and 0 extinguishes them all — which does not read as a bad
+        // number on one sheet, it reads as the selected creature having gone blind. Found
+        // 2026-09-05 on an actor whose `ll.multiplier` was 0/0 with low-light enabled: the map went
+        // black for that observer and the vision layer, which was working perfectly, took the
+        // blame.
+        //
+        // PF1 takes a `Math.min` across the controlled tokens (`low-light-vision.mjs:96-101`), so
+        // one actor carrying a 0 is enough to zero the scene for a whole party. Its own template
+        // default is 2 (`template.json:689`); anything under 1 is data, not intent.
+        //
+        // Not gated on `guardNegativeLowLight`, which names the darkness rule and not this one.
+        // A switch whose label describes one behaviour must not silently carry a second.
+        return {
+          dim: Math.max(result?.dim ?? 0, dim),
+          bright: Math.max(result?.bright ?? 0, bright),
+        };
       }
     };
 

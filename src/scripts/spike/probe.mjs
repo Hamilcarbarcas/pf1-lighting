@@ -27,6 +27,8 @@ import { blocksSight, castsUmbra } from "../model/contest.mjs";
 import { RAW_BLIND, RAW_BLINDED, isNativeSuppressionDisabled } from "../suppression.mjs";
 import * as perceptionModel from "../vision/perception.mjs";
 import * as blindness from "../vision/blindness.mjs";
+import * as sensesModel from "../vision/senses.mjs";
+import * as sightless from "../vision/sightless.mjs";
 import * as umbraModel from "../vision/umbra.mjs";
 import { currentSaturation, observerIgnoresDarkness } from "../render/desaturate.mjs";
 
@@ -393,13 +395,25 @@ export function vision() {
     // — and `radius` should then equal `blindsight`, not the token's sight range.
     blindRaw: v.blinded?.[RAW_BLIND] ?? null,
     blindsight: perceptionModel.blindsightRange(v),
+    // §4.5.4. True means every sight mode fails for this observer and both radii were rebuilt from
+    // blindsight alone — so `lightRadius` must read 0 and `radius` must equal `blindsight`. Both
+    // zero with this true is the fully unsighted case, and `isBlinded` should then be true.
+    sightless: sightless.sourceIsSightless(v),
     // The model's own verdict (§4.5.1) — true only in magical Supernatural Dark, and only without
     // see-in-darkness. When this is true, `blinded.darkness` should be too.
     modelBlinds: blindness.modelBlinds(v),
     // Light-independent sight, in pixels. `Infinity` = see in darkness, a finite value = true
     // seeing, 0 = neither. Non-zero here should always mean `modelBlinds: false`.
     darkSight: perceptionModel.darkSightRange(v),
+    // §4.5.3. `visionMode: "darkvision"` on a creature whose `senses.dv` is 0 means the decoupling
+    // is not reaching this token — PF1 is still folding blindsight in, and the greyscale and the
+    // sight radius both follow that id. `detectionModes` is the other half of the same reading:
+    // `basicSight` carrying the blindsight range is the inflation at `token.mjs:213`, and a
+    // `blindSight` entry must always be present beside it.
     visionMode: v.visionMode?.id ?? null,
+    detectionModes: (v.object?.document?.detectionModes ?? [])
+      .filter((m) => m.enabled)
+      .map((m) => `${m.id}:${m.range}`),
     radius: v.data?.radius,
     lightRadius: v.data?.lightRadius,
     // Above every darkness source's priority means this observer sweeps through sight-blocking edges
@@ -408,7 +422,10 @@ export function vision() {
     shapePoints: (v.shape?.points?.length ?? 0) / 2,
     active: v.active,
   }));
-  console.error("PF1 Lighting | vision sources", report);
+  console.error("PF1 Lighting | vision sources", {
+    senses: { ...sensesModel.status(), ...sightless.status() },
+    sources: report,
+  });
   return report;
 }
 
@@ -725,7 +742,9 @@ export function reveals(x, y) {
         darkSight: perceptionModel.darkSightRange(v),
         visualDarkSight: perceptionModel.visualDarkSightRange(v),
         blindsight: senses.bs?.total ?? 0,
-        darkvision: senses.dv ?? 0,
+        // `.total`, as every other sense here reads. Reported the whole `dv` object until
+        // 2026-09-05, which is exactly the pair §4.5.3 needs compared side by side.
+        darkvision: senses.dv?.total ?? 0,
 
         // --- What the model says should be here ---
         rawTier: raw.tierName,

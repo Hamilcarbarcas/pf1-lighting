@@ -322,6 +322,10 @@
     },
     "Socket": {
       "NoGM": "No GM is connected: lighting change was not made."
+    },
+    "Senses": {
+      "Sightless": "Sightless",
+      "SightlessOverrides": "No visual senses: {senses} ignored."
     }
   }
 }
