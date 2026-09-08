@@ -18,6 +18,9 @@
   ],
   "styles": [
     {
+      "src": "src/common/sheet/kit.css"
+    },
+    {
       "src": "src/styles/readout.css"
     },
     {

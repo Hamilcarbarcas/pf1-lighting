@@ -1,0 +1,10 @@
+{
+  "dest": "src/common",
+  "vars": {
+    "PREFIX": "pf1-lighting-emits-"
+  },
+  "files": [
+    "sheet/collapse.mjs",
+    "sheet/kit.css"
+  ]
+}

@@ -305,6 +305,7 @@
     },
     "Emits": {
       "Header": "Light",
+      "Toggle": "Click to expand / collapse",
       "Enabled": "Emits light",
       "ActiveHint": "While this buff is active, its actor's tokens emit light or darkness as configured. Emissions only take effect when enabled.",
       "LitHint": "Offers this item in the token light picker. This overrides whatever the light source table says about an item of this name.",

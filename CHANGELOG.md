@@ -65,6 +65,12 @@
   preset to them.
 
 ### Fixed
+- **The light level tooltip no longer sticks on a token's name and level.** Deselecting a token while
+  the pointer was resting on it ended the hover without Foundry announcing it, so the tooltip went on
+  reporting that token wherever the cursor went, and hovering the token again was the only way to
+  clear it. The tooltip now reads Foundry's own hover state rather than trusting the announcement, so
+  it corrects itself the moment the hover ends. Switching the tooltip off and on also re-reads what is
+  under the pointer, so a reading that has stuck always has a way out.
 - **Blindsight no longer replaces a creature's ordinary vision.** Pathfinder 1e treats blindsight as
   a kind of darkvision, which put a blindsighted creature into the black-and-white vision mode and
   cut its sight range down to its blindsight range — so a scout with normal eyes and blindsight 30

@@ -349,24 +349,9 @@
 
 /* The header is the disclosure control, and the section's own bulb is the only state cue: full
  * strength open, dimmed closed, so an expanded header looks exactly as it would without the
- * mechanism. Deliberately the same interaction and the same cues as `astora-mod`'s collapsible
- * sheet sections — reproduced rather than shared, since this module must not depend on that one. */
-.app.sheet.item .pf1-lighting-emits-header {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  cursor: var(--cursor-pointer);
-  user-select: none;
-  transition: opacity 120ms ease;
-}
+ * mechanism. The cursor, the dimming and the icon's fixed width all come from the shared kit
+ * (`src/common/sheet/kit.css`); only this section's own row layout is set here. */
 
-.app.sheet.item .pf1-lighting-emits-collapsed .pf1-lighting-emits-header {
-  opacity: 0.55;
-}
-
-.app.sheet.item .pf1-lighting-emits-header:hover {
-  opacity: 1;
-}
 
 /* What the section holds, readable while it is shut. A count would say "1" forever here, so this
  * carries the preset's name instead. */

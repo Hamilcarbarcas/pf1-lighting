@@ -223,6 +223,50 @@ function evaluateToken(token) {
 }
 
 /* -------------------------------------------- */
+/*  Hover liveness                              */
+/* -------------------------------------------- */
+
+/**
+ * Has this token stopped being the hovered one without the hook saying so?
+ *
+ * @remarks
+ * Two Foundry paths end a hover without firing `hoverToken`, and both froze the chip on a token's
+ * name and level until it was hovered again (§10.6): destruction, and release of control, which
+ * assigns `hover = false` directly (`placeable-object.mjs:643`) and so silences the later hover-out
+ * as well.
+ *
+ * `token.hover` rather than `canvas.tokens.hover`: it is the flag `_onHoverOut` gates the hook on,
+ * and the layer's pointer is nulled unconditionally, so it goes stale when two tokens overlap.
+ *
+ * @param {Token} token - The placeable, not the document
+ * @returns {boolean}
+ */
+function hoverLost(token) {
+  return token.destroyed || token.hover !== true;
+}
+
+/**
+ * Re-derive the hovered token from the canvas instead of from the hook stream.
+ *
+ * @remarks
+ * The escape hatch, run when the readout is switched off and on (§10.6). {@link hoverLost} clears a
+ * stale reference by itself, so this is for the residual — a hover left stuck *true* by a
+ * `MouseInteractionManager` state reset (`mouse-handler.mjs:435`) — which only a positional test can
+ * see through. That test is restricted to a pointer on the board, so hovering a combatant row still
+ * reads out its token.
+ */
+function resync() {
+  const candidate =
+    hovered && !hoverLost(hovered)
+      ? hovered
+      : (canvas?.tokens?.placeables?.find((token) => !hoverLost(token)) ?? null);
+
+  const point = canvas?.ready ? canvas.mousePosition : null;
+  const left = overBoard && candidate && !candidate.bounds.contains(point?.x, point?.y);
+  hovered = left ? null : candidate;
+}
+
+/* -------------------------------------------- */
 /*  Rendering                                   */
 /* -------------------------------------------- */
 
@@ -251,15 +295,12 @@ function update() {
   frame = null;
   if (!element) return;
 
-  // A hovered token can stop existing without saying so. `hoverToken(false)` is the only signal
-  // tracked here and a destroyed placeable never sends it, so a stale reference would go on being
-  // evaluated and the chip would freeze at whatever it last read. `deleteToken` covers the case that
-  // prompted this; the guard covers the class, anything destroying a placeable under the pointer
-  // looking identical from here.
-  if (hovered?.destroyed) hovered = null;
+  // A hovered token can stop being hovered without saying so — see `hoverLost`.
+  if (hovered && hoverLost(hovered)) hovered = null;
 
-  // `hovered` is allowed through without `overBoard`, because a token can only be hovered while
-  // the pointer is on the board and `hoverToken(false)` fires before it can be anywhere else.
+  // `hovered` is allowed through without `overBoard`: a token can be hovered from the combat tracker
+  // or with the pointer over the token HUD, and its level is the answer in both cases. The exemption
+  // rests on `hovered` being live, which is `hoverLost`'s job above, not `overBoard`'s.
   if (!enabled() || !canvas?.ready || (!overBoard && !hovered)) {
     element.style.display = "none";
     return;
@@ -359,7 +400,12 @@ export function registerSettings() {
     // cost of it being off is one keypress and the cost of it being on is a chip following the
     // cursor of somebody who never asked for one.
     default: false,
-    onChange: () => schedule(),
+    onChange: () => {
+      // Off and on again is the escape hatch, so the toggle re-derives the hover rather than
+      // resuming with whatever it was holding. See `resync`.
+      resync();
+      schedule();
+    },
   });
 
   game.settings.register(MODULE_ID, SETTING_DM_ONLY, {
@@ -374,6 +420,7 @@ export function registerSettings() {
       // A player who may no longer have the readout must not keep a row for it: the switch takes
       // the feature away, so it takes its control surface with it.
       syncVisibility();
+      resync();
       schedule();
     },
   });
@@ -462,6 +509,9 @@ export function registerHooks() {
   // The light under a stationary cursor can change without the cursor moving — a lit token walking
   // past, a door opening, dawn breaking. Cheap to cover: `update` is rAF-batched and `evaluate` is
   // 0.0025 ms, so re-running on these costs nothing.
+  //
+  // `refreshToken` also drives `hoverLost`: every path that ends a hover silently sets `refreshState`
+  // on the way through, so the guard runs at once rather than waiting for the pointer to move.
   Hooks.on("refreshToken", schedule);
   Hooks.on("refreshAmbientLight", schedule);
   Hooks.on("initializeLightSources", schedule);

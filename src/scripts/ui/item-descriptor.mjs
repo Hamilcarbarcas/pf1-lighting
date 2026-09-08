@@ -29,6 +29,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { makeCollapsible } from "../../common/sheet/collapse.mjs";
 import { t } from "../i18n.mjs";
 import { CUSTOM, presetChoices } from "../model/presets.mjs";
 import * as descriptor from "../model/descriptor.mjs";
@@ -160,50 +161,11 @@ function section(item, { trigger, stored, editable }) {
 /* -------------------------------------------- */
 
 /**
- * Expanded state, for as long as the sheet is open. `${appId}:${key}`.
- *
- * @remarks
- * In memory and never on the document, so opening an item to look at it writes nothing. Reopening
- * re-applies the default, which is *open only if this section is actually configured* — the
- * majority of items configure nothing and should cost one line of the tab rather than a screen of
- * it.
+ * Expanded state lives in the shared kit, in memory for as long as the sheet is open, so
+ * opening an item to look at it writes nothing. Reopening re-applies the default, which is
+ * *open only if this section is actually configured* - the majority of items configure nothing
+ * and should cost one line of the tab rather than a screen of it.
  */
-const expandedByApp = new Map();
-
-/**
- * Turn the section's header into its disclosure control.
- *
- * @remarks
- * Deliberately the same interaction and the same cues as `astora-mod`'s collapsible item-sheet
- * sections, which is the established shape on this table's Advanced tabs: the section's own topical
- * icon doubles as the control — full strength open, dimmed closed — so an expanded header looks
- * exactly as it would without the mechanism, and a badge keeps the configured value readable while
- * shut. Reimplemented rather than shared, because a lighting module must not take a dependency on a
- * personal mod; the classes are this module's own and its stylesheet reproduces the same look.
- */
-function makeCollapsible(app, root, { key, configured }) {
-  const header = root?.querySelector(`.${MARKER}-header`);
-  const body = root?.querySelector(`.${MARKER}-body`);
-  if (!header || !body) return;
-
-  const memoKey = `${app.appId}:${key}`;
-  let expanded = expandedByApp.get(memoKey) ?? !!configured;
-
-  const apply = () => {
-    root.classList.toggle(`${MARKER}-collapsed`, !expanded);
-    body.style.display = expanded ? "" : "none";
-  };
-  apply();
-
-  header.addEventListener("click", (event) => {
-    // A header may carry its own controls one day; let those win rather than swallowing the click.
-    if (event.target.closest("a, button, input, select")) return;
-    event.preventDefault();
-    expanded = !expanded;
-    expandedByApp.set(memoKey, expanded);
-    apply();
-  });
-}
 
 /* -------------------------------------------- */
 /*  Injection                                   */
@@ -261,7 +223,15 @@ function inject(app, html) {
 
   // Collapsed unless this item actually emits something. Most items on an Advanced tab configure
   // nothing here and should cost a line rather than a screen.
-  makeCollapsible(app, container, { key: "emits", configured: stored?.enabled === true });
+  makeCollapsible(app, container, {
+    key: "emits",
+    marker: MARKER,
+    configured: stored?.enabled === true,
+    // The badge is in this section's own markup, carrying the preset name; the kit must not
+    // add a second one.
+    badge: null,
+    title: t("Emits.Toggle"),
+  });
 }
 
 /* -------------------------------------------- */
@@ -308,15 +278,6 @@ export function registerHooks() {
       stripEmptyDescriptor(item, changes);
     } catch (error) {
       console.error(`${MODULE_ID} | descriptor cleanup failed`, error);
-    }
-  });
-
-  // Drop a sheet's remembered expansion when it closes, so reopening an item re-applies the
-  // "open only if configured" default rather than whatever was last left behind.
-  Hooks.on("closeItemSheet", (app) => {
-    const prefix = `${app.appId}:`;
-    for (const key of expandedByApp.keys()) {
-      if (key.startsWith(prefix)) expandedByApp.delete(key);
     }
   });
 }

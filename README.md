@@ -401,7 +401,8 @@ Light spill can be enabled/disabled in the mod's settings.
 ## Light level tooltip
 
 A tooltip beside the pointer showing the light level under the cursor, or of a hovered token. **Alt+L**
-toggles it by default.
+toggles it by default. Toggling it off and on again also re-reads what is under the pointer, which
+clears a reading that has stuck.
 
 ![Light Level Tooltip](assets/tooltip.png)
 
