@@ -53,6 +53,7 @@ import {
 } from "../geometry.mjs";
 import { flag } from "../settings-cache.mjs";
 import { TIER, darknessTable, stepTier } from "../model/tiers.mjs";
+import { lowLightAmbient } from "../model/registry.mjs";
 import { LIGHT_SORT } from "./darkness-shaders.mjs";
 import * as fieldBlur from "./texture-blur.mjs";
 import { levelAtDistance, width } from "./transition.mjs";
@@ -760,6 +761,27 @@ function stackCacheKey(cell, base) {
 }
 
 /**
+ * What this cell is being painted **on top of**, as the viewer sees it. DESIGN.md §4.4c.
+ *
+ * @remarks
+ * `cell.base` is the tier the model measured the light's zones from, and until §4.4c that was also
+ * the tier the ground beneath it renders at. Low-light vision separates them: the darkness-level
+ * texture now paints ambient Dim as Normal (`field.emitAmbient`), so a torch measured against Dim
+ * would be handed a lighting level for a background that is no longer there —
+ * `levelForTier(NORMAL, DIM)` returns a level instead of `UNLIT`, and the light blooms to Bright
+ * over a night the elf is already seeing as day. Two answers to "how bright is the ground", and this
+ * is the one about the picture.
+ *
+ * `baseAmbient === false` is a suppressor's ground, which §4.4c does not lift — see
+ * `registry.lowLightAmbient`. Absent means ambient, so a cell from anywhere that never had a
+ * suppressor near it behaves as it always did.
+ */
+function groundUnder(cell, sceneTier) {
+  const base = cell.base ?? sceneTier;
+  return cell.baseAmbient === false ? base : lowLightAmbient(base);
+}
+
+/**
  * Every light-bearing cell in the field, as ramps.
  *
  * @param {object[]} cells
@@ -794,7 +816,7 @@ export function rampsFrom(cells, sceneTier) {
         continue;
       }
 
-      const base = cell.base ?? sceneTier;
+      const base = groundUnder(cell, sceneTier);
       // The polygon is the key, so `stackIndex` is only an id. It still advances on every stack
       // cell, hit or miss, so a reused ramp keeps the `id` it had last pass as long as the cell list
       // is unchanged — which is when the cache hits. Nothing reads a stack ramp's id
@@ -831,7 +853,7 @@ export function rampsFrom(cells, sceneTier) {
     const source = cell.emitter?.source;
     if (!source) continue;
 
-    const base = cell.base ?? sceneTier;
+    const base = groundUnder(cell, sceneTier);
     const id = `${source.sourceId ?? source.object?.id ?? "?"}.${index++}`;
     live.add(id);
 

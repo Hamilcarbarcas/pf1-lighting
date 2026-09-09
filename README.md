@@ -100,9 +100,14 @@ Non-magical darkness sources have no umbra, and only affect the area within thei
 
 - **Darkvision** reveals all areas of non-magical darkness within its radius and renders them in
 greyscale
-- **Low-Light Vision** multiplies the radius of all light sources. It no longer multiplies the radius 
-of darkness sources, and it can only ever extend a light - a multiplier below 1 on an actor's sheet
-no longer shrinks or extinguishes every light on the scene.
+- **Low-Light Vision** multiplies the radius of all light sources, and reads ambient dim light - a
+moonlit night, dusk - as normal light, per *"characters with low-light vision can see outdoors on a
+moonlit night as well as they can during the day"*. Only the ambient is lifted; a torch's own dim
+ring is left alone, its radius having already been doubled. If a scene or region uses dim ambient
+light to stand in for fog or smoke rather than for genuine low light, a low-light creature will see
+through it. It no longer multiplies the radius of darkness sources, and it can only ever extend a
+light - a multiplier below 1 on an actor's sheet no longer shrinks or extinguishes every light on the
+scene.
 - **Blindsight** reveals all areas of magical or non-magical darkness within its radius and renders
 them in greyscale. It adds to the creature's ordinary vision rather than replacing it, so a
 blindsighted creature still sees lit areas at any distance, in colour. Blindsight is not suppressed

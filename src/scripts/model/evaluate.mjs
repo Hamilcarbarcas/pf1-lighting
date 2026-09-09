@@ -4,14 +4,20 @@
  * Thin by design: the registry resolves what is there, the contest resolves what wins. This file
  * stitches them together and names the answer.
  *
- * Not implemented yet (§8.2 steps 4-5): low-light vision (§4.4), umbra (§4.3), darkvision (§4.5),
- * observer filtering (§5). `evaluate` answers the god's-eye question only — per §5.4 the mode with
- * no observer terms, so the right half to have working first.
+ * Not implemented yet (§8.2 steps 4-5): low-light vision's radius half (§4.4, still PF1's), umbra
+ * (§4.3), darkvision (§4.5), observer filtering (§5). `evaluate` answers the god's-eye question
+ * only — per §5.4 the mode with no observer terms, so the right half to have working first.
+ *
+ * §4.4c is the one exception and is not an observer term: it is scoped to the *client*, decided
+ * once by PF1's own selection rather than per creature, and applies to the ambient uniformly with
+ * no per-point or per-path component. It belongs here rather than in `vision/perception.mjs`
+ * because the picture carries it — and §4.3's readout lesson is that a tier the screen shows and
+ * the model denies is reported as a rules bug.
  */
 
-import { emittersAt, suppressorsAt } from "./registry.mjs";
+import { ambientTier, emittersAt, lowLightActive, suppressorsAt } from "./registry.mjs";
 import { contest } from "./contest.mjs";
-import { TIER_NAME, resolveTier, tierOf } from "./tiers.mjs";
+import { TIER, TIER_NAME, resolveTier, tierCeiling, tierOf } from "./tiers.mjs";
 
 export { ELIGIBILITY_PRESETS, contest } from "./contest.mjs";
 
@@ -61,14 +67,34 @@ export function evaluate(point) {
   //
   // Gated on `applied`, not `winner`: ground already unlit before any darkness arrived is
   // ordinary Dark, not supernatural.
-  const tier = resolveTier(B, { suppressed: applied, floor: winner?.floor });
+  const resolved = resolveTier(B, { suppressed: applied, floor: winner?.floor });
+
+  // §4.4c — ambient dim light reads as normal light for a low-light observer. Four conditions, and
+  // each rules out a different way of getting to Dim that this must not touch:
+  //
+  //   `!applied`     a *darkness* produced this. The spell acts on the environment and the eye
+  //                  reads what it leaves, so a darkness over a moonlit night is Dark and stays it.
+  //   `=== DIM`      nothing else to lift.
+  //   `lowLightActive()`  ahead of `ambientTier`, which is a live read plus an area fold. False on
+  //                  nearly every client, so this is the test that keeps the rest off the hot path.
+  //   ambient is Dim the Dim is the ground showing through rather than a light's outer band. A band
+  //                  raises by rungs (§3.2.1), so a torch over Dim ambient already resolves to
+  //                  Normal and never reaches here — the double count `lowLightAmbient` names.
+  //
+  // Falling out of that: a torch on a moonlit night lights nothing extra for an elf, its ring and
+  // the night around it both reading Normal. Which is the rule.
+  const lifted =
+    !applied && resolved === TIER.DIM && lowLightActive() && ambientTier(point) === TIER.DIM;
+  const tier = lifted ? TIER.NORMAL : resolved;
 
   return {
-    B,
+    // `baseline` follows because `lifted` implies `!applied`, which is exactly when the two are the
+    // same number. Letting it lag would report a point as brighter than its own unsuppressed self.
+    B: lifted ? tierCeiling(TIER.NORMAL) : B,
     tier,
     tierName: TIER_NAME[tier],
-    baseline,
-    baselineTier: tierOf(baseline),
+    baseline: lifted ? tierCeiling(TIER.NORMAL) : baseline,
+    baselineTier: lifted ? TIER.NORMAL : tierOf(baseline),
     emitters,
     suppressors,
     winner,

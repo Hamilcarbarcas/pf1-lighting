@@ -201,6 +201,63 @@ export function ambientTier(point) {
   return ambientTierAt(point, tierFromDarkness(darkness));
 }
 
+/* -------------------------------------------- */
+/*  Low-light vision on the ambient (§4.4c)     */
+/* -------------------------------------------- */
+
+/**
+ * @type {(() => boolean)|null}
+ *
+ * @remarks
+ * Injected rather than imported, so `model/` does not acquire a dependency on `vision/` — the one
+ * direction the render and model layers have never taken. Same seam and reason as
+ * `light-items.setRecordReader` and `suppression.setVisionModel`.
+ */
+let lowLightProbe = null;
+
+export function setLowLightProbe(fn) {
+  lowLightProbe = typeof fn === "function" ? fn : null;
+}
+
+/** Is PF1's low-light multiplier in play for this client? See `vision/llv.isActive`. */
+export const lowLightActive = () => lowLightProbe?.() === true;
+
+/**
+ * Ambient dim light as a low-light observer reads it. DESIGN.md §4.4c.
+ *
+ * @remarks
+ * > Characters with low-light vision can see outdoors on a moonlit night as well as they can during
+ * > the day.
+ *
+ * CRB *Vision and Light*. Note that PF1 does **not** ship this sentence: the system's own text
+ * (`packs/monster-abilities/low-light-vision`) carries only the other half of the rule, "see twice
+ * as far as a human in starlight, moonlight, torchlight". So unlike §4.5.4 this is a reading rather
+ * than a citation, and the escape hatch is `lowLightAmbient`, not a compendium argument.
+ *
+ * **Ambient only, and that is the whole of the rule.** Applied to any Dim it would grant the same
+ * clause twice: PF1's multiplier has already doubled a torch's dim radius for this same creature
+ * (§4.4), and lifting the doubled ring to Normal on top of that is the double count. It would also
+ * hand out concealment relief in torchlight, which PF1 gives low-light vision nowhere.
+ *
+ * **Display-time, not a base.** Every caller applies this to a tier that has already been resolved —
+ * never to the tier a band sums from or a suppressor transforms down from. Feed it in as a base and
+ * two things go wrong at once: a torch's band raises Normal to Bright instead of Dim to Normal, and
+ * a *darkness* over a moonlit night reduces to Dim rather than Dark, the eye correcting the
+ * environment instead of reading it.
+ *
+ * Universal by choice (Hamilcarbarcas, 2026-09-08). The one shape this is wrong for is ambient dim
+ * standing in for an *obstruction* rather than for a shortage of light — fog, smoke, a blizzard,
+ * modelled with the darkness slider or a §10.7 Ambient Light Level region. Low-light vision does not
+ * see through fog. Decided against an opt-out per source anyway: PF1 already has the equivalent
+ * control for lights (`flags.pf1.disableLowLight`) if it is ever wanted, and a checkbox nobody ticks
+ * is worse than a rule that is occasionally generous.
+ *
+ * @param {number} tier - A resolved {@link TIER} value
+ * @returns {number} The same tier, or Normal where it was ambient Dim
+ */
+export const lowLightAmbient = (tier) =>
+  tier === TIER.DIM && lowLightActive() ? TIER.NORMAL : tier;
+
 /** An emitter: contributes brightness. */
 class EmitterEntry extends Entry {
   /**

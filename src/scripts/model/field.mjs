@@ -45,6 +45,8 @@
 import {
   ambientBrightness,
   ambientTier,
+  lowLightActive,
+  lowLightAmbient,
   activeEmitters as registryEmitters,
   suppressors as registrySuppressors,
   version,
@@ -538,13 +540,21 @@ function groundDomains(domains, regionParts, governed, sceneTier) {
   if (!regionParts.length) return domains;
 
   const byTier = new Map();
-  const add = (tier, paths) => {
+  // `ambient` rides along for §4.4c: a ground of Dim means two different things depending on whether
+  // the ambient put it there or a *darkness* reduced something brighter to it, and only the first is
+  // liftable. Merged with `&&` rather than splitting the key, so the op count is unchanged — two
+  // origins sharing a tier is the common night-plus-darkness scene, and answering "not liftable" for
+  // the pair is the conservative half of a distinction that cannot be drawn once they are one path
+  // set.
+  const add = (tier, paths, ambient) => {
     const hit = byTier.get(tier);
-    if (hit) hit.paths.push(...paths);
-    else byTier.set(tier, { tier, paths: [...paths] });
+    if (hit) {
+      hit.paths.push(...paths);
+      hit.ambient &&= ambient;
+    } else byTier.set(tier, { tier, paths: [...paths], ambient });
   };
 
-  for (const part of regionParts) add(part.tier, part.paths);
+  for (const part of regionParts) add(part.tier, part.paths, false);
 
   // The open ground. Disjoint from the regions by construction, so the parts can be
   // concatenated into one entry per tier without a union op.
@@ -552,7 +562,7 @@ function groundDomains(domains, regionParts, governed, sceneTier) {
   for (const domain of open) {
     if (!domain.paths.length) continue;
     const rest = governed.length ? difference(domain.paths, governed) : domain.paths;
-    if (rest.length) add(domain.tier, rest);
+    if (rest.length) add(domain.tier, rest, true);
   }
 
   const regionBox = boundsOfPaths(regionParts.flatMap((p) => p.paths));
@@ -609,7 +619,7 @@ function stampDomains(cells, domains, sceneTier) {
     // Nowhere near a region, so it stands on the scene's own ambient and needs no Clipper at all.
     // The common case, and the reason the extent of the areas is what is tested.
     if (!path?.length || !boxesOverlap(boundsOf(path), domains.box)) {
-      out.push({ ...cell, base: sceneTier });
+      out.push({ ...cell, base: sceneTier, baseAmbient: true });
       continue;
     }
 
@@ -620,7 +630,16 @@ function stampDomains(cells, domains, sceneTier) {
       // ring (§6.2.1). Intersecting a disc with "the scene minus this room" produces exactly the
       // annulus that rule exists for.
       for (const polygon of toPolygons(splitAnnuli(part))) {
-        out.push({ ...cell, polygon, base: domain.tier, clipped: true });
+        // §4.4c. Absent on a §10.7 domain — the fast path hands this function that list directly,
+        // and every entry in it is an ambient area — so the flag reads "ambient unless told
+        // otherwise", which is what `groundDomains` is the only thing able to say.
+        out.push({
+          ...cell,
+          polygon,
+          base: domain.tier,
+          baseAmbient: domain.ambient !== false,
+          clipped: true,
+        });
       }
     }
   }
@@ -752,6 +771,11 @@ export function compute({ filter = true } = {}) {
    * assumed to belong to the first.
    */
   const emitAmbient = (paths, emitter, tier, hardEdge = false, spill = false) => {
+    // §4.4c, and this is the one cell kind where it needs no qualification: an `ambient` cell is the
+    // ground showing through by construction, so a Dim one is the moonlit night the rule names. The
+    // caller's `tier` is left alone deliberately — it is also the base `emitStacks` sums bands from
+    // and the level a suppressor transforms down from, neither of which may move.
+    const seen = lowLightAmbient(tier);
     for (const { outer, holes } of groupRings(toPolygons(paths))) {
       cells.push({
         kind: "ambient",
@@ -765,7 +789,7 @@ export function compute({ filter = true } = {}) {
         emitter,
         suppressor: null,
         emission: null,
-        tier,
+        tier: seen,
         // Ambient-area cells are never feathered (2026-08-26): a region boundary is drawn along a
         // wall, and a wall is a hard edge. The ground blur (§6.4.2a) exists for the boundary between
         // a darkness and open ground, which has no architecture on it and reads as a stencilled disc
@@ -870,7 +894,11 @@ export function compute({ filter = true } = {}) {
           emitter: ambient,
           suppressor: null,
           emission: null,
-          tier: tierOf(B),
+          // §4.4c, as `emitAmbient` applies it. This branch builds its cell inline rather than
+          // calling that helper — no Clipper, so no path set to hand it — which is exactly why the
+          // lift has to be repeated here: a moonlit field with no darkness and no ambient region is
+          // the scene the rule is for, and it is the one scene that takes this path.
+          tier: lowLightAmbient(tierOf(B)),
         });
       }
     } else {
@@ -1135,7 +1163,9 @@ export function compute({ filter = true } = {}) {
     const isEligible = eligibilityFn(part.suppressor.eligibility);
     const survivors = emitters.filter((e) => !isEligible(e, part.suppressor));
     if (survivors.length < 2) continue;
-    stacks.push(...emitStacks(survivors, part.tier, outsideOf(part, SCALE)));
+    // `false`: this ground is what the darkness reduced to, not what the sky is worth, so §4.4c
+    // must not lift it. Magical dim is not moonlight.
+    stacks.push(...emitStacks(survivors, part.tier, outsideOf(part, SCALE), false));
   }
 
   for (const cell of stacks) cells.push(cell);
@@ -1243,7 +1273,7 @@ function bandPaths(emitter, emission) {
  *   `dark` cells have already said what the ground is.
  * @returns {object[]} Cells of kind `stack`
  */
-function emitStacks(emitters, base, governed) {
+function emitStacks(emitters, base, governed, baseAmbient = true) {
   if (emitters.length < 2) return [];
 
   // --- Candidates, by geometry-free tests only. ---
@@ -1330,6 +1360,9 @@ function emitStacks(emitters, base, governed) {
             // `cell.base ?? sceneTier` then fell through to the scene's tier. Stamped here rather
             // than by `stampDomains`: the one cell kind that already knows. See `baseFor`.
             base,
+            // §4.4c. Default `true`; only the pass over a suppressor's own ground (§4.1.1a) says
+            // otherwise, a darkness having produced that tier rather than the sky.
+            baseAmbient,
             // The emitters whose bands made this region, and the renderer needs every one. A stack
             // cell is drawn by cloning each at a raised level and letting `MAX_COLOR` pick the
             // brightest, which reproduces `max(falloff_i)` with the rung added and so matches the
@@ -1391,13 +1424,17 @@ let signature = null;
  * bookkeeping and nothing to remember to invalidate — the trick `Entry#path` uses one level down.
  *
  * Ambient brightness rides along because it sets the tier `dark` cells fill at, and it slides
- * continuously during a darkness animation.
+ * continuously during a darkness animation. So does §4.4c's answer, which moves with a selection and
+ * touches no geometry at all.
  */
 function currentSignature() {
   // `areas.version()` and not the areas themselves: a region's geometry lives on the document rather
   // than a per-frame object, so there is no reference that changes when it moves. The counter is
   // bumped by the region hooks in `model/areas.mjs`, the only thing that can change any of it.
-  const parts = [version(), ambientBrightness(), areas.version()];
+  // §4.4c rides along for the same reason ambient brightness does: it changes what the ground cells
+  // are worth without changing any geometry, and nothing else in this list moves when a selection
+  // does. Cheap — `llv.isActive` is memoised per frame and this runs once per pass.
+  const parts = [version(), ambientBrightness(), areas.version(), lowLightActive()];
   for (const entry of registryEmitters()) {
     // The global source is excluded. It contributes nothing: its domain is the scene rect, fixed per
     // scene (see {@link ambientDomain}), and its brightness rides in through `ambientBrightness()`

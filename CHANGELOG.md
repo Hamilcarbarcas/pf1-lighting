@@ -54,6 +54,16 @@
   a torch flickers orange, a sunrod glows cold and steady.
 
 ### Changed
+- **Low-light vision now reads ambient dim light as normal light.** A moonlit night or a dusk scene
+  looks like day to a creature with low-light vision, which is what the rules say it should:
+  *"characters with low-light vision can see outdoors on a moonlit night as well as they can during
+  the day."* Only the ambient level is lifted — a torch's own dim ring is untouched, its radius
+  having already been doubled for the same creature, so on a moonlit night a torch correctly stops
+  adding anything. Magical darkness is unaffected: a *darkness* over a moonlit night is still dark.
+  The lift follows Pathfinder's own rule for who counts as a low-light observer, so it turns on and
+  off exactly when the doubled light radii do. Note that if a scene or region uses dim ambient light
+  to stand in for fog or smoke rather than for genuine low light, a low-light creature will see
+  through it.
 - **Edit Presets now opens Foundry's own light configuration sheet.** The preset window is a list, a
   name and an *Edit light* button; everything else is the real sheet, so a preset can hold any
   setting a placed light can — angle, rotation, coloration technique, luminosity, shadows and the

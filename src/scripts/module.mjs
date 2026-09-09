@@ -177,6 +177,14 @@ Hooks.once("init", () => {
   // reach comes down the same seam as everything else that crosses that line.
   desaturate.setBlindsightReach(perception.blindsightRange);
 
+  // §4.4c. The same seam again, and here it is the only way across: `model/` has never imported from
+  // `vision/` in either direction, and the question — is PF1's low-light multiplier in play for this
+  // client — is PF1 plumbing that belongs with the rest of the mixin.
+  registry.setLowLightProbe(llv.isActive);
+  // Its own hooks rather than the renderer's: controlling a token changes what the ambient is worth
+  // without moving a light, a wall or a region, so nothing else on the canvas restales the field.
+  llv.registerHooks();
+
   // Same injection seam as the two above: `render/darkness-texture.mjs` reads from `soften`, so
   // the settings callback comes back the other way rather than as a second import.
   soften.setGroundRefresh(darknessTexture.refreshFilters);
@@ -760,6 +768,18 @@ Hooks.once("ready", () => {
       // The tier as the current view sees it — `max` over active observers per §5.3, or null in
       // god's eye. What the readout reports.
       viewerTier: perception.viewerTier,
+    },
+
+    // Low-light vision (DESIGN.md §4.4). The radius half is still PF1's, guarded here against
+    // enlarging darkness (§4.4/§4.4a) and against shrinking light (§4.4b); `status()` is the ambient
+    // half (§4.4c) and answers the only question it generates — whether PF1 considers the multiplier
+    // in play for this client right now, and which of its three globals decided that.
+    //
+    //   game.pf1Lighting.lowLight.status()
+    lowLight: {
+      status: llv.status,
+      isActive: llv.isActive,
+      invalidate: llv.invalidate,
     },
 
     // Sight *through* magical darkness (DESIGN.md §4.3)

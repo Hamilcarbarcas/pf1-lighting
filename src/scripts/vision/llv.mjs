@@ -21,12 +21,18 @@
  * the multiplier from the sheet unvalidated, so an actor with low-light enabled and a multiplier of
  * 0 zeroes every light on the scene — and, via the `Math.min` across controlled tokens, for everyone
  * standing with them. See {@link applyMixin}'s `getRadius`.
+ *
+ * §4.4c is the other half of the rule and the first thing here that is not a guard: ambient dim
+ * light reads as normal light. See {@link isActive} for the client question it turns on, and
+ * `model/registry.lowLightAmbient` for the rule itself.
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { flag } from "../settings-cache.mjs";
 import { isSightless } from "./sightless.mjs";
 
 export const SETTING_LLV_GUARD = "guardNegativeLowLight";
+export const SETTING_LLV_AMBIENT = "lowLightAmbient";
 
 /** Tracks the last applied value so `onChange` can ignore no-op saves. */
 let lastValue = null;
@@ -65,7 +71,186 @@ export function registerSettings() {
     },
   });
 
+  game.settings.register(MODULE_ID, SETTING_LLV_AMBIENT, {
+    name: "Low-light vision sees ambient dim light as normal",
+    hint:
+      "A creature with low-light vision reads ambient dim light — a moonlit night, dusk — as " +
+      "normal light. Ambient only: a torch's dim ring is left alone, PF1 having already doubled " +
+      "its radius for the same creature.",
+    scope: "world",
+    // No control surface, on the `guardNegativeLowLight` precedent (§10.6): a bisection aid rather
+    // than a GM decision. Reachable from the console — see `game.pf1Lighting.settings`.
+    config: false,
+    type: Boolean,
+    default: true,
+    onChange: () => {
+      invalidate();
+      // Kept in step with the repaint below, or the next `controlToken` compares against an answer
+      // this switch has already invalidated and decides there is nothing to do.
+      painted = isActive();
+      refresh();
+    },
+  });
+
   lastValue = isGuardEnabled();
+}
+
+/* -------------------------------------------- */
+/*  §4.4c — is low-light vision in play here?   */
+/* -------------------------------------------- */
+
+/**
+ * The minimal shape PF1's `getRadius` reads off `this`.
+ *
+ * @remarks
+ * `getRadius` (`low-light-vision.mjs:66-114`) touches exactly two things on the instance:
+ * `this.document.getFlag("pf1", "disableLowLight")` and `this.object?.document`. Everything else it
+ * consults is global — the two world settings, `canvas.tokens.placeables`, `game.user.isGM`. So a
+ * stub with a `getFlag` and no `object` is enough to ask the question, and the answer is PF1's own.
+ *
+ * The guard this file mixes in front of it reads `document.config?.negative` /
+ * `document.light?.negative`; both are absent here, so the stub is not mistaken for a darkness and
+ * the call falls through to `super`.
+ */
+const PROBE_STUB = Object.freeze({ document: { getFlag: () => false } });
+
+/** @type {boolean|null} One frame's answer; `null` means not yet asked. */
+let activeMemo = null;
+let memoScheduled = false;
+
+/**
+ * Ask PF1 whether its low-light multiplier is in play for this client.
+ *
+ * @remarks
+ * A probe rather than a reimplementation, and that is the whole point. `getRadius`'s observer
+ * selection is not one rule but four interlocking ones — GM or the `lowLightVisionMode` setting
+ * requires *every* observed token to have low-light vision, a player on the default needs only one,
+ * `systemVision` switches the feature off wholesale, and a token flagged `customVisionRules` opts
+ * out (`low-light-vision.mjs:72-107`). Copying that here would put a second copy of it in the world,
+ * and the two disagreeing is invisible: the map would double a torch's radius and not lift the
+ * moonlight, or the reverse, with nothing on screen naming the cause.
+ *
+ * The field already depends on PF1's answer — `ramp.emissionOf` builds every emitter from
+ * `source.data.bright`/`dim`, which the mixin has already scaled per client (§4.4a). So this is not
+ * importing a per-client term into a god's-eye model; it is asking the same question the model's own
+ * radii are already answers to.
+ *
+ * Throwing is treated as "no". If PF1 ever starts reading something else off the instance, the stub
+ * fails loudly here rather than quietly returning a wrong `true`, and the fallback is the behaviour
+ * that existed before this section.
+ *
+ * @returns {boolean}
+ */
+function probe() {
+  const getRadius = CONFIG.AmbientLight?.objectClass?.prototype?.getRadius;
+  if (typeof getRadius !== "function") return false;
+  try {
+    // Unit radii in, so the result *is* the multiplier. Both, because PF1 carries two independent
+    // ones and this asks about the faculty rather than about a distance — an actor with a bright
+    // multiplier and no dim one still has low-light vision.
+    const { dim, bright } = getRadius.call(PROBE_STUB, 1, 1) ?? {};
+    return Math.max(Number(dim) || 0, Number(bright) || 0) > 1;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is low-light vision in play for this client? DESIGN.md §4.4c.
+ *
+ * @remarks
+ * Memoised for one animation frame, the rule `vision/perception.mjs` uses and correct for the same
+ * reason: nothing the probe reads can change within a frame, so a stale entry cannot outlive the
+ * frame that made it. `probe` walks `canvas.tokens.placeables`, so this is not free enough to call
+ * per test point — `evaluate()` asks it only after the cheaper tests have passed.
+ */
+export function isActive() {
+  if (!flag(SETTING_LLV_AMBIENT, true)) return false;
+  if (activeMemo === null) {
+    activeMemo = probe();
+    if (!memoScheduled) {
+      memoScheduled = true;
+      requestAnimationFrame(() => {
+        memoScheduled = false;
+        activeMemo = null;
+      });
+    }
+  }
+  return activeMemo;
+}
+
+/** Drop the memo now. For hooks, settings changes and console pokes. */
+export function invalidate() {
+  activeMemo = null;
+}
+
+/** Repaint, so a change of answer shows up without waiting for something else to move. */
+function refresh() {
+  if (!canvas?.ready) return;
+  canvas.perception.update({ initializeLighting: true, refreshLighting: true, refreshVision: true });
+}
+
+/** The answer as of the last repaint, so {@link registerHooks} can tell a change from a no-op. */
+let painted = null;
+
+export function registerHooks() {
+  // Selection is half of PF1's rule, so controlling a token can change the answer with nothing else
+  // on the scene moving. PF1 answers the same event with `debouncedLightSourceReInit`, which
+  // reinitialises every light and so restales the field on its own — but only on a scene that *has*
+  // lights, and a moonlit field with none is exactly where this section does its work.
+  //
+  // Repaint only when the answer actually moved. `controlToken` fires on deselect as well as select
+  // and once per token in a marquee, and an unconditional perception update per token is the shape
+  // of cost §9.5 exists to avoid.
+  const settle = foundry.utils.debounce(() => {
+    invalidate();
+    const next = isActive();
+    if (next === painted) return;
+    painted = next;
+    refresh();
+  }, 50);
+
+  Hooks.on("controlToken", settle);
+  Hooks.on("canvasReady", () => {
+    invalidate();
+    painted = isActive();
+  });
+}
+
+/**
+ * Why the ambient is or is not being lifted. For the console.
+ *
+ * @remarks
+ * The switch being on is not the same as it having anything to do, and on screen the two look
+ * identical — the §10.6 lesson, reported once per feature that skipped it.
+ */
+export function status() {
+  const report = {
+    enabled: flag(SETTING_LLV_AMBIENT, true),
+    // PF1's own answer, uncached, so a stale memo cannot be what is being reported.
+    active: probe(),
+    // The three globals `getRadius` decides on, spelled out: a `false` here is the reason.
+    systemVision: (() => {
+      try {
+        return game.settings.get("pf1", "systemVision");
+      } catch {
+        return null;
+      }
+    })(),
+    requiresSelection: (() => {
+      try {
+        return game.user.isGM || game.settings.get("pf1", "lowLightVisionMode") === true;
+      } catch {
+        return null;
+      }
+    })(),
+    controlled: canvas?.tokens?.controlled?.map((t) => t.name) ?? [],
+    lowLightControlled:
+      canvas?.tokens?.controlled?.filter((t) => t.actorVision?.lowLight === true).map((t) => t.name) ??
+      [],
+  };
+  console.error("PF1 Lighting | low-light ambient", report);
+  return report;
 }
 
 /** Is this placeable's light configured as darkness? */
