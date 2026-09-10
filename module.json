@@ -53,6 +53,8 @@
     ]
   },
   "url": "https://github.com/Hamilcarbarcas/pf1-lighting",
-  "license": "LICENSE",
+  "readme": "https://github.com/Hamilcarbarcas/pf1-lighting/blob/main/README.md",
+  "manifest": "https://github.com/Hamilcarbarcas/pf1-lighting/releases/latest/download/module.json",
   "flags": {}
 }
+
