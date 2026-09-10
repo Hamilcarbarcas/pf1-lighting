@@ -88,10 +88,12 @@ export function registerSettings() {
     scope: "world",
     config: true,
     type: String,
-    // *Announce only* is the default deliberately. A table that forgets to douse a torch should not
-    // lose its equipment to bookkeeping, and the report is the part that has any value at the table.
-    default: "announce",
+    // *Ignore* is the default deliberately. Fuel is bookkeeping a table opts into, not something a
+    // lighting module should start doing to everyone's equipment the moment it is installed — and a
+    // world that never wanted a burn clock never has to find the switch that turns one off.
+    default: "ignore",
     choices: {
+      ignore: "PF1LIGHTING.Setting.fuelConsumption.ignore",
       consume: "PF1LIGHTING.Setting.fuelConsumption.consume",
       both: "PF1LIGHTING.Setting.fuelConsumption.both",
       announce: "PF1LIGHTING.Setting.fuelConsumption.announce",
@@ -159,16 +161,22 @@ export function resolve(item) {
  * should be offered, exhausted, rather than hidden — a picker that silently omits the thing a player
  * is holding reads as a bug.
  *
+ * In *ignore* mode every entry reports an infinite supply, which is the whole of what that mode
+ * means here: a dry lantern is lightable, and no count is shown beside it because there is no
+ * quantity being tracked. The item's own `quantity` still gates — not owning the lantern is a
+ * different fact from having nothing to burn in it.
+ *
  * @param {Actor} actor
  * @returns {{item: Item, entry: object, supply: number, exhausted: boolean}[]}
  */
 export function carriedBy(actor) {
   const out = [];
+  const ignoring = consumptionMode() === "ignore";
   for (const item of actor?.items ?? []) {
     if ((item.system?.quantity ?? 0) <= 0) continue;
     const entry = resolve(item);
     if (!entry) continue;
-    const supply = entry.fuel ? supplyOf(actor, entry.fuel.item) : Infinity;
+    const supply = entry.fuel && !ignoring ? supplyOf(actor, entry.fuel.item) : Infinity;
     out.push({ item, entry, supply, exhausted: supply <= 0 });
   }
   return out;
@@ -258,6 +266,17 @@ export async function burn(worldTime = game.time?.worldTime ?? 0) {
         const result = owedBy(record, item, actor, worldTime);
         if (!result.owed) continue;
 
+        // Fuel forgiven, not forgotten. `consumed` advances by what was due so the clock stays level
+        // with the world's, and a GM who later turns consumption back on is billed from that moment
+        // rather than for every hour the switch was off. Nothing is spent, announced or put out.
+        if (mode === "ignore") {
+          await socket.request("apply", {
+            anchorUuid: doc.uuid,
+            record: { ...record, fuel: { ...record.fuel, consumed: (record.fuel.consumed ?? 0) + result.owed } },
+          });
+          continue;
+        }
+
         if (mode !== "announce") await spend(actor, record.fuel.item, result.affordable);
         announce(actor, record, result, mode);
         report.charged += result.affordable;
@@ -298,7 +317,7 @@ const consumptionMode = () => {
   try {
     return game.settings.get(MODULE_ID, SETTING_CONSUMPTION);
   } catch {
-    return "announce";
+    return "ignore";
   }
 };
 

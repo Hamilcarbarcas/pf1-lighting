@@ -104,15 +104,17 @@ Hooks.once("init", () => {
   // The tier → darkness-level table, as four world settings (§10.5). Registered before
   // anything reads a tier so the stored table is in force from the first query.
   levels.registerSettings();
-  // The preset table, and the sub-window that edits it (§10.2). The table is a stored object
-  // rather than a row in the flat list, so its control surface is the menu.
+  // The preset table (§10.2). A stored object rather than a row in the flat list, so its control
+  // surface is a menu.
   presets.registerSettings();
-  presetEditor.registerSettings();
   // The light-item table and the fuel-use switch (§12.8). After `presets`, since an entry names a
   // preset and `resolve` drops one whose preset the world has deleted.
   lightItems.registerSettings();
-  // The window that edits that table. After the key it edits exists, same rule as every other menu.
+  // Both menus, after both keys. Foundry lists menus in registration order, so this pair is also the
+  // order they appear in: the light sources a table actually touches ahead of the presets behind
+  // them. Splitting the menus from their keys is what lets that order be chosen freely.
   lightItemEditor.registerSettings();
+  presetEditor.registerSettings();
   // The appearance numbers, edited in their own window (§10.6). Registered after the
   // modules that own the keys, so the menu never opens on a key that does not exist yet.
   soften.registerSettings();

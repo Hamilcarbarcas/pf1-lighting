@@ -46,9 +46,10 @@
       "fuelConsumption": {
         "Name": "Fuel use",
         "Hint": "What happens when a lit light source expends its fuel.",
-        "consume": "Remove the fuel silently",
-        "both": "Remove the fuel and announce it",
-        "announce": "Announce it only, and leave the fuel alone"
+        "ignore": "Ignore fuel",
+        "consume": "Remove fuel silently",
+        "both": "Remove fuel with chat message",
+        "announce": "Chat message only"
       }
     },
     "Menu": {
@@ -60,17 +61,17 @@
       "spillConfig": {
         "Name": "Light Spill",
         "Label": "Configure Light Spill",
-        "Hint": "Allows light to pass through doors and windows into regions with adjusted darkness levels (interior spaces)."
+        "Hint": "Allows light to pass through doors and windows into regions with adjusted darkness levels (configured interior spaces)."
       },
       "presetEditor": {
         "Name": "Lighting Presets",
         "Label": "Edit Presets",
-        "Hint": "Preset light and darkness configurations offered on a light's Lighting Configuration section."
+        "Hint": "Preset light and darkness configurations."
       },
       "lightItemEditor": {
         "Name": "Light Sources",
         "Label": "Edit Light Sources",
-        "Hint": "Which items give off light when lit, what they give off, and what they burn."
+        "Hint": "Configure which items act as light sources, what type of light they emit, and their fuel source."
       }
     },
     "Keybind": {
