@@ -28,6 +28,7 @@ A complete overhaul of foundry's lighting system to match pathfinder 1e's rules 
   - [Ambient lighting changes](#ambient-lighting-changes)
     - [Interior regions](#interior-regions)
       - [Light spill](#light-spill)
+      - [Skylights and openings](#skylights-and-openings)
   - [Light level tooltip](#light-level-tooltip)
   - [Token Vision](#token-vision)
 - [Configuration](#configuration)
@@ -347,6 +348,17 @@ creature can see, perception, and any darkness sources covering it.
 ![Light Spill Normal With Open Doors](assets/spill-normal-windows-doors.png)
 
 Light spill can be enabled/disabled in the mod's settings.
+
+#### Skylights and openings
+
+The **Openings** option on a *Restrict Global Illumination* behavior lets light spill across that 
+region's own outline wherever no wall is standing on it. This does not change the behavior of any
+walls that share an edge with the region, but does allow light spill on region edges that do not
+have any walls as though it were a window.
+
+If enabled, a hole cut in the interior region will act as a skylight, spilling light from it.
+
+This setting is off by default.
 
 ## Light level tooltip
 

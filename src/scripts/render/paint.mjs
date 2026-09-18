@@ -841,12 +841,21 @@ function schedule() {
 export function registerHooks() {
   // `initializeVisionSources` is the signal that an observer's `los` was rebuilt, the umbra half;
   // the rest are the field half, matching the renderer's set for the same reasons (a light-bearing
-  // token moving does not fire `initializeLightSources`).
+  // token moving does not fire `initializeLightSources`, and a scene ambience change fires none of
+  // them — see the `initializeCanvasEnvironment` note in `render/renderer.registerHooks`).
+  //
+  // A repaint is normally forced by the renderer's own rebuild, so this list is the path that
+  // matters when the renderer is switched off and the texture is painting on its own.
   for (const hook of [
     "initializeVisionSources",
     "initializeLightSources",
     "refreshAmbientLight",
     "refreshToken",
+    "initializeCanvasEnvironment",
+    // The observer half of the same gap the renderer names: a deleted token cannot fire
+    // `refreshToken`, and losing the last vision source is precisely the change this pass exists to
+    // notice — `observers()` goes empty, the signature drops a term, and the clamp should lift.
+    "deleteToken",
     "canvasReady",
   ]) {
     Hooks.on(hook, () => schedule());

@@ -304,6 +304,20 @@ The whole-scene cell decomposition — what the renderer consumes. Cells partiti
 Spill requires `ambientTakeover`, the scene's global illumination, and a sky brighter than the room.
 Drawing functions are under [Overlays](#overlays).
 
+### A skylight that does nothing
+
+`stats()` separates the three ways it can be silent, and they need opposite responses:
+
+| Reading | Means |
+| --- | --- |
+| `regionCandidates: 0` | No region on the scene has **Openings** ticked. Nothing was even offered |
+| `regionCandidates` high, `skylights: 0`, `rejected.occluded` high | The outline is being offered and a wall is standing on every segment of it. Expected for a region drawn along its walls — but if you cut a hole, the hole was drawn *on* the wall line rather than inside it |
+| `skylights > 0`, `bands: 0` | The opening was accepted and the ladder produced nothing. Check `rejected.belowDim` and the spill radii |
+
+`rejected.sameAmbient` on a hole means the hole is not actually uncovered — some other region is
+still clamping it. `game.pf1Lighting.areas.status()` lists `spills` and `holes` per region, so a
+region with `spills: true, holes: 0` is a tick with nothing cut.
+
 ---
 
 ## Regions, scenes, lights and presets

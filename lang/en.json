@@ -100,6 +100,10 @@
         "Tier": {
           "Label": "Light level",
           "Hint": "The ambient level within the region. Light sources, darkness sources, and light spill are all unaffected by this level."
+        },
+        "Spills": {
+          "Label": "Openings",
+          "Hint": "Let light spill across this region's outline wherever no wall blocks it. Cut a hole for a skylight. Walls still block."
         }
       }
     },

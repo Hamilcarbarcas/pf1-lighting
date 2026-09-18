@@ -7,6 +7,28 @@
   release body. If no matching section exists, the release fails.
 -->
 
+## Unreleased
+
+### Added
+- **Skylights.** A new **Openings** checkbox on the *Restrict Global Illumination* region behavior
+  lets light spill across that region's own outline wherever no wall stands on it. Cut a hole in the
+  region with Foundry's hole tool and the sky reaches the floor there, falling off into the room from
+  the hole's edge the same way it does through a window. Because a hole is simply ground the region
+  does not cover, a skylight brightens at dawn and goes dark at dusk on its own. The same tick also
+  softens a region edge that runs across open floor, such as a gap in a wall line or a cave mouth
+  drawn as a region rather than walled. Off by default on every region, and walls still block whether
+  it is ticked or not.
+
+### Fixed
+- **A scene with no tokens on it stopped updating.** Changing global illumination, the darkness
+  level or the ambient colours left the picture as it was until a token was placed. The module now
+  listens for the scene's own ambience changing rather than relying on a signal that only travels
+  through tokens.
+- **Deleting the last token left its point of view on screen.** The lighting stayed as that token had
+  seen it, and nothing shifted it until another token was placed or the scene was reloaded. Deleting
+  a token now redraws, which it never did - a token being removed is the one change that cannot
+  announce itself the way every other token change does.
+
 ## [0.2.0] - 2026-09-09
 
 ### Added

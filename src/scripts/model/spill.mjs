@@ -31,6 +31,18 @@
  * What this file still owns is which edges are windows and how bright they are
  * ({@link apertureInfo}); the geometry lives next door.
  *
+ * **Skylights — §3.4.3, 2026-09-15.** A window is not the only kind of opening, and the second kind
+ * needed no new geometry. {@link apertureInfo} was always asking "brighter ambient one side, darker
+ * the other, nothing opaque between", and a wall edge was only ever one way to be offered that
+ * question; {@link regionApertures} offers it the outline of any region whose GM ticked *Openings*.
+ * Cut a hole in a darkened room's region and the hole's ring is the one stretch of that outline with
+ * no wall under it, so the sky reaches the floor there and falls off into the room from its edge.
+ *
+ * A hole is the right primitive rather than a lit patch drawn inside the room, and the reason is
+ * time of day: a hole is simply ground the room's clamp does not cover, so `ambientTierAt` reads the
+ * sky's own tier there and a skylight goes dark at dusk without anyone editing it. An `AT_LEAST`
+ * region would have to be re-authored every time the sun moved.
+ *
  * Walls that pass light never block anything. `geodesic.blockingLinks` cuts a cell-to-cell link only
  * where `constants.passesLight` is false, the same predicate {@link isAperture} reads to find a
  * window in the first place and `render/wall-mask.mjs` reads to protect the blur. So a second
@@ -320,13 +332,38 @@ function spillTierAt(point) {
  * disagree about which walls are windows or how bright a window is, and the probe judging the new
  * geometry judges it against the real answer rather than a copy of it.
  *
- * @param {Edge} edge
+ * Takes a **candidate** rather than an `Edge` since §3.4.3. A candidate is `{a, b, edge}`, where
+ * `edge` is the wall this came from or `null` for a segment of a region outline. Everything below
+ * the first two lines reads only `a` and `b`, which is why a skylight needed no new geometry: the
+ * question "is this a boundary with brighter ambient on one side, darker on the other, and nothing
+ * opaque between" was always the whole of eligibility, and a wall edge was only ever one way to ask
+ * it.
+ *
+ * `edge: null` is not a weaker case. It means there is no aperture to exclude from
+ * {@link blockedBetween}, so **every** wall between the probes counts — which is exactly the
+ * guarantee a region outline needs, since a region has no reason to be drawn anywhere near a wall
+ * and a wall lying across it must stop the spill dead.
+ *
+ * @param {{a: Point, b: Point, edge: Edge|null}|Edge} candidate
  * @param {number} sceneTier
- * @returns {object|null} `null` where the edge is not a window, or has nothing to spill
+ * @returns {object|null} `null` where the candidate is not a window, or has nothing to spill
  */
-export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
-  if (!isAperture(edge)) return null;
-  const f = frame(edge);
+export function apertureInfo(candidate, sceneTier = sceneAmbientTier()) {
+  // An `Edge` passed directly is still accepted — `game.pf1Lighting.spill` probes hand one over,
+  // and the wall path below reads more honestly for it. Detected on the presence of the key rather
+  // than its value: a region candidate carries `edge: null`, which is a wall it does not have, and
+  // `?.edge` cannot tell that from a wall nobody supplied.
+  const wrapped = candidate !== null && typeof candidate === "object" && "edge" in candidate;
+  const edge = wrapped ? candidate.edge : candidate;
+  const segment = wrapped ? { a: candidate.a, b: candidate.b } : candidate;
+
+  // Only a wall has to prove it passes light. A region outline is not a thing light crosses; it is
+  // a line on the ground, and what stands on it is `blockedBetween`'s question below.
+  if (edge && !isAperture(edge)) return null;
+  // `frame` reads `.b.x` off its argument, so a malformed candidate throws rather than returning
+  // null. Cheap to answer here, and this is an exported probe entry point.
+  if (!segment?.a || !segment?.b) return null;
+  const f = frame(segment);
   if (!f) return null;
 
   const probe = (canvas?.dimensions?.size ?? 100) * PROBE_SQUARES;
@@ -391,6 +428,14 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
 
   return {
     edge,
+    // The seeded segment, carried explicitly since §3.4.3. `spillFor` used to reach through to
+    // `info.edge.a`, which a region outline has no `edge` to offer — and a wall's own endpoints are
+    // these anyway, so nothing about the window path changes.
+    a: segment.a,
+    b: segment.b,
+    // What produced this opening, for `stats()`. The rejection tally says why candidates failed;
+    // this is the other half — of the ones that passed, which were windows and which were outlines.
+    kind: edge ? "wall" : "region",
     frame: f,
     normal: n,
     inside,
@@ -402,6 +447,97 @@ export function apertureInfo(edge, sceneTier = sceneAmbientTier()) {
     regionPaths,
     regionPolygons: fromClipperPaths(regionPaths, SCALE),
   };
+}
+
+/* -------------------------------------------- */
+/*  Candidates                                  */
+/* -------------------------------------------- */
+
+/**
+ * How finely a region outline is chopped before probing, in grid squares.
+ *
+ * @remarks
+ * A wall is judged by one probe at its midpoint, which is honest because a wall is uniform along its
+ * length — it either passes light or it does not. A region outline is not: one side of a room's ring
+ * can be solid masonry and the next a gap, and a single midpoint probe would answer for both.
+ *
+ * So the outline is cut into segments about a square long and each is judged on its own. One square
+ * is the scale walls are drawn at, and it costs one quadtree query per segment — paid only by
+ * regions whose GM ticked the box, and only when {@link rebuild}'s signature has actually moved.
+ *
+ * Not smaller: {@link PROBE_SQUARES} samples half a square either side, so segments much shorter
+ * than this have overlapping probes and answer the same question repeatedly.
+ */
+const SEGMENT_SQUARES = 1;
+
+/**
+ * Aperture candidates from region outlines — DESIGN.md §3.4.3, the skylight.
+ *
+ * @remarks
+ * The whole of the feature on the model side, and it adds no geometry: {@link apertureInfo} already
+ * asked the right question and had only ever been offered walls to ask it about.
+ *
+ * **Outer rings and holes alike.** Which of them is an opening is not a property of the winding, and
+ * deciding by winding would be wrong in both directions: a hole cut where a wall runs is not an
+ * opening, and a gap left in a room's wall line is one. `blockedBetween` is the arbiter, with no
+ * aperture to exclude — a region outline has no wall of its own — so **every** wall standing on a
+ * segment stops it. That is §3.4.2 unchanged, and it is what makes "a wall still blocks spill,
+ * ticked or not" true by construction rather than by a second test agreeing with the first.
+ *
+ * The ordinary case is therefore that a room region ticked *Openings* produces nothing at all: its
+ * outline is drawn along its walls, every segment is occluded, and the count lands in
+ * `stats().rejected.occluded`. Cut a hole in the ceiling and that hole's ring is the one place with
+ * no wall under it, so it — and only it — seeds.
+ *
+ * Only non-derived areas are walked. A derived area is spill's own output from last rebuild, and
+ * offering it back would be the self-feeding failure `roomTier` exists to prevent, one level up.
+ */
+function regionApertures(sceneTier) {
+  const out = [];
+  let candidates = 0;
+
+  const step = (canvas?.dimensions?.size ?? 100) * SEGMENT_SQUARES;
+  if (!(step > 0)) return { apertures: out, candidates };
+
+  for (const area of areas.areas()) {
+    if (area.derived || !area.spills) continue;
+
+    for (const ring of areas.ringsOf(area)) {
+      const pts = ring.points;
+      for (let i = 0; i < pts.length; i += 2) {
+        const j = (i + 2) % pts.length;
+        const ax = pts[i];
+        const ay = pts[i + 1];
+        const bx = pts[j];
+        const by = pts[j + 1];
+
+        // Chopped so a long side is judged piece by piece rather than at its midpoint alone. A ring
+        // edge shorter than one segment yields exactly one, which is the common case: Foundry
+        // tessellates ellipses and rounded rectangles finely enough that most edges are already
+        // below this length.
+        const length = Math.hypot(bx - ax, by - ay);
+        if (!(length > 1)) continue;
+        const pieces = Math.max(1, Math.ceil(length / step));
+
+        for (let k = 0; k < pieces; k++) {
+          const t0 = k / pieces;
+          const t1 = (k + 1) / pieces;
+          candidates++;
+          const info = apertureInfo(
+            {
+              a: { x: ax + (bx - ax) * t0, y: ay + (by - ay) * t0 },
+              b: { x: ax + (bx - ax) * t1, y: ay + (by - ay) * t1 },
+              edge: null,
+            },
+            sceneTier
+          );
+          if (info) out.push(info);
+        }
+      }
+    }
+  }
+
+  return { apertures: out, candidates };
 }
 
 /* -------------------------------------------- */
@@ -449,13 +585,7 @@ function roomsOf(sceneTier) {
   const rooms = new Map();
   let candidates = 0;
 
-  for (const edge of canvas.edges.values()) {
-    if (!isAperture(edge)) continue;
-    candidates++;
-
-    const info = apertureInfo(edge, sceneTier);
-    if (!info) continue;
-
+  const admit = (info) => {
     // The enclosing region set, order-independent, so two windows in one room always hash alike.
     const key = info.regionIds.join("|");
     let room = rooms.get(key);
@@ -466,9 +596,26 @@ function roomsOf(sceneTier) {
     room.apertures.push(info);
     // A room is only as bright as its darkest reading lets the ladder run — see §3.4's floor.
     if (info.floor > room.floor) room.floor = info.floor;
+  };
+
+  for (const edge of canvas.edges.values()) {
+    if (!isAperture(edge)) continue;
+    candidates++;
+
+    const info = apertureInfo(edge, sceneTier);
+    if (info) admit(info);
   }
 
-  return { rooms: [...rooms.values()], candidates };
+  // §3.4.3 — the same grouping, from the other candidate source. Deliberately folded into the same
+  // rooms rather than marched separately: a room with a window *and* a skylight is one distance
+  // field with two seed sets, which is §3.4.1's whole argument for one march per room. Two fields
+  // would land on separately-snapped lattices and disagree along the boundary where they meet,
+  // which is the sliver failure that rewrite exists to end.
+  const fromRegions = regionApertures(sceneTier);
+  candidates += fromRegions.candidates;
+  for (const info of fromRegions.apertures) admit(info);
+
+  return { rooms: [...rooms.values()], candidates, regionCandidates: fromRegions.candidates };
 }
 
 /**
@@ -508,8 +655,8 @@ function spillFor(room) {
   };
 
   const seedGroups = room.apertures.map((info) => ({
-    a: info.edge.a,
-    b: info.edge.b,
+    a: info.a,
+    b: info.b,
     normal: info.normal,
     offset: offsetFor(info.spillTier) * feetToPixels,
   }));
@@ -613,10 +760,12 @@ export function rebuild() {
   const found = roomsOf(sceneTier);
   candidates = found.candidates;
 
+  let skylights = 0;
   for (const room of found.rooms) {
     const { areas: produced, fill } = spillFor(room);
     if (!produced.length) continue;
     windows += room.apertures.length;
+    skylights += room.apertures.filter((info) => info.kind === "region").length;
     marched++;
     cells += fill?.visited ?? 0;
     next.push(...produced);
@@ -625,7 +774,15 @@ export function rebuild() {
   return publish({
     enabled: true,
     candidates,
+    // §3.4.3. `regionCandidates: 0` means no region on the scene has *Openings* ticked, which is the
+    // first thing to check when a skylight does nothing — it separates "the flag is off" from "the
+    // flag is on and every segment was rejected", and those need opposite responses.
+    regionCandidates: found.regionCandidates,
     windows,
+    // Of those windows, how many came from a region outline rather than a wall. A cut hole that
+    // produced nothing leaves this at 0 with `rejected.occluded` high, meaning a wall is standing
+    // on the ring — the expected reading for a hole drawn over the wall line rather than inside it.
+    skylights,
     // One march covers every window of a room, so `rooms` below `windows` is the ordinary state and
     // the point of §3.4.1's grouping — not a sign anything was skipped.
     rooms: marched,

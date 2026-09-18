@@ -141,7 +141,7 @@ const TIER_CHOICES = () =>
  * instead; see {@link MODE_LABEL}.
  */
 function defineBehavior() {
-  const { StringField, NumberField } = foundry.data.fields;
+  const { BooleanField, StringField, NumberField } = foundry.data.fields;
   const Base = foundry.data.regionBehaviors.RegionBehaviorType;
 
   return class GlobalIlluminationBehaviorType extends Base {
@@ -163,6 +163,15 @@ function defineBehavior() {
           choices: TIER_CHOICES,
           label: "PF1LIGHTING.Behavior.GlobalIllumination.Tier.Label",
           hint: "PF1LIGHTING.Behavior.GlobalIllumination.Tier.Hint",
+        }),
+        // §3.4.3. Off by default, and that is the whole of its safety: a region's outline *is* the
+        // ambient boundary, so `spill.apertureInfo`'s differential test passes along every inch of
+        // it by construction. Defaulting this on would turn every clamp on every existing scene
+        // into a feathered edge.
+        spills: new BooleanField({
+          initial: false,
+          label: "PF1LIGHTING.Behavior.GlobalIllumination.Spills.Label",
+          hint: "PF1LIGHTING.Behavior.GlobalIllumination.Spills.Hint",
         }),
       };
     }
@@ -240,7 +249,7 @@ export function invalidate() {
  * `polygons`/`testPoint` accessors are deprecated in v13 in favour of the document's, which these
  * are.
  *
- * @returns {{behavior: object, region: object, mode: string, tier: number}[]}
+ * @returns {{behavior: object, region: object, mode: string, tier: number, spills: boolean}[]}
  */
 export function areas() {
   if (cache) return cache;
@@ -259,6 +268,10 @@ export function areas() {
         region,
         mode: behavior.system?.mode ?? MODE.AT_MOST,
         tier,
+        // §3.4.3 — is this region's outline an opening? Read here rather than by `model/spill.mjs`
+        // reaching into `behavior.system` itself, so the one place that knows the schema is the one
+        // that defines it. A derived area never carries it: spill must not seed spill.
+        spills: behavior.system?.spills === true,
       });
     }
   }
@@ -411,6 +424,35 @@ export function pathsFor(area, scale) {
   return paths;
 }
 
+/**
+ * An area's outline as scene-space rings — §3.4.3's aperture candidates.
+ *
+ * @remarks
+ * Exported so `model/spill.mjs` can walk a region's boundary without reaching into `polygonTree`
+ * itself. The same reason `pathsFor` exists: one file knows how a Foundry region is shaped, and the
+ * rest of the module asks it.
+ *
+ * `isHole` rides along unused today — §3.4.3 offers outer rings and holes alike, the wall test
+ * deciding between them rather than the winding. It is reported because {@link status} and
+ * `spill.stats()` both want to say *which* ring produced an opening, and a caller that wants holes
+ * only should be able to have them without a second traversal.
+ *
+ * A derived area has no document and no tree; it carries Clipper paths instead, and is never an
+ * aperture candidate anyway (spill must not seed spill), so it yields nothing.
+ *
+ * @param {object} area
+ * @returns {{points: number[], isHole: boolean}[]} Flat `[x, y, x, y, …]` per ring
+ */
+export function ringsOf(area) {
+  if (!area || area.derived) return [];
+  const out = [];
+  for (const node of area.region?.polygonTree ?? []) {
+    const points = node.polygon?.points;
+    if (points?.length >= 6) out.push({ points, isHole: node.isHole === true });
+  }
+  return out;
+}
+
 /* -------------------------------------------- */
 /*  Invalidation                                */
 /* -------------------------------------------- */
@@ -502,6 +544,11 @@ export function status() {
       mode: MODE_NAME[area.mode] ?? area.mode,
       tier: TIER_NAME[area.tier],
       shapes: area.region.polygonTree ? [...area.region.polygonTree].length : 0,
+      // §3.4.3. `spills: true` with `holes: 0` is the shape of a skylight nobody cut — the flag is
+      // on, the outline is offered, and every segment of it is backed by a wall, so the feature is
+      // correctly doing nothing. `spill.stats().rejected` says which test turned them away.
+      spills: area.spills,
+      holes: ringsOf(area).filter((ring) => ring.isHole).length,
       elevation: { ...area.region.elevation },
     })),
   };

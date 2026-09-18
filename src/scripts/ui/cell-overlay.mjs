@@ -444,6 +444,12 @@ export function registerHooks() {
   Hooks.on("initializeLightSources", schedule);
   Hooks.on("refreshToken", schedule);
   Hooks.on("refreshAmbientLight", schedule);
+  // The scene's own ambience moves every cell's tier and fires none of the three above — see the
+  // note in `render/renderer.registerHooks`. `PAINTED_HOOK` refreshes the *labels* only, so without
+  // this the overlay's geometry stays as it was drawn.
+  Hooks.on("initializeCanvasEnvironment", schedule);
+  // A deleted token fires no `refreshToken` — see the note in `render/renderer.registerHooks`.
+  Hooks.on("deleteToken", schedule);
 
   Hooks.on("canvasReady", () => {
     graphics = null;

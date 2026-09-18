@@ -751,6 +751,39 @@ export function registerHooks() {
   // showing its old position until something unrelated fired.
   Hooks.on("refreshAmbientLight", schedule);
 
+  // The scene's own ambience — global illumination, darkness level, ambient colours. None of the
+  // three above fire for it, and the render was only ever kept current by accident: a scene change
+  // ends in `canvas.environment.initialize()`, which requests `refreshVision`, which reaches
+  // `CanvasVisibility#restrictVisibility`, which sets a render flag on *every token placeable* — so
+  // `refreshToken` fired once per token and the schedule above caught it.
+  //
+  // On a scene with no tokens that loop is empty and nothing fires at all, which is the bug
+  // (2026-09-15: turning global illumination on or off did nothing until a token was dropped). The
+  // path is doubly unreliable: `Scene##onUpdate` tests `changedKeys.has("globalLight")`, but a v13
+  // scene's flat key is `environment.globalLight.enabled`, so the `canvas.perception.initialize()`
+  // that would have fired `initializeLightSources` is never reached either.
+  //
+  // `initializeCanvasEnvironment` is the direct signal, called at the end of
+  // `EnvironmentCanvasGroup#initialize` for every one of those changes. It also fires per frame of a
+  // darkness animation, which costs nothing: `ambientBrightness()` is quantised to a tier, so the
+  // field signature only moves on a crossing and every other frame bails on the reference compare.
+  Hooks.on("initializeCanvasEnvironment", schedule);
+
+  // Deletion, which is the one token change `refreshToken` structurally cannot carry: the placeable
+  // is torn down before anything could set a render flag on it, so the hook that wakes this for
+  // every other token event fires for the last time *before* the token is gone.
+  //
+  // Both halves of a rebuild move when a token goes. A token carrying a light drops an emitter, so
+  // the field changes; a token that was the observer drops a vision source, so `render/paint.mjs`'s
+  // clamp changes. `model/registry.mjs` already invalidates on this hook — it is only the asking
+  // that was missing, the same shape as the `initializeCanvasEnvironment` gap above.
+  //
+  // The symptom was deleting the last token on a scene leaving that token's own point of view
+  // painted, and nothing shifting it until another token was placed or the scene reloaded
+  // (2026-09-15). `paint`'s signature is `[field, ...los]`, so the vanished source *is* detectable —
+  // the pass simply never ran again.
+  Hooks.on("deleteToken", schedule);
+
   Hooks.on("canvasReady", () => {
     lastField = null;
     if (!active()) return;
