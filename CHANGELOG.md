@@ -9,6 +9,11 @@
 
 ## Unreleased
 
+### Changed
+- **Show light level** is saved per user instead of per browser, so a player's choice follows them to
+  any device. A choice saved under the old per-browser setting is not carried over and starts from
+  the default (off).
+
 ### Added
 - **Skylights.** A new **Openings** checkbox on the *Restrict Global Illumination* region behavior
   lets light spill across that region's own outline wherever no wall stands on it. Cut a hole in the
@@ -20,6 +25,10 @@
   it is ticked or not.
 
 ### Fixed
+- **Light spill stayed bright after the scene was darkened.** Turning the scene down from Bright
+  could leave windows spilling Bright light, sometimes outward into the yard and on into other
+  buildings, until the scene was set to Dark or the region was toggled. Spill now judges the light
+  outside a window without counting its own earlier output.
 - **A scene with no tokens on it stopped updating.** Changing global illumination, the darkness
   level or the ambient colours left the picture as it was until a token was placed. The module now
   listens for the scene's own ambience changing rather than relying on a signal that only travels

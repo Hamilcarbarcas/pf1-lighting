@@ -65,7 +65,7 @@ import {
   toClipperPath,
   union,
 } from "../geometry.mjs";
-import { TIER, TIER_NAME, resolveTier, tierFromDarkness } from "./tiers.mjs";
+import { TIER, TIER_NAME, resolveTier, tierCeiling, tierFromDarkness } from "./tiers.mjs";
 import { contest } from "./contest.mjs";
 import {
   ambientTier as sceneAmbientTier,
@@ -301,14 +301,20 @@ const roomTier = (point, base) => areas.ambientTierAt(point, base, { derived: fa
  * lower, with `floor`, eligibility and daylight cancellation honoured by the code that already owns
  * those rules.
  */
-function spillTierAt(point) {
+function spillTierAt(point, sceneTier) {
+  // The global entry's own tier comes from `registry.ambientTier`, which folds derived areas — spill's
+  // bands from the last rebuild. Read raw, a stale Bright band over this probe kept the window
+  // spilling Bright after the scene dropped, and bands spilling into bands held it there. So the
+  // tier is replaced with the room reading, derived areas excluded, the same as `roomTier`.
+  const tier = roomTier(point, sceneTier);
+
   // Flattened exactly as `evaluate()` flattens it, for the reason its comment gives: the contest
   // reads config fields off the emitter itself, so an entry handed over unflattened arrives with no
   // `kind`, no `level` and no `cancelsDarkness`, and every rule that tests one silently takes its
   // default branch.
   const ambientOnly = emittersAt(point)
     .filter(({ entry }) => entry?.isGlobal)
-    .map(({ entry, ...rest }) => ({ ...entry, entry, ...rest }));
+    .map(({ entry, ...rest }) => ({ ...entry, entry, ...rest, tier, B: tierCeiling(tier) }));
 
   if (!ambientOnly.length) return null;
   const { B, applied, winner } = contest(ambientOnly, suppressorsAt(point));
@@ -402,7 +408,7 @@ export function apertureInfo(candidate, sceneTier = sceneAmbientTier()) {
   const outside = inwardSign > 0 ? minus : plus;
   const interiorTier = Math.min(tierPlus, tierMinus);
 
-  const spillTier = spillTierAt(outside);
+  const spillTier = spillTierAt(outside, sceneTier);
   if (spillTier === null) return reject("noAmbientEmitter");
 
   // §3.4's guard, and the same comparison as eligibility. A Bright scene clamped to Dim indoors with

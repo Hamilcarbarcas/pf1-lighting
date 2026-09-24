@@ -241,7 +241,7 @@ export const VISION_RANK = Object.freeze({
  * Show or hide a registered setting's row after the fact.
  *
  * @remarks
- * For client-scoped settings that are still not everyone's business. Foundry hides world-scoped
+ * For client- and user-scoped settings that are still not everyone's business. Foundry hides world-scoped
  * settings from non-GM clients on its own (`applications/settings/config.mjs:67`), which is right
  * when the value belongs to the world and wrong for a GM-only per-client preference — *GM sees
  * through the selected token* must stay client-scoped so two GMs can disagree, while still not

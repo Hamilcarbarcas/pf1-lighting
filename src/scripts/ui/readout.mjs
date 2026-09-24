@@ -99,7 +99,7 @@ const gmOnly = () => {
  */
 const available = () => game.user?.isGM === true || !gmOnly();
 
-/** The client's own preference, whatever the GM has allowed. What the keybinding toggles. */
+/** The user's own preference, whatever the GM has allowed. What the keybinding toggles. */
 const showing = () => {
   try {
     return game.settings.get(MODULE_ID, SETTING_ENABLED) === true;
@@ -393,10 +393,10 @@ export function registerSettings() {
   game.settings.register(MODULE_ID, SETTING_ENABLED, {
     name: "PF1LIGHTING.Setting.readoutEnabled.Name",
     hint: "PF1LIGHTING.Setting.readoutEnabled.Hint",
-    scope: "client",
+    scope: "user",
     config: true,
     type: Boolean,
-    // Off for everyone, GM included (2026-08-29). A per-client preference with a keybinding, so the
+    // Off for everyone, GM included (2026-08-29). A per-user preference with a keybinding, so the
     // cost of it being off is one keypress and the cost of it being on is a chip following the
     // cursor of somebody who never asked for one.
     default: false,
@@ -466,7 +466,7 @@ export function registerKeybindings() {
  * Take the readout's own row away from a user who cannot have the readout.
  *
  * @remarks
- * `SETTING_ENABLED` is client-scoped, being a personal preference, so Foundry's own rule about
+ * `SETTING_ENABLED` is user-scoped, being a personal preference, so Foundry's own rule about
  * hiding world settings from players does not reach it and a player under the GM-only switch was
  * left with a control that did nothing (2026-08-26). Re-run whenever the GM's switch changes rather
  * than only at `ready`, since it can change while a player is looking at it.
