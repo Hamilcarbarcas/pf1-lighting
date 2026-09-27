@@ -142,6 +142,28 @@ export const syncAllScenes = () => syncScenes(game.scenes?.contents ?? []);
 /* -------------------------------------------- */
 
 /**
+ * The flat scene update that sets a tier: the flag and the darkness level it is stored at now.
+ *
+ * @remarks
+ * Split out of {@link setSceneTier} for callers that need the fields inside an update of their own —
+ * folded into a scene's activation, or sent with update options that mark who wrote it. Same shape as
+ * `presets.apply` returning a light's update. `setSceneTier` is built on this so the two can't drift.
+ *
+ * Does not check `darknessLock`: that is a property of the scene, and this answers without one.
+ * `Scene#_preUpdate` drops the darkness half on a locked scene, so a caller should check first.
+ *
+ * @param {number} tier - A {@link TIER} value from {@link SCENE_TIERS}
+ * @returns {?object} The update, or null for a tier a scene can't hold
+ */
+export function sceneTierUpdate(tier) {
+  if (!SCENE_TIERS.includes(tier)) return null;
+  return {
+    [FLAG_PATH]: tier,
+    "environment.darknessLevel": levelFor(tier),
+  };
+}
+
+/**
  * Set the current scene's light level, instantly.
  *
  * @remarks
@@ -160,16 +182,14 @@ export const syncAllScenes = () => syncScenes(game.scenes?.contents ?? []);
  */
 export async function setSceneTier(tier, scene = canvas?.scene) {
   if (!scene) return null;
-  if (!SCENE_TIERS.includes(tier)) return null;
+  const update = sceneTierUpdate(tier);
+  if (!update) return null;
   if (scene.environment?.darknessLock) {
     ui.notifications?.warn(t("Notify.SceneDarknessLocked", { scene: scene.name }));
     return null;
   }
   // The change hook fires from `updateScene`, not here — see {@link announceTierChange}.
-  await scene.update({
-    [FLAG_PATH]: tier,
-    "environment.darknessLevel": levelFor(tier),
-  });
+  await scene.update(update);
   return tier;
 }
 

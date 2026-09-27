@@ -150,6 +150,7 @@ this is a registry. An unregistered id answers `null`, not `false` — *this sen
 | --- | --- |
 | `api.sceneTier(scene?)` | The scene's tier, defaulting to `canvas.scene`. The stored tier where the scene was set through this module, the nearest rung to its raw darkness where it was not |
 | `await api.setSceneTier(tier, scene?)` | Sets it. Returns the tier set, or `null`. **GM only**, and refused on a darkness-locked scene |
+| `api.sceneTierUpdate(tier)` | The update `setSceneTier` would write, as a flat object, or `null` for a tier a scene can't hold. For adding the tier to an update of your own. Does **not** check the darkness lock |
 
 `Scene#_preUpdate` silently deletes `environment.darknessLevel` from an update when the lock is set,
 so the refusal is the only honest answer. The lock means frozen, not "ignore the clock" — a locked

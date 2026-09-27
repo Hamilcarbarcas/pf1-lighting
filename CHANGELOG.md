@@ -15,6 +15,8 @@
   the default (off).
 
 ### Added
+- **API: `sceneTierUpdate(tier)`** returns the scene update that `setSceneTier` would write, so
+  another module can include a light level in an update of its own. See `API.md`.
 - **Skylights.** A new **Openings** checkbox on the *Restrict Global Illumination* region behavior
   lets light spill across that region's own outline wherever no wall stands on it. Cut a hole in the
   region with Foundry's hole tool and the sky reaches the floor there, falling off into the room from

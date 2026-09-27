@@ -553,6 +553,22 @@ export function setSceneTier(tier, scene = canvas?.scene) {
   return sceneConfig.setSceneTier(tier, scene);
 }
 
+/**
+ * The flat scene update {@link setSceneTier} would write, for a caller writing it itself.
+ *
+ * @remarks
+ * For folding a tier into another update (a scene's activation) or sending it with update options.
+ * Both fields or neither — the flag is the source of truth and the darkness level is derived from the
+ * tier table (§10.5.1). **Does not check the darkness lock**; on a locked scene core silently drops
+ * the darkness half, so check `scene.environment.darknessLock` first.
+ *
+ * @param {number} tier - A {@link TIER} value the ambient can hold
+ * @returns {object|null} `{"flags.pf1-lighting.tier", "environment.darknessLevel"}`, or null
+ */
+export function sceneTierUpdate(tier) {
+  return sceneConfig.sceneTierUpdate(tier);
+}
+
 /* -------------------------------------------- */
 /*  Light effects                               */
 /* -------------------------------------------- */
@@ -613,6 +629,8 @@ export function build() {
 
     sceneTier,
     setSceneTier,
+    // Added 2026-09-24 for astora-mod's daylight driver; `VERSION` unchanged.
+    sceneTierUpdate,
 
     // §12. Added, not changed, so `VERSION` does not move — a consumer feature-detects with
     // `api.lights !== undefined` rather than on the version.
