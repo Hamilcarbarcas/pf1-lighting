@@ -10,6 +10,7 @@
 ## Unreleased
 
 ### Changed
+- **The light section keeps its place on the Advanced tab.** Sections added by modules sharing the same sheet kit now sort alphabetically below Script Calls, instead of in whichever order their render hooks finished — which could change every time the sheet redrew.
 - **Show light level** is saved per user instead of per browser, so a player's choice follows them to
   any device. A choice saved under the old per-browser setting is not carried over and starts from
   the default (off).
