@@ -10,12 +10,25 @@
 ## Unreleased
 
 ### Changed
+- **Overlapping lights no longer stack their color.** Where two lights overlapped, their tints added
+  together, making the overlap look brighter than either light. The strongest tint now wins. Lights
+  of different colors still mix where they overlap, but less strongly than before.
+- **With Wall Height installed, a light effect on a token shines from the token's height.** Walls
+  lower than the token no longer block it, and walls taller than it still do, the same as a light
+  set on the token itself. Before, it was judged from the height of whichever token you had
+  selected, so the same lantern could cast different shadows for different viewers.
 - **The light section keeps its place on the Advanced tab.** Sections added by modules sharing the same sheet kit now sort alphabetically below Script Calls, instead of in whichever order their render hooks finished — which could change every time the sheet redrew.
 - **Show light level** is saved per user instead of per browser, so a player's choice follows them to
   any device. A choice saved under the old per-browser setting is not carried over and starts from
   the default (off).
 
 ### Added
+- **Light badge on tokens.** A token with a light effect on it shows a small flame on its right
+  edge, in the light's color, or a violet moon for darkness. Each user can turn it off with **Show
+  light badge on tokens**.
+- **API: withheld regions.** Another module can hide areas of the map from a particular observer:
+  they stay fogged and unexplored, for ordinary sight and darkvision alike, as if a wall stood in the
+  way. See `API.md`.
 - **API: `sceneTierUpdate(tier)`** returns the scene update that `setSceneTier` would write, so
   another module can include a light level in an update of its own. See `API.md`.
 - **Skylights.** A new **Openings** checkbox on the *Restrict Global Illumination* region behavior
@@ -28,6 +41,25 @@
   it is ticked or not.
 
 ### Fixed
+- **No more hard-edged blocks in light gradients near walls.** Where the edge of a light ran up to a
+  wall, the softening stopped short of the wall in a straight line, leaving a sharp rectangular
+  step. The softening now runs right up to the wall without crossing it, so light still does not
+  bleed through walls.
+- **Low walls that a light shines over no longer sharpen its edges.** With Wall Height, a wall
+  lower than a light was still treated as blocking it for softening. A low wall now keeps edges
+  sharp only while it actually blocks some light.
+- **Module settings take effect on the first change.** Changing a setting from the console or a
+  macro sometimes applied the previous value, so a switch could take two presses to change anything.
+- **A token's preview no longer explores fog through magical darkness.** With drag vision on, the
+  ground seen from a drag's destination past a magical darkness stayed explored after the drag was
+  cancelled, even though the token never went there. The same applied to a blinded token. Their
+  view now shows without being recorded, as Foundry intends.
+- **Areas hidden by magical darkness are drawn correctly when the visible area is in several
+  pieces.** Only the last piece had its hidden areas cut out. No current scene can produce this, but
+  upcoming features will.
+- **Adding or changing an entry in a sheet section no longer jumps the sheet back to the top of
+  the tab.** Sections from the shared sheet kit now restore the scroll position once they have
+  drawn.
 - **Light spill stayed bright after the scene was darkened.** Turning the scene down from Bright
   could leave windows spilling Bright light, sometimes outward into the yard and on into other
   buildings, until the scene was set to Dark or the region was toggled. Spill now judges the light
@@ -40,6 +72,10 @@
   seen it, and nothing shifted it until another token was placed or the scene was reloaded. Deleting
   a token now redraws, which it never did - a token being removed is the one change that cannot
   announce itself the way every other token change does.
+- **A light effect stopped following its token after the token was selected.** Once you had
+  selected or deselected a token, a light given to a token from the HUD (or by an item or buff) was
+  drawn one move behind as the token walked, until you clicked off it again. Only the client doing
+  the selecting was affected. The light now follows on every move.
 
 ## [0.2.0] - 2026-09-09
 

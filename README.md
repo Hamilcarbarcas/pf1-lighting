@@ -21,6 +21,7 @@ A complete overhaul of foundry's lighting system to match pathfinder 1e's rules 
   - [Presets](#presets)
   - [Light effects](#light-effects)
     - [The token light button](#the-token-light-button)
+    - [The light badge](#the-light-badge)
     - [Fuel](#fuel)
     - [Light on an item](#light-on-an-item)
     - [What is lit on this scene](#what-is-lit-on-this-scene)
@@ -215,6 +216,9 @@ they will not be replaced or updated when the mod updates.
 Token or object based lighting that can be driven by light producing items in a token's inventory.
 These settings do not interfere with any configuration in the token's settings.
 
+With **Wall Height** installed, a light effect on a token shines from the token's height, so walls
+lower than the token don't block it.
+
 ### The token light button
 
 Adds a **light bulb** button to the HUD of tokens.
@@ -234,6 +238,14 @@ A GM gets one extra row at the top, **Any light source…**, which offers every 
 ignores inventory and fuel entirely.
 
 A player whose actor is carrying nothing that gives light gets no button.
+
+### The light badge
+
+A token with a light effect on it shows a small badge on its right edge: a **flame** in the
+light's color, or a violet **moon** for darkness. Everyone who can see the token sees the badge. A
+light set up in the token's own configuration doesn't get one.
+
+Turn it off for yourself with **Show light badge on tokens** in the module settings.
 
 ### Fuel
 
@@ -285,6 +297,9 @@ Overlapping regions that increase a light level stack, up to the cap configured 
 For example, torches increase the light level one step to a radius of 40 feet (to a maximum of normal
 light). If two torches on a dark scene have overlapping areas, that area is increased two steps,
 providing normal light.
+
+Light colors do not add up where lights overlap: the strongest tint wins, so an overlap is only as
+colorful as its most colorful light.
 
 ![Overlapping Light Sources](assets/overlap.png)
 

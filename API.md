@@ -17,6 +17,7 @@ const api = game.modules.get("pf1-lighting")?.api;
 - [Who can see who](#who-can-see-who)
 - [The scene's light level](#the-scenes-light-level)
 - [Light effects](#light-effects)
+- [Withheld regions](#withheld-regions)
 - [Hooks](#hooks)
 - [Cost](#cost)
 - [Examples](#examples)
@@ -228,6 +229,53 @@ await api.lights.place({ x, y }, { preset: "torch" });   // → the AmbientLight
 Creates an ordinary `AmbientLight` on the scene — permanent, selectable, and editable in the light
 config sheet. It is not an effect: it has no anchor, carries no `source`, and does not appear in
 `list`. GM only.
+
+
+# Withheld regions
+
+Hide areas of the map from a particular observer: what they reveal there stays fogged and is never
+explored, as if a wall stood in the way. The areas are yours to compute; this module only carves
+them out of what each observer sees. Purely visual: brightness, perception and token detection are
+unaffected, so if tokens standing in a hidden area should be hidden too, that is the caller's job.
+
+Feature-detect with `api.withheld !== undefined`.
+
+| | |
+| --- | --- |
+| `api.withheld.register(id, provider, { layers })` | Register a provider. Returns a function that unregisters it |
+| `api.withheld.unregister(id)` | Remove a provider |
+| `api.withheld.invalidate()` | Your provider's output changed for a reason other than an observer moving: a setting, your own data. Triggers a vision refresh |
+| `api.withheld.active()` | `true` while the carve is installed, which is always while this module is enabled |
+| `api.withheld.LAYERS` | `{ LIGHT: "light", SIGHT: "sight" }` |
+| `api.withheld.generation` | A counter that changes whenever any provider's output may have |
+
+**`provider(visionSource)`** returns an array of `PIXI.Polygon` to hide from that observer, or
+`null`. Polygons may overlap. It is called during every visibility refresh, so it must be cheap when
+called again for the same `visionSource.los`, which Foundry replaces (never mutates) whenever the
+observer moves or the walls change: cache on that object. A provider that throws is logged once and
+contributes nothing until `invalidate()`.
+
+**`layers`** chooses what is hidden, both by default:
+
+| Layer | Hides |
+| --- | --- |
+| `"light"` | What the observer sees by light |
+| `"sight"` | What the observer sees without light: darkvision and the like |
+
+Hidden from both, an area is also painted as unseen ground: fogged at the scene's darkness, with the
+light-level readout reporting fog rather than a level.
+
+Register at `setup` or later; the API is published during this module's own `init`, and modules'
+`init` hooks do not run in dependency order.
+
+```js
+const api = game.modules.get("pf1-lighting")?.api;
+// Hide a 200 px square in front of every observer (a test, not a use case).
+api.withheld.register("my-module.test", (source) => {
+  const { x, y } = source.origin;
+  return [new PIXI.Polygon([x + 100, y - 100, x + 300, y - 100, x + 300, y + 100, x + 100, y + 100])];
+});
+```
 
 
 # Hooks

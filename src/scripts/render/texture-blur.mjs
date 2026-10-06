@@ -129,75 +129,163 @@ export function sharpWalls() {
 }
 
 /* -------------------------------------------- */
-/*  The composite — §6.4.7                      */
+/*  The wall-stopping blur — §6.4.7b            */
 /* -------------------------------------------- */
 
 let composite = null;
 
 /**
- * Blur the field, then put the wall lines back sharp.
+ * Most taps the wall-stopping blur takes on each side, per direction. A GLSL loop bound must be a
+ * constant, so this is compiled in; past it the spacing widens instead.
+ */
+const MAX_TAPS = 48;
+
+/**
+ * Standard deviation of PIXI's 15-tap kernel, in taps: its centre weight is 0.197448, and
+ * `1 / (√(2π) × 0.197448) ≈ 2.02`.
+ */
+const PIXI_KERNEL_SIGMA = 2.02;
+
+/** Extra screen pixels on the barrier beyond the tap spacing, for `LINEAR` sampling's soft rim. */
+const BARRIER_MARGIN = 2;
+
+/**
+ * The wall-stopping blur's kernel at the current zoom, matched to what `PIXI.BlurFilter` draws.
  *
- * @param {object} params
- * @returns {PIXI.Filter}
+ * @remarks
+ * Matched, not re-derived from `width()`, so the picture away from walls is the same with
+ * `sharpWalls` on or off. PIXI runs `quality` passes of its kernel at a per-pass tap spacing of
+ * `blur / quality`, and Gaussians compound in quadrature, so the visible σ is
+ * `2.02 × blur / √quality`. Read off the live filter, which `canvas.addBlurFilter` keeps rescaled
+ * on zoom.
+ *
+ * @returns {{sigma: number, spacing: number, taps: number}} Screen pixels, except `taps`
+ */
+function kernel() {
+  const blur = Math.max(0, filter?.blur ?? 0);
+  const quality = Math.max(1, filter?.quality ?? 1);
+  const sigma = (PIXI_KERNEL_SIGMA * blur) / Math.sqrt(quality);
+  const reach = 3 * sigma;
+  const spacing = Math.max(1, reach / MAX_TAPS);
+  const taps = Math.min(MAX_TAPS, Math.ceil(reach / spacing));
+  return { sigma, spacing, taps };
+}
+
+/**
+ * A separable Gaussian whose taps stop at the first wall they reach.
+ *
+ * @remarks
+ * §6.4.7 blurred everything and then chose, per fragment, between the blurred field and the sharp
+ * one inside a band around each wall. That seams every boundary that CROSSES a wall: the crossing is
+ * a step in one field and a ramp in the other, so the band's outline appears as a line across it.
+ * A feathered band (§6.4.7a) only spread the seam, because any share of a hard step is still a
+ * hard line.
+ *
+ * Here there is one field. Each tap walks outward from the fragment, one direction at a time, and
+ * stops for good at the first barrier pixel. Weights are renormalized over what was sampled, so a
+ * fragment beside a wall is the blur of its own side only: no bleed either way. A boundary crossing
+ * the wall is blurred by the taps running along the wall, which never meet it, so it ramps all the
+ * way in.
+ *
+ * Separable, like PIXI's. A path that turns a corner (one direction, then the other) can carry a
+ * little brightness around the end of a wall, which is where light does reach anyway.
  */
 function buildComposite() {
   const Base = foundry.canvas.rendering.filters.AbstractBaseMaskFilter;
 
-  return class SharpWallFilter extends Base {
+  return class WallStoppingBlurFilter extends Base {
     static defaultUniforms = {
-      sharpTexture: null,
       wallTexture: null,
       screenDimensions: [1, 1],
+      direction: [1, 0],
+      spacing: 1,
+      sigma: 1,
+      taps: 0,
     };
 
     static fragmentShader = `
     precision ${PIXI.settings.PRECISION_FRAGMENT} float;
     varying vec2 vTextureCoord;
     varying vec2 vMaskTextureCoord;
-    uniform sampler2D uSampler;       // the blurred field
-    uniform sampler2D sharpTexture;   // the same field, untouched
+    uniform sampler2D uSampler;
     uniform sampler2D wallTexture;
+    // highp to match the vertex shader, which declares these two at its default precision. A uniform
+    // declared in both stages at different precisions fails to link.
+    uniform highp vec4 inputSize;
+    uniform highp vec2 screenDimensions;
+    uniform vec4 inputClamp;
+    uniform vec2 direction;
+    uniform float spacing;
+    uniform float sigma;
+    uniform float taps;
+
+    // One screen pixel is inputSize.zw in the field's coordinates and 1 / screenDimensions in the
+    // mask's (AbstractBaseMaskFilter's vertex shader maps one onto the other at that ratio).
+    bool blocked(in vec2 offset) {
+      return texture2D(wallTexture, vMaskTextureCoord + offset / screenDimensions).r > 0.5;
+    }
+
+    vec4 field(in vec2 offset) {
+      return texture2D(uSampler, clamp(vTextureCoord + offset * inputSize.zw, inputClamp.xy, inputClamp.zw));
+    }
 
     void main() {
-      float wall = texture2D(wallTexture, vMaskTextureCoord).r;
-      // Nothing to choose between where no wall runs, which is nearly every fragment: one texture
-      // read and a branch the whole warp takes together.
-      if ( wall <= 0.0 ) {
-        gl_FragColor = texture2D(uSampler, vTextureCoord);
-        return;
+      vec4 sum = texture2D(uSampler, vTextureCoord);
+      float total = 1.0;
+      bool forward = true;
+      bool backward = true;
+      float falloff = -0.5 / (sigma * sigma);
+      for ( int i = 1; i <= ${MAX_TAPS}; i++ ) {
+        if ( float(i) > taps || !(forward || backward) ) break;
+        float d = float(i) * spacing;
+        float w = exp(d * d * falloff);
+        vec2 offset = direction * d;
+        if ( forward ) {
+          if ( blocked(offset) ) forward = false;
+          else { sum += w * field(offset); total += w; }
+        }
+        if ( backward ) {
+          if ( blocked(-offset) ) backward = false;
+          else { sum += w * field(-offset); total += w; }
+        }
       }
-      gl_FragColor = mix(
-        texture2D(uSampler, vTextureCoord),
-        texture2D(sharpTexture, vTextureCoord),
-        clamp(wall, 0.0, 1.0)
-      );
+      gl_FragColor = sum / total;
     }`;
 
     /**
      * @override
      * @remarks
-     * Two passes inside one filter, and it has to be one filter: PIXI chains filters sequentially,
-     * so a second filter in `container.filters` would only see the first's output, with no way to
-     * reach back for the unblurred field. Running the blur into a scratch target here makes both
-     * available to the same fragment.
-     *
-     * `getFilterTexture()` hands back a target matching the current filter frame, so `input` and
-     * `temp` share dimensions and both sample correctly at `vTextureCoord`.
+     * Horizontal into a scratch target, then vertical into the output. `getFilterTexture()` matches
+     * the current filter frame, so `vTextureCoord` and the mask coordinate mean the same place in
+     * both passes. The PIXI blur is still what `canvas.addBlurFilter` rescales on zoom; this reads
+     * its numbers and never runs it.
      */
-    apply(filterManager, input, output, clear, currentState) {
+    apply(filterManager, input, output, clear) {
       const u = this.uniforms;
       u.screenDimensions = canvas.screenDimensions;
       u.wallTexture = wallMask.texture();
+      const { sigma, spacing, taps } = kernel();
 
-      // No mask yet — nothing to protect, so this is an ordinary blur.
-      if (!u.wallTexture) {
-        filter.apply(filterManager, input, output, clear, currentState);
+      // Nothing to blur, or no mask yet: pass the field through untouched.
+      if (!u.wallTexture || !(sigma > 0) || !taps) {
+        u.taps = 0;
+        u.sigma = 1;
+        u.direction = [1, 0];
+        filterManager.applyFilter(this, input, output, clear);
         return;
       }
 
+      // A tap must not be able to step over a wall, so the line must be at least a step wide.
+      wallMask.requireWidth(spacing + BARRIER_MARGIN);
+
+      u.sigma = sigma;
+      u.spacing = spacing;
+      u.taps = taps;
+
       const temp = filterManager.getFilterTexture();
-      filter.apply(filterManager, input, temp, PIXI.CLEAR_MODES.CLEAR, currentState);
-      u.sharpTexture = input;
+      u.direction = [1, 0];
+      filterManager.applyFilter(this, input, temp, PIXI.CLEAR_MODES.CLEAR);
+      u.direction = [0, 1];
       filterManager.applyFilter(this, temp, output, clear);
       filterManager.returnFilterTexture(temp);
     }
@@ -206,7 +294,7 @@ function buildComposite() {
 
 let CompositeClass = null;
 
-function sharpWallFilter() {
+function wallStoppingFilter() {
   CompositeClass ??= buildComposite();
   composite ??= CompositeClass.create();
   composite[MARK] = true;
@@ -220,7 +308,7 @@ export function registerSettings() {
     hint:
       "Light stops at a wall, but the softening does not: it spreads brightness about one " +
       "transition width past every hard edge, so a lit room glows through its own walls and a " +
-      "dark one picks up the corridor outside. This holds the field sharp along any wall that " +
+      "dark one picks up the corridor outside. This stops the softening at any wall that " +
       "blocks light, and softens everything else as before.",
     scope: "world",
     // No control surface, matching the module's other corrections of core behaviour.
@@ -301,11 +389,10 @@ export function sync({ force = false } = {}) {
     filter.padding = 0;
   }
 
-  // The blur is not what the container carries. `composite` runs it into a scratch target and then
-  // chooses per fragment between the blurred field and the untouched one — see
-  // {@link sharpWallFilter}. With the wall mask off it is bypassed entirely and the blur attached
-  // directly, so that path stays exactly what it was.
-  const outer = sharpWalls() ? sharpWallFilter() : filter;
+  // With walls on, the container carries the wall-stopping blur instead (§6.4.7b), which reads its
+  // kernel off `filter` but never runs it. With them off the PIXI blur is attached directly, so that
+  // path stays exactly what it was.
+  const outer = sharpWalls() ? wallStoppingFilter() : filter;
   if (container.filters?.[0] !== outer) container.filters = [outer];
 
   // Zoom moves `filter.blur` without moving `strength`, and the tap spacing derives from the
@@ -368,10 +455,12 @@ export function status() {
     applied: container?.filters?.[0] === filter && !!filter,
     // Above zero means the halos are also running, which would soften everything twice.
     haloesExpected: !isEnabled(),
-    // §6.4.7. `sharpWalls: true` with `wall.segments: 0` is the interesting failure: the composite
-    // is running with nothing to protect, so the picture is an ordinary blur.
+    // §6.4.7b. `sharpWalls: true` with `wall.segments: 0` is the interesting failure: the
+    // wall-stopping blur is running with no walls to stop at, so the picture is an ordinary blur.
+    // `wallKernel` is what it runs, in screen pixels; `spacing` must stay under `wall.drawn`.
     sharpWalls: sharpWalls(),
     composited: container?.filters?.[0] === composite && !!composite,
+    wallKernel: sharpWalls() ? Object.fromEntries(Object.entries(kernel()).map(([k, v]) => [k, +v.toFixed(2)])) : null,
     wall: wallMask.status(),
     children: container?.children?.length ?? null,
   };

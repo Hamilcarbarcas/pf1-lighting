@@ -88,21 +88,30 @@ import {
   CLIPPER_SCALE,
   difference,
   fromClipperPaths,
-  splitRings,
+  groupRings,
   toClipperPath,
 } from "../geometry.mjs";
 import { SIGHT_TIER } from "./perception.mjs";
 import { regionsFor } from "./umbra.mjs";
+import * as withheld from "../withheld.mjs";
 
 const PATCH_MARK = "pf1LightingUmbraMaskPatched";
 
-/** Handed to core in place of a vision source's light polygon; `drawShape` renders nothing. */
+/** Handed to core in place of a trimmed polygon (`light` or `shape`); `drawShape` renders nothing. */
 const EMPTY = new PIXI.Polygon([]);
+
+/** Core's fill for `vision.sight` (`groups/visibility.mjs:516`), read by the visibility filter's red channel. */
+const SIGHT_FILL = 0xff0000;
 
 let patched = false;
 
+/** Is the carve installed? `api.withheld.active()`; DESIGN.md §4.3.2. */
+export const isPatched = () => patched;
+
 /**
- * Rings awaiting the `visibilityRefresh` hook, or null between refreshes.
+ * Per-source contributions awaiting the `visibilityRefresh` hook, or null between refreshes. Each
+ * entry is `{rings, preview, layer}`: the trimmed rings, whether core would have drawn this
+ * source's polygon into the `.preview` graphics rather than the live ones, and which layer.
  *
  * @remarks
  * Module-scoped rather than closed over per call, so {@link drawPending} can be a plain listener
@@ -112,7 +121,19 @@ let patched = false;
 let pending = null;
 
 /** Diagnostics for the last pass; see {@link status}. */
-let lastPass = { observers: 0, trimmed: 0, rings: 0, holes: 0, drawn: 0 };
+let lastPass = freshPass();
+
+function freshPass() {
+  return {
+    observers: 0,
+    // Totals across both layers. `drawn` must equal `trimmed`; see {@link status}.
+    trimmed: 0, drawn: 0,
+    trimmedLight: 0, trimmedSight: 0, drawnLight: 0, drawnSight: 0,
+    // A trim that removed everything: swapped for EMPTY with nothing to draw. Not in `trimmed`.
+    emptied: 0,
+    rings: 0, holes: 0, routedPreview: 0,
+  };
+}
 
 /**
  * The umbra paths that actually hide something from this observer.
@@ -135,22 +156,31 @@ function blockingPaths(source) {
 }
 
 /**
- * What this observer's light perception should contribute to the mask, umbra removed.
+ * A polygon with the given regions removed.
  *
- * @param {PointVisionSource} source
- * @returns {PIXI.Polygon[]|null} Rings to draw, or null to leave the source alone
+ * @param {PIXI.Polygon} polygon
+ * @param {object[][]} removed  Clipper paths
+ * @returns {PIXI.Polygon[]|null} Rings to draw, or null to leave the polygon alone
  */
-function trimmedLight(source) {
-  const light = source?.light;
-  if (!light?.points?.length) return null;
-
-  const blocking = blockingPaths(source);
-  if (!blocking.length) return null;
-
+function trim(polygon, removed) {
+  if (!polygon?.points?.length || !removed.length) return null;
   // One `difference` handles every region at once: Clipper unions the clip set under non-zero fill,
   // so no separate union pass is needed.
-  const remaining = difference([toClipperPath(light, CLIPPER_SCALE)], blocking);
+  const remaining = difference([toClipperPath(polygon, CLIPPER_SCALE)], removed);
   return fromClipperPaths(remaining, CLIPPER_SCALE);
+}
+
+/**
+ * What this observer's light perception should contribute to the mask: §4.3's umbra and every
+ * `light`-layer withheld region removed, in the one `difference` (§4.3.2).
+ */
+function trimmedLight(source, collected) {
+  return trim(source?.light, [...blockingPaths(source), ...collected.light]);
+}
+
+/** The same for `vision.sight`. Only withheld regions: darkvision sees through §4.3's umbra. */
+function trimmedSight(source, collected) {
+  return trim(source?.shape, collected.sight);
 }
 
 /**
@@ -160,22 +190,43 @@ function trimmedLight(source) {
  * `beginHole`/`endHole` is the reason this is done by hand — see the header. Same even-odd
  * reasoning as the umbra overlay: a ring wound against the largest one is a hole, and filling it is
  * the bug this replaced.
+ *
+ * Each outer is followed by its own holes. PIXI attaches a hole to the last shape drawn
+ * (`GraphicsGeometry.drawHole`), so drawing every outer first put every hole on the last outer and
+ * left holes in the others uncut (DESIGN.md §4.3.2, defect 1).
  */
-function drawTrimmed(mask, rings) {
-  const { outers, holes } = splitRings(rings);
-  mask.beginFill(0xffffff, 1);
-  for (const polygon of outers) {
-    if (polygon.points?.length) mask.drawPolygon(polygon.points);
-  }
-  for (const polygon of holes) {
-    if (!polygon.points?.length) continue;
-    mask.beginHole();
-    mask.drawPolygon(polygon.points);
-    mask.endHole();
+function drawTrimmed(mask, rings, color = 0xffffff) {
+  mask.beginFill(color, 1);
+  for (const { outer, holes } of groupRings(rings)) {
+    if (!outer.points?.length) continue;
+    mask.drawPolygon(outer.points);
+    lastPass.rings++;
+    for (const polygon of holes) {
+      if (!polygon.points?.length) continue;
+      mask.beginHole();
+      mask.drawPolygon(polygon.points);
+      mask.endHole();
+      lastPass.holes++;
+    }
   }
   mask.endFill();
-  lastPass.rings += outers.length;
-  lastPass.holes += holes.length;
+}
+
+/**
+ * Would core draw this source's light perception into `light.mask.preview`?
+ *
+ * @remarks
+ * Core's own predicate for the live mask (`groups/visibility.mjs:585`), negated. Preview graphics are
+ * hidden while fog commits (`perception/fog.mjs:346-358`), so a contribution drawn into the live mask
+ * instead would explore what only a preview or a blinded source saw (DESIGN.md §4.3.2, defect 2).
+ */
+function drawsToPreview(source) {
+  return !(source.lightRadius > 0) || source.isBlinded || source.isPreview;
+}
+
+/** The same for `vision.sight`: core keys it on `radius` (`groups/visibility.mjs:578`). */
+function sightDrawsToPreview(source) {
+  return !(source.radius > 0) || source.isBlinded || source.isPreview;
 }
 
 /**
@@ -199,35 +250,53 @@ export function applyPatch() {
 
   const original = proto.refreshVisibility;
   proto.refreshVisibility = function pf1LightingUmbraRefreshVisibility(...args) {
-    lastPass = { observers: 0, trimmed: 0, rings: 0, holes: 0, drawn: 0 };
+    lastPass = freshPass();
 
+    // [source, property, original polygon]
     const swapped = [];
     pending = [];
+
+    // Swap one property for EMPTY and queue its trimmed rings; core then draws nothing for it.
+    const substitute = (source, property, rings, layer, preview) => {
+      swapped.push([source, property, source[property]]);
+      // Core is given nothing to draw for this source; the trimmed version is drawn below, only a
+      // hand-drawn contribution being able to carry holes.
+      source[property] = EMPTY;
+      if (!rings.length) {
+        lastPass.emptied++;
+        return;
+      }
+      pending.push({ rings, preview, layer });
+      lastPass.trimmed++;
+      if (layer === withheld.LAYERS.LIGHT) lastPass.trimmedLight++;
+      else lastPass.trimmedSight++;
+    };
 
     for (const source of canvas.effects?.visionSources ?? []) {
       if (!source.active) continue;
       lastPass.observers++;
-      let rings = null;
+      let light = null;
+      let sight = null;
       try {
-        rings = trimmedLight(source);
+        const collected = withheld.collect(source);
+        light = trimmedLight(source, collected);
+        sight = trimmedSight(source, collected);
       } catch (error) {
         // A geometry fault must never stop the canvas drawing its visibility. Failing open leaves
         // the pre-umbra picture rather than a broken one.
         console.error("PF1 Lighting | umbra mask trim failed", error);
+        light = sight = null;
       }
-      if (!rings) continue;
-      swapped.push([source, source.light]);
-      // Core is given nothing to draw for this source; the trimmed version is drawn below, only a
-      // hand-drawn contribution being able to carry holes.
-      source.light = EMPTY;
-      if (rings.length) pending.push(rings);
-      lastPass.trimmed++;
+      if (light) substitute(source, "light", light, withheld.LAYERS.LIGHT, drawsToPreview(source));
+      if (sight) substitute(source, "shape", sight, withheld.LAYERS.SIGHT, sightDrawsToPreview(source));
     }
 
     try {
       return original.apply(this, args);
     } finally {
-      for (const [source, light] of swapped) source.light = light;
+      // `shape` is swapped for this one call only, and nothing that reads it for another purpose
+      // runs inside it (§4.3.2; the §6.2.4 hazard is a persistent clip).
+      for (const [source, property, polygon] of swapped) source[property] = polygon;
       // The draw happens in `visibilityRefresh`, mid-call — see {@link drawPending}. What is left
       // here is dropping anything the hook did not consume, so a throw before the hook cannot leave
       // stale rings for the next refresh.
@@ -270,19 +339,29 @@ export function applyPatch() {
  * @param {CanvasVisibility} visibility
  */
 function drawPending(visibility) {
-  const rings = pending;
+  const entries = pending;
   // Consume only what this module's wrapper set on this call. A `visibilityRefresh` raised from
   // anywhere else finds nothing, and the `finally` clears it if this was never reached.
   pending = null;
-  if (!rings?.length) return;
+  if (!entries?.length) return;
 
-  const mask = visibility?.vision?.light?.mask;
-  if (!mask) return;
+  const vision = visibility?.vision;
+  if (!vision) return;
 
-  for (const ring of rings) {
+  for (const { rings, preview, layer } of entries) {
+    const isLight = layer === withheld.LAYERS.LIGHT;
+    // Core's routing for this source, so a preview or blinded source's view shows without
+    // exploring. See {@link drawsToPreview}.
+    const graphics = isLight ? vision.light?.mask : vision.sight;
+    const target = preview ? graphics?.preview : graphics;
+    if (!target) continue;
     try {
-      drawTrimmed(mask, ring);
+      // The mask is a stencil and ignores colour; `vision.sight` is read by its red channel.
+      drawTrimmed(target, rings, isLight ? 0xffffff : SIGHT_FILL);
       lastPass.drawn++;
+      if (isLight) lastPass.drawnLight++;
+      else lastPass.drawnSight++;
+      if (preview) lastPass.routedPreview++;
     } catch (error) {
       console.error("PF1 Lighting | umbra mask draw failed", error);
     }
@@ -302,15 +381,22 @@ function drawPending(visibility) {
  *
  * `drawn` must equal `trimmed`. They differ only if the `visibilityRefresh` hook did not reach
  * {@link drawPending} — the shape the fog-of-war bug had, and the shape it would have again if
- * anything swallowed that hook. The screen looks correct either way.
+ * anything swallowed that hook. The screen looks correct either way. The same holds per layer
+ * (`drawnLight`/`trimmedLight`, `drawnSight`/`trimmedSight`). A trim that removed everything is
+ * `emptied`, not `trimmed`, having nothing to draw.
  */
 export function status() {
   const observers = [];
   for (const source of canvas?.effects?.visionSources ?? []) {
     if (!source.active) continue;
     const regions = regionsFor(source);
+    const collected = withheld.collect(source);
     observers.push({
       id: source.sourceId,
+      // §4.3.2: polygon counts by provider, and how many paths reached each layer.
+      withheld: { ...collected.byProvider },
+      withheldLight: collected.light.length,
+      withheldSight: collected.sight.length,
       lightRadius: Math.round(source.lightRadius ?? 0),
       losRadius: Math.round(source.los?.config?.radius ?? 0),
       // Foundry returns `los` itself when unconstrained, so true means light perception is
@@ -327,6 +413,7 @@ export function status() {
   const report = {
     patched,
     ...lastPass,
+    providers: withheld.list(),
     observers,
     // Not observer-relative: such a light draws its full polygon into `light.mask`
     // (`visibility.mjs:542-546`), and drawing a separate contribution does not remove it. A

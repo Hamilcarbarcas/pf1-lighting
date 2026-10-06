@@ -15,6 +15,27 @@ import { evaluate } from "./model/evaluate.mjs";
 import * as perception from "./vision/perception.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
 import * as companion from "./model/companion.mjs";
+import * as withheldRegions from "./withheld.mjs";
+import { isPatched as umbraMaskPatched } from "./vision/umbra-mask.mjs";
+
+/**
+ * Regions withheld from an observer's view. DESIGN.md §4.3.2.
+ *
+ * @remarks
+ * `active()` is "the carve is installed", which it always is while this module is enabled: the
+ * umbra-mask patch runs unconditionally at `init`, and no light-model setting turns another module's
+ * carve off. A consumer that hides things on the assumption they are fogged gates on it.
+ */
+const withheld = Object.freeze({
+  LAYERS: withheldRegions.LAYERS,
+  register: withheldRegions.register,
+  unregister: withheldRegions.unregister,
+  invalidate: withheldRegions.invalidate,
+  active: () => umbraMaskPatched(),
+  get generation() {
+    return withheldRegions.currentGeneration();
+  },
+});
 
 /**
  * Breaking changes only: a removed function, a changed return shape, a changed meaning. Added
@@ -635,6 +656,10 @@ export function build() {
     // §12. Added, not changed, so `VERSION` does not move — a consumer feature-detects with
     // `api.lights !== undefined` rather than on the version.
     lights,
+
+    // §4.3.2. Added 2026-10-05 for astora-mod's wall umbras; feature-detect with
+    // `api.withheld !== undefined`.
+    withheld,
   }));
 }
 

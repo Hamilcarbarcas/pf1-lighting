@@ -43,6 +43,10 @@
         "Name": "Light level details",
         "Hint": "Includes explanations to the light level tooltip when multiple sources affects the value. I.e. 'reduced from normal', 'darkness cancelled by daylight'. GM only."
       },
+      "emitterPip": {
+        "Name": "Show light badge on tokens",
+        "Hint": "Marks a token carrying a light or darkness effect with a small badge on its right edge."
+      },
       "fuelConsumption": {
         "Name": "Fuel use",
         "Hint": "What happens when a lit light source expends its fuel.",

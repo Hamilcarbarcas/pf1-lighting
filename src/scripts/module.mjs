@@ -29,6 +29,7 @@ import * as observer from "./vision/observer.mjs";
 import * as umbra from "./vision/umbra.mjs";
 import * as umbraEdges from "./vision/umbra-edges.mjs";
 import * as umbraMask from "./vision/umbra-mask.mjs";
+import * as withheld from "./withheld.mjs";
 import * as readout from "./ui/readout.mjs";
 import * as cellOverlay from "./ui/cell-overlay.mjs";
 import * as lightConfig from "./ui/light-config.mjs";
@@ -39,6 +40,7 @@ import * as presetEditor from "./ui/preset-editor.mjs";
 import * as companion from "./model/companion.mjs";
 import * as lightingSocket from "./socket.mjs";
 import * as tokenHud from "./ui/token-hud.mjs";
+import * as emitterPip from "./ui/emitter-pip.mjs";
 import * as lightItems from "./model/light-items.mjs";
 import * as buffDriver from "./model/buff-driver.mjs";
 import * as itemDescriptor from "./ui/item-descriptor.mjs";
@@ -49,6 +51,7 @@ import * as clip from "./render/clip.mjs";
 import * as pool from "./render/pool.mjs";
 import * as renderer from "./render/renderer.mjs";
 import * as desaturate from "./render/desaturate.mjs";
+import * as colorationBlend from "./render/coloration-blend.mjs";
 import * as greyscale from "./render/greyscale.mjs";
 import * as darknessMask from "./render/darkness-mask.mjs";
 import * as ambient from "./render/ambient.mjs";
@@ -95,6 +98,10 @@ Hooks.once("init", () => {
   cellOverlay.registerSettings();
   renderer.registerSettings();
   desaturate.registerSettings();
+  // Overlapping lights take the strongest tint rather than adding (§6.4.9). Patched at `init`,
+  // before any light source builds its meshes.
+  colorationBlend.registerSettings();
+  colorationBlend.install();
   // Greyscale as a region rather than a screen (§6.2.11): Foundry's five desaturation routes zeroed,
   // one pass on `canvas.environment` in their place. Registered before `visuals`, which reads the fog
   // dial by name.
@@ -110,6 +117,8 @@ Hooks.once("init", () => {
   // The light-item table and the fuel-use switch (§12.8). After `presets`, since an entry names a
   // preset and `resolve` drops one whose preset the world has deleted.
   lightItems.registerSettings();
+  // The badge on a token carrying a light effect (§12.9.2). Per user.
+  emitterPip.registerSettings();
   // Both menus, after both keys. Foundry lists menus in registration order, so this pair is also the
   // order they appear in: the light sources a table actually touches ahead of the presets behind
   // them. Splitting the menus from their keys is what lets that order be chosen freely.
@@ -206,6 +215,7 @@ Hooks.once("init", () => {
   lightingSocket.registerHooks();
   // The Token HUD light button (§12.9) and the fuel clock (§12.8).
   tokenHud.registerHooks();
+  emitterPip.registerHooks();
   // The record reader, injected rather than imported: `light-items` is read *by* `companion`'s
   // consumers and must not import it back. Same seam and same reason as `suppression.setVisionModel`
   // and `perception.setUmbraModel`.
@@ -473,6 +483,8 @@ Hooks.once("ready", () => {
       // scene controls; this is the console route to the same list.
       window: effectsWindow.open,
       onScene: effectsWindow.status,
+      // The token badge (§12.9.2). `fontReady: false` means nothing can draw yet.
+      pips: emitterPip.status,
 
       // Buffs that emit light (§12.7). `status()` lists the records this driver owns on the current
       // scene — every one of them `emit:<itemId>` — and `reconcile(actor)` runs the comparison by
@@ -619,8 +631,11 @@ Hooks.once("ready", () => {
       // Since §6.4.7 it also reports the wall mask: `sharpWalls: true` with `wall.segments: 0` on
       // a walled scene means every edge reported `light === NONE` and there is nothing to protect.
       blur: fieldBlur.status,
-      // §6.4.7 on its own — the segments the blur is held off, and how wide the band is.
+      // §6.4.7 on its own — the walls the blur stops at, and how wide the barrier lines are drawn.
       walls: wallMask.status,
+      // §6.4.9 — how many lights' coloration meshes carry which blend. Everything under
+      // `MAX_COLOR` with the switch on; any `SCREEN` means a mesh was built before the patch.
+      coloration: colorationBlend.status,
 
       // §6.2.9 — what each light's zones resolved to, in luminance, against the ladder they should
       // land on. The one readout answering whether Normal is the same brightness in a dim room as in
@@ -798,6 +813,8 @@ Hooks.once("ready", () => {
       regionsFor: umbra.regionsFor,
       isEnabled: umbra.isUmbraPerceptionEnabled,
       mask: umbraMask.status,
+      // §4.3.2: registered withheld-region providers.
+      withheld: withheld.list,
       invalidate: umbra.invalidate,
       // `stats().rebuildMs` is the cold path by construction; this is the only readout that
       // exercises the one `perceivedTier` actually calls.

@@ -1,5 +1,5 @@
 /**
- * Where the brightness field must not be blurred. DESIGN.md §6.4.7.
+ * Where the brightness field's blur must stop. DESIGN.md §6.4.7, §6.4.7b.
  *
  * The bleed is the blur doing its job in the wrong place. A light's mesh already stops exactly at
  * the wall — `source.shape` is a wall-clipped sweep — but §6.4.4 blurs the composited field, and a
@@ -19,32 +19,45 @@
  * `Graphics` pass, independent of mesh count, rebuilt only when the edges change. Walls are scene
  * data, not mesh data.
  *
- * The band is `BAND × transitionWidth` wide, centred on the wall, matching the reach of what it
- * defeats: a Gaussian's visible extent is about twice its strength and `render/texture-blur.mjs`
- * runs at `width() / 2`, so brightness travels about one `width()` past any hard edge. One
- * `width()` each side makes the suppression complete rather than merely reduced.
+ * Since §6.4.7b (2026-10-06) the texture is a **barrier**, not a band: each wall is a thin line,
+ * and `render/texture-blur.mjs` runs a blur whose taps stop at the first barrier they reach. The
+ * band chose between a blurred and a sharp field, which seamed every boundary crossing a wall; a
+ * blur that cannot see past a wall has no second field to seam against.
  *
- * The band also un-blurs other boundaries running within a wall's width. Accepted, and mostly the
- * same boundary anyway — the light's own cut edge lies along the wall.
+ * A wall-height wall is drawn only while some light's own sweep keeps it (§6.4.7a).
  */
 
-import { MODULE_ID, passesLight } from "../constants.mjs";
-import { width as transitionWidth } from "./transition.mjs";
+import { MODULE_ID, isSynthetic, passesLight } from "../constants.mjs";
 
 /**
- * Half-widths of the sharp band, in multiples of the transition width.
+ * Line width the barrier is redrawn at, as a multiple of what the blur asked for.
  *
  * @remarks
- * Two, so the band spans one `transitionWidth` on each side of the wall. Less leaves a visible
- * remnant of the bleed; more starts un-blurring boundaries that have nothing to do with the wall.
+ * The blur's taps step `spacing` screen pixels at a time, so a line thinner than that can be stepped
+ * over. The width is world units on a screen-scaled requirement, so zoom changes it; a redraw is
+ * needed only once the drawn line falls under the requirement or grows past {@link SLACK_MAX} times
+ * it. Thicker than needed costs only a few unblurred pixels along the wall itself.
  */
-const BAND = 2;
+const SLACK_DRAW = 1.5;
+const SLACK_MAX = 3;
+
+/** The requirement before the blur has first run, in screen pixels. */
+const DEFAULT_BARRIER = 4;
 
 let container = null;
 let graphics = null;
 let dirty = true;
-let lastWidth = null;
+/** Drawn line width, in world units. */
+let lineWidth = null;
+/** What the blur last asked for, in screen pixels. */
+let required = DEFAULT_BARRIER;
 let segments = 0;
+
+/** Ids of light-blocking edges with a finite wall-height range, from the last edge pass. */
+let bounded = new Set();
+/** Signature of the bounded edges some light currently keeps. */
+let keptSignature = "";
+let kept = new Set();
 
 /**
  * The mask container, built on first use.
@@ -54,9 +67,8 @@ let segments = 0;
  * inherits the stage transform, so a `Graphics` holding world coordinates rasterises into a
  * screen-sized texture the filter samples at screen UVs. Core's trick, not this module's.
  *
- * `RED` because one channel is all a mask needs. `LINEAR` rather than `NEAREST` — unlike the
- * darkness levels this value is lerped against rather than read as a quantity, so a smooth ramp at
- * the band's edge beats an exact texel.
+ * `RED` because one channel is all a mask needs. `LINEAR`, read against a 0.5 threshold, so a tap
+ * landing between texels still finds a line it is inside.
  */
 function ensure() {
   if (container && !container.destroyed) return container;
@@ -102,50 +114,138 @@ function* blocking() {
   for (const edge of edges.values()) {
     if (passesLight(edge)) continue;
     if (!edge.a || !edge.b) continue;
+    if (bounded.has(edge.id) && !kept.has(edge.id)) continue;
     yield edge;
   }
 }
 
 /**
- * Redraw the segments if anything they depend on has moved.
+ * Does wall-height give this edge a finite range, so some sources pass over or under it?
  *
  * @remarks
- * The width is part of the signature, not just the edge set: `transitionWidth` is a live setting,
- * and a band drawn at the old width silently under- or over-covers.
+ * Such a wall blocks one light and not another, and the mask is scene-wide, so it cannot be judged
+ * by itself. Unbounded walls block every light and stay masked unconditionally, which also keeps
+ * global illumination from bleeding into a walled interior, where no light source's sweep would
+ * ever report the wall.
  *
- * `alpha: 1` on a `RED` target writes 1.0 to the channel, read by the filter as fully sharp. Round
- * caps and joins so a corner between two walls leaves no gap for brightness to squeeze through —
- * the artefact that would look like the feature half-working.
+ * Wall-height off, or its *advanced vision* off for the scene, means it filters nothing, so nothing
+ * is bounded.
+ */
+function heightBounded(edge) {
+  const wallHeight = globalThis.WallHeight;
+  if (!wallHeight?.getWallBounds || !game.modules.get("wall-height")?.active) return false;
+  if (canvas.scene?.flags?.["wall-height"]?.advancedVision === false) return false;
+  if (edge.type !== "wall" || !edge.object) return false;
+  const { top, bottom } = wallHeight.getWallBounds(edge.object);
+  return Number.isFinite(top) || Number.isFinite(bottom);
+}
+
+/**
+ * The bounded edges at least one light or darkness actually stops at.
+ *
+ * @remarks
+ * Read from each sweep's own `edges` set (`clockwise-sweep.mjs:213`), which holds what survived
+ * `_testEdgeInclusion` — wall-height's verdict included. Asking the result rather than re-deriving
+ * wall-height's elevation rule means a torch below the wall and a lantern above it each answer
+ * for themselves. Synthetic clones are skipped: they stand in for a real source already counted.
+ */
+function keptBounded() {
+  const ids = new Set();
+  if (!bounded.size) return ids;
+  for (const group of [canvas.effects?.lightSources, canvas.effects?.darknessSources]) {
+    for (const source of group ?? []) {
+      if (!source.active || isSynthetic(source)) continue;
+      const edges = source.shape?.edges;
+      if (!edges) continue;
+      for (const edge of edges) if (bounded.has(edge.id)) ids.add(edge.id);
+    }
+  }
+  return ids;
+}
+
+/** Re-read which bounded walls are kept; marks the mask dirty only when the answer moved. */
+function refreshKept() {
+  const next = keptBounded();
+  const signature = [...next].sort().join(",");
+  if (signature === keptSignature) return false;
+  kept = next;
+  keptSignature = signature;
+  dirty = true;
+  return true;
+}
+
+/** Collect the bounded edge ids. Runs on an edge pass only. */
+function collectBounded() {
+  bounded = new Set();
+  for (const edge of canvas?.edges?.values() ?? []) {
+    if (passesLight(edge)) continue;
+    if (heightBounded(edge)) bounded.add(edge.id);
+  }
+}
+
+/** World units per screen pixel at the current zoom. */
+function worldPerPixel() {
+  return 1 / (canvas?.stage?.scale?.x || 1);
+}
+
+/** Is the drawn line still at least as thick as required, and not absurdly thicker? */
+function widthHolds() {
+  if (lineWidth == null) return false;
+  const onScreen = lineWidth / worldPerPixel();
+  return onScreen >= required && onScreen <= required * SLACK_MAX;
+}
+
+/**
+ * Tell the mask how thick, in screen pixels, a barrier must be for the blur not to step over it.
+ *
+ * @remarks
+ * Called by the blur on every application, so a zoom is caught on the next repaint. Redraws only
+ * when the drawn width has stopped holding, which during a zoom is a handful of times rather than
+ * every frame.
+ *
+ * @param {number} pixels
+ */
+export function requireWidth(pixels) {
+  if (!(pixels > 0)) return;
+  required = pixels;
+  if (!widthHolds()) sync();
+}
+
+/**
+ * Redraw the lines if anything they depend on has moved: the edge set, which bounded walls some
+ * light keeps, or the width the blur needs at this zoom.
+ *
+ * @remarks
+ * Round caps and joins so a corner between two walls leaves no gap for a tap to pass through.
  */
 export function sync({ force = false } = {}) {
   const target = ensure();
   if (!target) return null;
 
-  const band = transitionWidth() * BAND;
-  if (!force && !dirty && lastWidth === band) return { segments, band };
+  if (dirty || force) collectBounded();
+  refreshKept();
+  if (!force && !dirty && widthHolds()) return { segments, lineWidth };
 
   dirty = false;
-  lastWidth = band;
-  segments = 0;
+  lineWidth = required * SLACK_DRAW * worldPerPixel();
 
   graphics.clear();
-  if (band > 0) {
-    graphics.lineStyle({
-      width: band,
-      color: 0xffffff,
-      alpha: 1,
-      cap: PIXI.LINE_CAP.ROUND,
-      join: PIXI.LINE_JOIN.ROUND,
-    });
-    for (const edge of blocking()) {
-      graphics.moveTo(edge.a.x, edge.a.y);
-      graphics.lineTo(edge.b.x, edge.b.y);
-      segments++;
-    }
+  graphics.lineStyle({
+    width: lineWidth,
+    color: 0xff0000,
+    alpha: 1,
+    cap: PIXI.LINE_CAP.ROUND,
+    join: PIXI.LINE_JOIN.ROUND,
+  });
+  segments = 0;
+  for (const edge of blocking()) {
+    graphics.moveTo(edge.a.x, edge.a.y);
+    graphics.lineTo(edge.b.x, edge.b.y);
+    segments++;
   }
 
   target.renderDirty = true;
-  return { segments, band };
+  return { segments, lineWidth };
 }
 
 /** The texture a filter samples, or `null` before the first sync. */
@@ -153,7 +253,7 @@ export function texture() {
   return container && !container.destroyed ? container.renderTexture : null;
 }
 
-/** Mark the segments stale — the edges moved, or the width changed. */
+/** Mark the segments stale: the edges moved. */
 export function invalidate() {
   dirty = true;
 }
@@ -174,6 +274,12 @@ export function registerHooks() {
       sync();
     });
   }
+  // Which bounded walls are kept depends on the lights, which move without the edges moving. A
+  // refresh with no bounded walls on the scene costs one empty-set check.
+  Hooks.on("lightingRefresh", () => {
+    if (!container || container.destroyed || !bounded.size) return;
+    if (refreshKept()) sync();
+  });
 }
 
 /** Scene teardown. The container goes with `canvas.masks`; this only drops the local references. */
@@ -181,7 +287,11 @@ export function dispose() {
   container = null;
   graphics = null;
   dirty = true;
-  lastWidth = null;
+  lineWidth = null;
+  required = DEFAULT_BARRIER;
+  bounded = new Set();
+  kept = new Set();
+  keptSignature = "";
 }
 
 /**
@@ -191,12 +301,21 @@ export function dispose() {
  * `segments: 0` on a scene with walls is the interesting failure: every edge reported
  * `light === NONE`, meaning walls all set to pass light, or a Foundry that renamed the property.
  * Compare against `canvas.edges.size`.
+ *
+ * `heightBounded` counts wall-height walls with a finite range; `heightKept` is how many of them
+ * some light currently stops at, and only those are drawn. A low wall every light passes over
+ * should be in the first and not the second.
  */
 export function status() {
   const report = {
     segments,
     edges: canvas?.edges?.size ?? null,
-    band: lastWidth,
+    heightBounded: bounded.size,
+    heightKept: kept.size,
+    // Barrier line width on screen, and what the blur's tap spacing requires. `drawn` below
+    // `required` means taps can step over a wall.
+    drawn: lineWidth == null ? null : +(lineWidth / worldPerPixel()).toFixed(2),
+    required: +required.toFixed(2),
     attached: !!container && !container.destroyed,
     dirty,
   };

@@ -62,6 +62,7 @@ import {
 import { TIER, tierOf } from "../model/tiers.mjs";
 import * as field from "../model/field.mjs";
 import * as umbra from "../vision/umbra.mjs";
+import * as withheld from "../withheld.mjs";
 import * as ambientTakeover from "./ambient.mjs";
 import * as darknessTexture from "./darkness-texture.mjs";
 import { CLAMP_SORT } from "./darkness-shaders.mjs";
@@ -248,7 +249,7 @@ function unseenRegionFor(source) {
 
   const outside = difference(
     [toClipperPath(rect.toPolygon(), CLIPPER_SCALE)],
-    [toClipperPath(source.los, CLIPPER_SCALE)]
+    seenPaths(source, toClipperPath(source.los, CLIPPER_SCALE))
   );
   if (!outside.length) return null;
 
@@ -316,7 +317,9 @@ function unseenOnly(sources) {
     if (!source?.los) return [];
     const path = toClipperPath(source.los, CLIPPER_SCALE);
     if (path.length < 3) return [];
-    seen.push(path);
+    // §4.3.2: an observer whose withheld regions cover all of its `los` adds nothing to the union,
+    // the same answer the general path gives for it.
+    seen.push(...seenPaths(source, path));
   }
   if (!seen.length) return [];
 
@@ -354,10 +357,25 @@ export function unseenAt(point) {
     // Parity with `unseenOnly`, which answers `[]` — no clamp anywhere — for a source with no line
     // of sight, rather than treating it as an observer who sees nothing.
     if (!source.los) return false;
-    // §5.3: seen by one observer is seen. The first hit ends it.
-    if (source.los.contains(point.x, point.y)) return false;
+    // §5.3: seen by one observer is seen. The first hit ends it. §4.3.2: not where withheld.
+    if (source.los.contains(point.x, point.y) && !withheld.unseenFor(source, point)) return false;
   }
   return true;
+}
+
+/**
+ * What an observer reveals of the ground, as Clipper paths: its `los` minus every region withheld
+ * from all layers (§4.3.2). Just `[losPath]` when nothing is withheld, the common case, so a scene
+ * with no provider output pays no extra Clipper op.
+ *
+ * @param {PointVisionSource} source
+ * @param {object[]} losPath  `source.los` as a Clipper path
+ * @returns {object[][]}
+ */
+function seenPaths(source, losPath) {
+  const { unseen } = withheld.collect(source);
+  if (!unseen.length) return [losPath];
+  return difference([losPath], unseen);
 }
 
 /**
@@ -666,7 +684,8 @@ function clampRamps(shadows) {
  * That is what makes this safe to hang off `refreshToken`, which fires far above frame rate.
  */
 function currentSignature() {
-  const parts = [field.get()];
+  // The withheld generation: a provider's output can change without any `los` being replaced.
+  const parts = [field.get(), withheld.currentGeneration()];
   for (const source of observers()) parts.push(source.los);
   return parts;
 }

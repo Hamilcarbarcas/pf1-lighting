@@ -60,6 +60,13 @@ export const EFFECTS_FLAG = "effects";
 /** Anchors this module will attach an effect to. Bare points are refused — DESIGN.md §12.11. */
 const ANCHOR_TYPES = new Set(["Token", "Tile", "MeasuredTemplate"]);
 
+/** Owner of `Token#losHeight` and of wall top/bottom. §12.4.1. */
+const WALL_HEIGHT_ID = "wall-height";
+
+/** Does this anchor's companion emit from its bearer's eye height? §12.4.1. */
+const liftsToEyes = (doc) =>
+  doc?.documentName === "Token" && game.modules.get(WALL_HEIGHT_ID)?.active === true;
+
 /* -------------------------------------------- */
 /*  Anchors                                     */
 /* -------------------------------------------- */
@@ -123,7 +130,7 @@ export function anchorsOf(subject) {
  */
 function anchorPoint(doc) {
   const object = doc.object;
-  const elevation = doc.elevation ?? 0;
+  const elevation = emitElevation(doc);
 
   if (doc.documentName === "MeasuredTemplate") {
     return { x: doc.x, y: doc.y, elevation, rotation: doc.direction ?? 0 };
@@ -138,6 +145,22 @@ function anchorPoint(doc) {
   const w = (doc.width ?? 0) * (canvas?.grid?.size ?? 0);
   const h = (doc.height ?? 0) * (canvas?.grid?.size ?? 0);
   return { x: (doc.x ?? 0) + w / 2, y: (doc.y ?? 0) + h / 2, elevation, rotation: doc.rotation ?? 0 };
+}
+
+/**
+ * The elevation an anchor's companion emits from.
+ *
+ * @remarks
+ * DESIGN.md §12.4.1. A token's companion sits at wall-height's `losHeight`, the bearer's eye height,
+ * the same height wall-height already gives a token's own light. Tiles, templates, and any token
+ * without wall-height stay at the anchor's elevation. `losHeight` needs the placeable, so a token on
+ * an undrawn scene falls back too.
+ */
+function emitElevation(doc) {
+  const base = doc.elevation ?? 0;
+  if (!liftsToEyes(doc)) return base;
+  const eyes = doc.object?.losHeight;
+  return Number.isFinite(eyes) ? eyes : base;
 }
 
 /* -------------------------------------------- */
@@ -424,6 +447,9 @@ class Companion {
             // Provenance, for readouts and the management window.
             effect: record.id,
           },
+          // §12.4.1. Without it wall-height sweeps an ambient light at the *viewer's* eye height,
+          // so the bearer's eye height set above would be ignored.
+          ...(liftsToEyes(anchorDoc) ? { [WALL_HEIGHT_ID]: { advancedLighting: true } } : {}),
         },
       },
       { parent: anchorDoc.parent ?? canvas.scene }
@@ -436,6 +462,16 @@ class Companion {
       : CONFIG.Canvas.lightSourceClass;
     this.source = new cls({ sourceId: this.object.sourceId, object: this.object });
     this.source[EFFECT_MARK] = true;
+    // §12.6.2. Any caller re-initialising lights through `source.object` (PF1's low-light refresh on
+    // every select/release) must reach this source, not have the placeable build a second one under
+    // the same id.
+    this.object.lightSource = this.source;
+    this.object.initializeLightSource = ({ deleted = false } = {}) => {
+      if (deleted) return;
+      this.source.initialize(this.object._getLightSourceData());
+      this.source.add();
+      perceptionUpdate(this.negative);
+    };
     // `force`: the constructor set the document's position, so the equality check would say nothing
     // moved and skip the one initialisation that has to happen.
     this.refresh(anchorDoc, { force: true });
@@ -909,8 +945,11 @@ export function registerHooks() {
       if (touchesEffects(changed)) sync();
       // Position, and only for anchors that carry something — `markMoved` returns immediately
       // otherwise, which is every token on an ordinary scene.
+      // Size, texture scale and the wall-height flag all feed a token's eye height (§12.4.1).
       else if ("x" in changed || "y" in changed || "rotation" in changed ||
-               "direction" in changed || "elevation" in changed) {
+               "direction" in changed || "elevation" in changed ||
+               "width" in changed || "height" in changed || "texture" in changed ||
+               foundry.utils.hasProperty(changed, `flags.${WALL_HEIGHT_ID}`)) {
         markMoved(doc);
       }
     });
@@ -942,6 +981,10 @@ export function registerHooks() {
   // The one setting read on a per-frame path, so its value is held rather than fetched.
   Hooks.on("updateSetting", (setting) => {
     if (setting?.key === "core.visionAnimation") visionAnimation = null;
+    // wall-height's default-height settings move every token's eye height at once (§12.4.1).
+    else if (setting?.key?.startsWith(`${WALL_HEIGHT_ID}.`)) {
+      for (const uuid of liveAnchors) markMoved(fromUuidSync(uuid));
+    }
   });
 
   // Upkeep (§12.5.2). Both are `isWriter`-gated inside, so they are no-ops on every other client.
@@ -978,6 +1021,7 @@ export function status() {
       isPreview: companion.object.isPreview,
       x: companion.doc.x,
       y: companion.doc.y,
+      elevation: companion.doc.elevation,
       source: companion.record.source,
     });
   }

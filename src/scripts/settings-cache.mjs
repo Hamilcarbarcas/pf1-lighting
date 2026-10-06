@@ -98,6 +98,39 @@ export function registerHooks() {
   Hooks.on("updateSetting", invalidate);
   Hooks.on("createSetting", invalidate);
   Hooks.on("clientSettingChanged", invalidate);
+  // After every `init` registration, and again at `ready` for any registered late.
+  Hooks.once("setup", wrapOnChange);
+  Hooks.once("ready", wrapOnChange);
+}
+
+const WRAPPED = Symbol("pf1-lighting.settingsCache.wrapped");
+
+/**
+ * Invalidate before every module `onChange`, not only after it.
+ *
+ * @remarks
+ * All three write routes call `onChange` BEFORE the hook this cache listens on:
+ * `Setting#_onUpdate`/`_onCreate` run it inside the document's own handler, ahead of
+ * `updateSetting`/`createSetting` (`documents/setting.mjs:41,50`), and a client write calls it one
+ * line ahead of `clientSettingChanged` (`helpers/client-settings.mjs:320-321`). So an `onChange`
+ * that re-syncs from a cached read applies the PREVIOUS value, and a toggle appears to take effect
+ * one press late.
+ *
+ * Wrapped in place on the registered config, which is what both `Setting#config` and the client
+ * route read at call time. Module namespace only.
+ */
+function wrapOnChange() {
+  for (const config of game.settings.settings.values()) {
+    if (config.namespace !== MODULE_ID) continue;
+    const original = config.onChange;
+    if (!(original instanceof Function) || original[WRAPPED]) continue;
+    const wrapped = function (...args) {
+      invalidate();
+      return original.apply(this, args);
+    };
+    wrapped[WRAPPED] = true;
+    config.onChange = wrapped;
+  }
 }
 
 /**

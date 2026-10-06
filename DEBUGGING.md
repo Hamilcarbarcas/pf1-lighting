@@ -103,7 +103,8 @@ in their own windows; the rest are reachable only from here.
 | `edgeSoftness` | `0.05` | Console only. A light's own colour edge. Inert below Medium performance mode, and never applies to an unobstructed circular light |
 | `darknessSoftness` | `0.5` | Console only. The rim of a *supernatural* darkness disc. A fixed distance, so a large darkness looks harder-edged than a small one |
 | `blurTransitions` | `true` | One blur of the whole field, versus a gradient per region |
-| `sharpWalls` | `true` | Holds the field sharp along any wall that blocks light, so a lit room does not glow through its own walls |
+| `sharpWalls` | `true` | Stops the softening at any wall that blocks light, so a lit room does not glow through its own walls |
+| `colorationMax` | `true` | Overlapping lights take the strongest tint instead of adding their colors. Applies live; off restores Foundry's blending |
 
 ### Behaviour
 
@@ -222,8 +223,9 @@ The whole-scene cell decomposition — what the renderer consumes. Cells partiti
 | `game.pf1Lighting.render.regradient()` | Rebuilds them |
 | `game.pf1Lighting.render.zones()` | Every light's zones in luminance, against the ladder — whether Normal is the same brightness in a dim room as in a dark one |
 | `game.pf1Lighting.render.transitionWidth()` | The width in force, in pixels and grid squares |
-| `game.pf1Lighting.render.blur()` | Whether the field takes one blur or a gradient per region. `sharpWalls: true` with `wall.segments: 0` on a walled scene means every edge reported `light === NONE` |
-| `game.pf1Lighting.render.walls()` | The segments the blur is held off, and the band width |
+| `game.pf1Lighting.render.blur()` | Whether the field takes one blur or a gradient per region. `sharpWalls: true` with `wall.segments: 0` on a walled scene means every edge reported `light === NONE`. `wallKernel` is the wall-stopping blur's `sigma`, tap `spacing` and `taps`, in screen pixels |
+| `game.pf1Lighting.render.walls()` | The walls the blur stops at. `drawn` is the barrier line's width on screen and must be at least `required` (the tap spacing plus a margin), or taps can step over a wall. `heightBounded` / `heightKept`: Wall Height walls with a finite range, and how many of them some light currently stops at (only those are drawn) |
+| `game.pf1Lighting.render.coloration()` | How many lights' color layers use which blend. With *Overlapping light colors do not stack* on, all should be `MAX_COLOR`; any `SCREEN` means a light was built before the patch |
 | `game.pf1Lighting.render.soften()` | Source edges, and whether Foundry is honouring them. `softEdgesAvailable: false` means the performance mode is below Medium |
 | `game.pf1Lighting.render.levels("bands")` | Swaps in the tier-ceiling ladder — dark scenes stay dark. Rebuilds immediately, persists nothing |
 | `game.pf1Lighting.render.levels("even")` | Swaps in the ladder where Supernatural Dark gets its own level |
