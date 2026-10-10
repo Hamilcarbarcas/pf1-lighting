@@ -49,6 +49,7 @@ import {
   fromClipperPaths,
   groupRings,
   intersection,
+  shapeVersion,
   toClipperPath,
 } from "../geometry.mjs";
 import { flag } from "../settings-cache.mjs";
@@ -465,6 +466,9 @@ export function rampFor(cell, base) {
     // the overlap through this file like everything else.
     blendMode: "MIN_COLOR",
     sortLevel: LIGHT_SORT,
+    // §6.2.12. The source's own elevation, so core's roof test treats this mesh as it treats the
+    // source: a lamp under a light-restricting roof stops at it.
+    elevation: source.elevation ?? 0,
     // What `getDarknessLevel` reports inside this light: the inner zone, which is what a caller
     // asking about a torch means.
     nominal: zones[0].level,
@@ -690,6 +694,9 @@ function stackRampFor(cell, base, index) {
     // overlap's level is brighter than either band beneath it, so it simply wins where it lands.
     blendMode: "MIN_COLOR",
     sortLevel: LIGHT_SORT,
+    // §6.2.12. The lowest participant: the overlap reaches a roof only if every light making it does.
+    // No emitters gives `Infinity`, which `elevationBand` reads as ground.
+    elevation: Math.min(...(cell.emitters ?? []).map((emitter) => emitter.source?.elevation ?? 0)),
     nominal: level,
     vertices: new Float32Array(out.vertices),
     levels: new Float32Array(out.levels),
@@ -857,7 +864,8 @@ export function rampsFrom(cells, sceneTier) {
     const id = `${source.sourceId ?? source.object?.id ?? "?"}.${index++}`;
     live.add(id);
 
-    const key = cacheKey(cell, base, source.shape);
+    // The shape's version, not the object: an identical re-sweep is the same ramp (DESIGN.md §9.13).
+    const key = cacheKey(cell, base, shapeVersion(source));
     const hit = cache.get(id);
     if (hit?.key === key) {
       reuses++;

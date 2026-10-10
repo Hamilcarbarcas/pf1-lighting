@@ -30,6 +30,7 @@ A complete overhaul of foundry's lighting system to match pathfinder 1e's rules 
     - [Interior regions](#interior-regions)
       - [Light spill](#light-spill)
       - [Skylights and openings](#skylights-and-openings)
+    - [Roofs](#roofs)
   - [Light level tooltip](#light-level-tooltip)
   - [Token Vision](#token-vision)
 - [Configuration](#configuration)
@@ -374,6 +375,16 @@ have any walls as though it were a window.
 If enabled, a hole cut in the interior region will act as a skylight, spilling light from it.
 
 This setting is off by default.
+
+### Roofs
+
+A tile with **Restricts Light** ticked (on its **Overhead** tab) acts as a roof. It shows the
+scene's outdoor light level, not the rooms beneath it, and the lights inside do not light it. A light
+placed higher than the roof still does. When the roof fades for a token underneath, the rooms show
+through as normal. The light level tooltip follows suit, reading the roof where it is drawn and the
+room where it has faded.
+
+A tile without **Restricts Light** is lit like the ground under it, the same as core Foundry.
 
 ## Light level tooltip
 

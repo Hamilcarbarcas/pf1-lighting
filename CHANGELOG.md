@@ -9,6 +9,56 @@
 
 ## Unreleased
 
+### Added
+- **Other modules can keep part of a view out of fog of war** (`api.unexplored`, documented in API.md):
+  the area shows normally but is never recorded as explored.
+- **Revealed areas can be raised** (`polygon.elevation`, in API.md): a revealed rooftop is lit only by
+  light that reaches its height, so lamps inside a building no longer show through its roof.
+- **Other modules can reveal areas to an observer** (`api.revealed`, documented in API.md): the
+  opposite of withheld regions. A revealed area shows lit by whatever light reaches it, or within
+  darkvision, and is never recorded in fog of war.
+
+### Fixed
+- **A token carrying a light moves more smoothly on large scenes.** Moving one light no longer redoes
+  the work for every other light on the scene.
+- **Light spill no longer leaks out of a room around its corners.** A window or door ending exactly on
+  a wall corner could start the spill just outside the room, so the light band curved around the
+  outside of the building.
+- **Selecting a token no longer stalls the canvas for a second on large lit scenes.** Lights were
+  rebuilt three times over for every selection; the repeats are now recognized as no change. Animated
+  lights and light spill through windows no longer force a full rebuild when nothing changed either.
+- **Areas hidden behind walls no longer flash into view as a token moves.** When another module
+  hides ground in a ring around an area, such as everything just outside a walled town seen from
+  above, the hidden ground could briefly show (grayed, for a token with darkvision) as the token
+  moved.
+- **Revealed areas that overlap a token's view are no longer drawn dark.** Depending on how the
+  outlines were drawn, the overlap could cancel out and be shaded as unseen ground.
+- **The light level tooltip reads Dark over a roof nobody can see.** It used to report the roof's
+  light even where the roof was hidden in fog.
+- **The light level tooltip no longer calls a token Dark just because it stands where you cannot
+  see the ground.** A token you can see (over a wall, for example) now shows the light it stands in.
+- **The light level tooltip no longer calls ground enclosed by hidden ground "unseen".** When another
+  module hides an area with a gap in its middle (the ground inside a ring of low walls seen from
+  above, say), the tooltip treated the visible gap as hidden too. The picture was already right;
+  only the tooltip was wrong.
+- **Dark areas no longer get explored on scenes with global illumination.** Ground the module shows
+  as dark, such as inside a darkness or a room cut off from global illumination, was recorded in fog
+  of war whenever a token had line of sight to it, even though nothing there could be seen. Only
+  lit ground, and ground within a token's darkvision, is explored now. Fog already explored this way
+  stays explored until fog is reset on that scene.
+- **A light put out by darkness no longer explores fog.** A torch carried into a *darkness*, or a
+  light entirely covered by magical darkness, went dark on screen but still recorded its whole
+  radius as explored for anyone with line of sight to it. It now reveals nothing while it is out.
+- **Deselecting a token with low-light vision no longer explores extra fog.** With vision sharing
+  on, releasing a token that has low-light vision briefly showed every shared token's view with
+  lights at low-light size, and fog recorded it. Lights now resize before the view changes.
+- **Roofs no longer show the rooms beneath them.** An overhead tile set to **Restricts Light** showed
+  the light level of everything under it: a dark interior, a lantern in a room, light through a
+  window. It now shows the scene's outdoor light level, and only a light placed higher than the roof
+  lights it, matching how Foundry treats a roof. When the roof fades for a token underneath, the
+  rooms show through as before. The light level tooltip now reports the roof's level over a roof,
+  instead of the room's.
+
 ### Changed
 - **Overlapping lights no longer stack their color.** Where two lights overlapped, their tints added
   together, making the overlap look brighter than either light. The strongest tint now wins. Lights

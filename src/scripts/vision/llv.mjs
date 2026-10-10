@@ -193,7 +193,74 @@ function refresh() {
 /** The answer as of the last repaint, so {@link registerHooks} can tell a change from a no-op. */
 let painted = null;
 
+/* -------------------------------------------- */
+/*  Light radii current before fog commits      */
+/* -------------------------------------------- */
+
+/** Set by `controlToken`; consumed by the next visibility refresh. */
+let selectionChanged = false;
+
+/** The multiplier the scene's lights were last initialized under, as `"dim|bright"`. */
+let appliedKey = null;
+
+/** PF1's current multiplier for this client, as a comparable key. Null if it cannot be asked. */
+function multiplierKey() {
+  const getRadius = CONFIG.AmbientLight?.objectClass?.prototype?.getRadius;
+  if (typeof getRadius !== "function") return null;
+  try {
+    const { dim, bright } = getRadius.call(PROBE_STUB, 1, 1) ?? {};
+    return `${dim}|${bright}`;
+  } catch {
+    return null;
+  }
+}
+
+let visibilityPatched = false;
+
+/**
+ * Bring low-light light radii up to date before a visibility refresh. DESIGN.md §4.4d.
+ *
+ * @remarks
+ * PF1 re-sizes lights for a selection change on a debounce (`TokenPF#_onControl`/`_onRelease`), while
+ * the vision sources change at once. Deselecting a low-light token with vision sharing on handed the
+ * whole shared party its doubled lights for that interval, and fog committed it. Only on a selection
+ * change, and only when the multiplier moved, so the cost is one re-init PF1 was about to do anyway.
+ */
+export function patchVisibility() {
+  if (visibilityPatched) return;
+  const proto = foundry.canvas.groups?.CanvasVisibility?.prototype;
+  if (!proto?.refreshVisibility) return;
+  visibilityPatched = true;
+
+  const original = proto.refreshVisibility;
+  proto.refreshVisibility = function pf1LightingLowLightRefreshVisibility(...args) {
+    if (selectionChanged) {
+      selectionChanged = false;
+      try {
+        const key = multiplierKey();
+        if (key !== null && key !== appliedKey) {
+          appliedKey = key;
+          pf1.canvas.lowLightVision.reinitLightSources();
+        }
+      } catch (error) {
+        console.error(`${MODULE_ID} | low-light radius sync failed`, error);
+      }
+    }
+    return original.apply(this, args);
+  };
+}
+
 export function registerHooks() {
+  Hooks.on("controlToken", () => {
+    selectionChanged = true;
+    // The §4.4c memo can predate the change within this frame, and the refresh repaints from it.
+    invalidate();
+  });
+  Hooks.on("canvasReady", () => {
+    selectionChanged = false;
+    appliedKey = multiplierKey();
+  });
+
   // Selection is half of PF1's rule, so controlling a token can change the answer with nothing else
   // on the scene moving. PF1 answers the same event with `debouncedLightSourceReInit`, which
   // reinitialises every light and so restales the field on its own — but only on a scene that *has*

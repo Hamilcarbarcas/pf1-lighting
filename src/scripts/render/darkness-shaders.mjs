@@ -19,6 +19,9 @@
  * | {@link sortable} | `modifier`, a constant | ordinary ground cells — a region boundary is a genuine step |
  * | {@link gradient} | `aLevel`, per vertex | a §3.4 spill falloff, genuinely continuous |
  *
+ * A third, `illumination`, is core's erasing shader with a roof-only switch for the sky (§6.2.12).
+ * It paints no level and takes no part in the ladder below.
+ *
  * `darknessLevel` is a sort key here, not a colour. `invalidateDarknessLevelContainer` orders the
  * container by `shader.darknessLevel` descending (`illumination-effects.mjs:106-110`), so the
  * darkest child draws first and the brightest last — where meshes overlap, brightest wins. Core's
@@ -35,7 +38,8 @@
  * `modifier` / `aLevel` is what it paints. The ladder:
  *
  * ```
- *   6      the seam backstop        (bottom — retired, see darkness-texture.backstopFor)
+ *   7      the sky                  (bottom; shows only where a roof skips the ground, §6.2.12)
+ *   6      the seam backstop        (retired, see darkness-texture.backstopFor)
  *   4‥5    §3.4 spill gradients     (brighter spill sorts later, so it wins an overlap)
  *   2‥3    ordinary ground cells    (a partition, so their order among themselves is moot)
  *   1      light contributions      MIN_COLOR — brightest wins
@@ -65,6 +69,44 @@ let built = null;
  */
 export const GRADIENT_SORT = 4;
 export const BACKSTOP_SORT = 6;
+
+/**
+ * The sky: a scene-wide mesh at the outdoor ambient level, drawn before everything else.
+ *
+ * @remarks
+ * The ground partition covers the scene rect opaquely, so the sky is visible nowhere a ground mesh
+ * draws. It exists for the pixels where none does: under a light-restricting roof, every ground mesh
+ * fails the depth test and the roof would otherwise read the container's clear color. §6.2.12.
+ */
+export const SKY_SORT = 7;
+
+/**
+ * The elevation band a mesh claims, as core's depth test reads it.
+ *
+ * @remarks
+ * `AbstractDarknessLevelRegionShader#_preRender` maps `region.document.elevation` through
+ * `canvas.masks.depth`, and every fragment program here discards where a light-restricting roof
+ * above `top` covers the pixel (`adjust-darkness-level.mjs:86-88`), the same test a light source
+ * runs against its own elevation (`base-lighting.mjs:394`). An unbounded band passes everywhere,
+ * which painted the rooms under a roof onto the roof. §6.2.12.
+ *
+ * The field is planar (§3.6), so everything it derives sits at ground. A fully faded roof writes no
+ * `g` and passes the ground band again, which is what lets the room show through while a token
+ * stands under it.
+ */
+export const GROUND_ELEVATION = Object.freeze({ bottom: -Infinity, top: 0 });
+
+/** The sky's band: outdoors, so it reaches every roof. */
+export const SKY_ELEVATION = Object.freeze({ bottom: -Infinity, top: Infinity });
+
+/**
+ * A light's band: its own elevation at both ends, which is exactly core's light test.
+ *
+ * @param {number} elevation
+ * @returns {{bottom: number, top: number}}
+ */
+export const elevationBand = (elevation) =>
+  Number.isFinite(elevation) ? { bottom: elevation, top: elevation } : GROUND_ELEVATION;
 
 /**
  * The ordinary ground cells' band, added to the level they paint.
@@ -112,8 +154,8 @@ export const CLAMP_SORT = 0;
 function build() {
   const shaders = foundry.canvas?.rendering?.shaders;
   const Adjust = shaders?.AdjustDarknessLevelRegionShader;
-  if (!Adjust) {
-    console.error(`${MODULE_ID} | darkness shaders: core's AdjustDarknessLevelRegionShader is missing.`);
+  if (!Adjust || !shaders?.IlluminationDarknessLevelRegionShader) {
+    console.error(`${MODULE_ID} | darkness shaders: core's darkness-level region shaders are missing.`);
     return null;
   }
 
@@ -195,7 +237,11 @@ function build() {
     void main() {
       vec2 depthColor = texture2D(depthTexture, vScreenCoord).rg;
       float depth = step(depthColor.g, top) * step(bottom, (254.5 / 255.0) - depthColor.r);
-      gl_FragColor = vec4(clamp(vLevel, 0.0, 1.0), 0.0, 0.0, 1.0) * tintAlpha * depth;
+      // Discarded, not multiplied by zero as core does. Light and halo meshes blend MIN_COLOR, and
+      // min(0, dst) is 0, the brightest level: a fragment the roof test rejected painted the roof at
+      // full brightness (§6.2.12).
+      if ( depth < 0.5 ) discard;
+      gl_FragColor = vec4(clamp(vLevel, 0.0, 1.0), 0.0, 0.0, 1.0) * tintAlpha;
     }
   `;
 
@@ -217,18 +263,76 @@ function build() {
     }
   }
 
-  return { sortable: SortableDarknessRegionShader, gradient: GradientDarknessRegionShader };
+  /**
+   * Core's erasing illumination shader, with a switch to draw on roofs only. §6.2.12.
+   *
+   * @remarks
+   * The sky's half of a pair. Its brightness mesh can be unbounded because the ground partition
+   * paints over it everywhere but a roof; its erase mesh cannot, because nothing un-erases. A
+   * scene-wide erase at night would cut global light's reveal out of a vault an area sets brighter
+   * than the sky. `roofOnly` keeps it to pixels where a roof above ground is unfaded: exactly the
+   * pixels where every ground mesh, and so every ground erase, fails the depth test.
+   *
+   * One class with a uniform rather than a second class, because pool entries change role between
+   * paints and `RegionMesh#setShaderClass` builds a fresh shader, dropping `mode` and `modifier`.
+   */
+  const Illumination = shaders.IlluminationDarknessLevelRegionShader;
+  class RoofAwareIlluminationShader extends Illumination {
+    /** @override */
+    static fragmentShader = `
+    precision ${PIXI.settings.PRECISION_FRAGMENT} float;
+
+    uniform sampler2D depthTexture;
+    uniform float top;
+    uniform float bottom;
+    uniform float ground;
+    uniform bool roofOnly;
+    uniform vec4 tintAlpha;
+    varying vec2 vScreenCoord;
+
+    void main() {
+      vec2 depthColor = texture2D(depthTexture, vScreenCoord).rg;
+      float depth = roofOnly
+        ? step(ground + (0.5 / 255.0), depthColor.g)
+        : step(depthColor.g, top) * step(bottom, (254.5 / 255.0) - depthColor.r);
+      gl_FragColor = vec4(1.0) * tintAlpha * depth;
+    }
+  `;
+
+    /** @override */
+    static defaultUniforms = {
+      ...super.defaultUniforms,
+      ground: 0,
+      roofOnly: false,
+    };
+
+    /** Draw only where a roof above ground covers the pixel. */
+    roofOnly = false;
+
+    /** @override */
+    _preRender(mesh, renderer) {
+      super._preRender(mesh, renderer);
+      this.uniforms.ground = canvas.masks.depth.mapElevation(GROUND_ELEVATION.top);
+      this.uniforms.roofOnly = this.roofOnly;
+    }
+  }
+
+  return {
+    sortable: SortableDarknessRegionShader,
+    gradient: GradientDarknessRegionShader,
+    illumination: RoofAwareIlluminationShader,
+  };
 }
 
 /**
- * The two shader classes, built on first use.
+ * The shader classes, built on first use.
  *
  * @remarks
- * Lazy because both programs interpolate `PIXI.settings.PRECISION_*` at class-definition time and
+ * Lazy because every program interpolates `PIXI.settings.PRECISION_*` at class-definition time and
  * this module is imported at `init`, before Foundry has configured PIXI. Core's own shaders get
  * away with it by living in the client bundle, which loads later.
  *
- * @returns {{sortable: Function, gradient: Function}|null}
+ * @returns {{sortable: Function, gradient: Function, illumination: Function}|null}
  */
 export function classes() {
   return (built ??= build());

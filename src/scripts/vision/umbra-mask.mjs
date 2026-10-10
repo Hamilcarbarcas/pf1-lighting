@@ -89,11 +89,20 @@ import {
   difference,
   fromClipperPaths,
   groupRings,
+  intersection,
+  outsideRange,
   toClipperPath,
 } from "../geometry.mjs";
+import { HIDDEN, RENDER_SHAPE } from "../constants.mjs";
+import * as field from "../model/field.mjs";
+import { lowLightAmbient } from "../model/registry.mjs";
+import { tierOf } from "../model/tiers.mjs";
+import { darknessFor } from "../render/levels.mjs";
 import { SIGHT_TIER } from "./perception.mjs";
 import { regionsFor } from "./umbra.mjs";
 import * as withheld from "../withheld.mjs";
+import * as revealed from "../revealed.mjs";
+import * as unexplored from "../unexplored.mjs";
 
 const PATCH_MARK = "pf1LightingUmbraMaskPatched";
 
@@ -131,6 +140,12 @@ function freshPass() {
     trimmedLight: 0, trimmedSight: 0, drawnLight: 0, drawnSight: 0,
     // A trim that removed everything: swapped for EMPTY with nothing to draw. Not in `trimmed`.
     emptied: 0,
+    // §4.3.3: revealed rings queued and drawn, per layer. Drawn must equal queued here too.
+    revealedLight: 0, revealedSight: 0, drawnRevealLight: 0, drawnRevealSight: 0,
+    // Raised-surface reveals no light reaches at their height: nothing drawn on the light layer.
+    revealUnlit: 0,
+    // §4.3.4: view moved to the preview graphics so fog does not explore it, per layer, queued and drawn.
+    unexploredLight: 0, unexploredSight: 0, drawnUnexploredLight: 0, drawnUnexploredSight: 0,
     rings: 0, holes: 0, routedPreview: 0,
   };
 }
@@ -171,16 +186,114 @@ function trim(polygon, removed) {
 }
 
 /**
- * What this observer's light perception should contribute to the mask: §4.3's umbra and every
- * `light`-layer withheld region removed, in the one `difference` (§4.3.2).
+ * One layer of an observer's view, trimmed by `removed` (as {@link trim}) and split by `keep`, the
+ * regions fog must not explore (§4.3.4): `live` is drawn as before, `preview` into the `.preview`
+ * graphics. For light perception `removed` is §4.3's umbra plus every `light`-layer withheld region
+ * (§4.3.2); for sight it is the withheld regions only, darkvision seeing through the umbra.
+ * `live: null` leaves the source's own polygon alone, which is the case with nothing to remove or keep.
+ *
+ * @returns {{live: PIXI.Polygon[]|null, preview: PIXI.Polygon[]}}
  */
-function trimmedLight(source, collected) {
-  return trim(source?.light, [...blockingPaths(source), ...collected.light]);
+function split(polygon, removed, keep) {
+  if (!keep.length) return { live: trim(polygon, removed), preview: [] };
+  if (!polygon?.points?.length) return { live: null, preview: [] };
+  let paths = [toClipperPath(polygon, CLIPPER_SCALE)];
+  if (removed.length) paths = difference(paths, removed);
+  return {
+    live: fromClipperPaths(difference(paths, keep), CLIPPER_SCALE),
+    preview: fromClipperPaths(intersection(paths, keep), CLIPPER_SCALE),
+  };
 }
 
-/** The same for `vision.sight`. Only withheld regions: darkvision sees through §4.3's umbra. */
-function trimmedSight(source, collected) {
-  return trim(source?.shape, collected.sight);
+/**
+ * Does global light reach a roof? Core draws it only inside its darkness range
+ * (`groups/visibility.mjs:634-640`), and §6.2.12's sky erases it from every unfaded roof when the
+ * outdoor tier is darker than Dim. Without a field, global light counts as reaching.
+ */
+function skyLit() {
+  const global = canvas?.environment?.globalLightSource;
+  if (!global?.active) return false;
+  const { min, max } = global.data.darkness;
+  const level = canvas.environment.darknessLevel;
+  if ((level < min) || (level > max)) return false;
+  let ambientB;
+  try {
+    ambientB = field.get()?.stats?.ambientB;
+  } catch {
+    return true;
+  }
+  if (!Number.isFinite(ambientB)) return true;
+  return !darknessFor(lowLightAmbient(tierOf(ambientB))).erase;
+}
+
+/**
+ * Light coverage at a height: the visibility shapes (as `clip.patchVisibility` hands them to core) of
+ * every active light at or above it, core's own roof test (`base-lighting.mjs:394`).
+ */
+function coverageAt(elevation) {
+  const paths = [];
+  for (const source of canvas?.effects?.lightSources?.values() ?? []) {
+    if (!source.active || (source instanceof foundry.canvas.sources.GlobalLightSource)) continue;
+    if (source[HIDDEN] || !((source.elevation ?? 0) >= elevation)) continue;
+    const path = toClipperPath(source[RENDER_SHAPE] ?? source.shape, CLIPPER_SCALE);
+    if (path.length >= 3) paths.push(path);
+  }
+  return paths;
+}
+
+/**
+ * §4.3.3: queue this observer's revealed rings. Each layer's reveals lose whatever lies beyond that
+ * layer's range (and, for light perception, §4.3's umbra), in one `difference` per layer. Withheld
+ * regions do **not** apply (decided 2026-10-08): they carve what the observer sees of the ground, a
+ * reveal is something its provider has already resolved as seen, and a roof's reveal lost to the
+ * ground umbras of the walls beneath it showed as dark wedges across the roof. They are drawn into the `.preview` graphics, which show but which
+ * fog's commit hides (`perception/fog.mjs:346-358`), so a reveal is never explored. A blinded source
+ * reveals nothing; a layer with no range reveals nothing on that layer.
+ *
+ * A light-layer reveal tagged with an `elevation` (a raised surface's height) is also kept to the
+ * light that reaches that height: lights at or above it, or everything when global light reaches
+ * roofs. Visibility is planar, so without this a lamp inside a building counted as lighting its
+ * revealed roof, and the roof showed exactly over the lamp's footprint (found 2026-10-08).
+ */
+function queueReveals(source) {
+  if (!revealed.hasProviders() || source.isBlinded) return;
+  try {
+    const shown = revealed.collect(source);
+    if (!shown.light.length && !shown.sight.length) return;
+    if (shown.light.length && (source.lightRadius > 0)) {
+      const clip = [...blockingPaths(source), ...outsideRange(source.origin, source.lightRadius)];
+      const byElevation = new Map();
+      shown.light.forEach((path, i) => {
+        const elevation = shown.lightElevations?.[i] ?? null;
+        if (!byElevation.has(elevation)) byElevation.set(elevation, []);
+        byElevation.get(elevation).push(path);
+      });
+      let sky = null;
+      for (const [elevation, paths] of byElevation) {
+        let out = difference(paths, clip);
+        if (out.length && (elevation !== null) && !(sky ??= skyLit())) {
+          const coverage = coverageAt(elevation);
+          out = coverage.length ? intersection(out, coverage) : [];
+          if (!out.length) lastPass.revealUnlit++;
+        }
+        const rings = fromClipperPaths(out, CLIPPER_SCALE);
+        if (!rings.length) continue;
+        pending.push({ rings, preview: true, layer: withheld.LAYERS.LIGHT, reveal: true });
+        lastPass.revealedLight++;
+      }
+    }
+    if (shown.sight.length && (source.radius > 0)) {
+      const clip = outsideRange(source.origin, source.radius);
+      const rings = fromClipperPaths(difference(shown.sight, clip), CLIPPER_SCALE);
+      if (rings.length) {
+        pending.push({ rings, preview: true, layer: withheld.LAYERS.SIGHT, reveal: true });
+        lastPass.revealedSight++;
+      }
+    }
+  } catch (error) {
+    // Fail closed for reveals: a fault reveals nothing, and the rest of the pass is unaffected.
+    console.error("PF1 Lighting | reveal trim failed", error);
+  }
 }
 
 /**
@@ -277,18 +390,32 @@ export function applyPatch() {
       lastPass.observers++;
       let light = null;
       let sight = null;
+      let keptLight = [];
+      let keptSight = [];
       try {
         const collected = withheld.collect(source);
-        light = trimmedLight(source, collected);
-        sight = trimmedSight(source, collected);
+        // §4.3.4: the part of the view fog must not explore, split off into the preview graphics.
+        const keep = unexplored.collect(source);
+        ({ live: light, preview: keptLight } = split(source.light, [...blockingPaths(source), ...collected.light], keep.light));
+        ({ live: sight, preview: keptSight } = split(source.shape, collected.sight, keep.sight));
       } catch (error) {
         // A geometry fault must never stop the canvas drawing its visibility. Failing open leaves
         // the pre-umbra picture rather than a broken one.
         console.error("PF1 Lighting | umbra mask trim failed", error);
         light = sight = null;
+        keptLight = keptSight = [];
       }
       if (light) substitute(source, "light", light, withheld.LAYERS.LIGHT, drawsToPreview(source));
       if (sight) substitute(source, "shape", sight, withheld.LAYERS.SIGHT, sightDrawsToPreview(source));
+      if (keptLight.length) {
+        pending.push({ rings: keptLight, preview: true, layer: withheld.LAYERS.LIGHT, unexplored: true });
+        lastPass.unexploredLight++;
+      }
+      if (keptSight.length) {
+        pending.push({ rings: keptSight, preview: true, layer: withheld.LAYERS.SIGHT, unexplored: true });
+        lastPass.unexploredSight++;
+      }
+      queueReveals(source);
     }
 
     try {
@@ -348,16 +475,26 @@ function drawPending(visibility) {
   const vision = visibility?.vision;
   if (!vision) return;
 
-  for (const { rings, preview, layer } of entries) {
+  for (const { rings, preview, layer, reveal, unexplored: kept } of entries) {
     const isLight = layer === withheld.LAYERS.LIGHT;
     // Core's routing for this source, so a preview or blinded source's view shows without
-    // exploring. See {@link drawsToPreview}.
+    // exploring. See {@link drawsToPreview}. Reveals always go to preview (§4.3.3).
     const graphics = isLight ? vision.light?.mask : vision.sight;
     const target = preview ? graphics?.preview : graphics;
     if (!target) continue;
     try {
       // The mask is a stencil and ignores colour; `vision.sight` is read by its red channel.
       drawTrimmed(target, rings, isLight ? 0xffffff : SIGHT_FILL);
+      if (reveal) {
+        if (isLight) lastPass.drawnRevealLight++;
+        else lastPass.drawnRevealSight++;
+        continue;
+      }
+      if (kept) {
+        if (isLight) lastPass.drawnUnexploredLight++;
+        else lastPass.drawnUnexploredSight++;
+        continue;
+      }
       lastPass.drawn++;
       if (isLight) lastPass.drawnLight++;
       else lastPass.drawnSight++;
@@ -367,6 +504,9 @@ function drawPending(visibility) {
     }
   }
 }
+
+/** The last pass's counters, copied, without logging or recomputing: for per-frame recorders. */
+export const lastPassReport = () => ({ ...lastPass });
 
 /**
  * Console readout.
@@ -414,6 +554,8 @@ export function status() {
     patched,
     ...lastPass,
     providers: withheld.list(),
+    revealProviders: revealed.list(),
+    unexploredProviders: unexplored.list(),
     observers,
     // Not observer-relative: such a light draws its full polygon into `light.mask`
     // (`visibility.mjs:542-546`), and drawing a separate contribution does not remove it. A

@@ -51,7 +51,7 @@ import {
   suppressors as registrySuppressors,
   version,
 } from "./registry.mjs";
-import { CLIPPER_SCALE, groupRings, toClipperPath } from "../geometry.mjs";
+import { CLIPPER_SCALE, groupRings, shapeVersion, toClipperPath } from "../geometry.mjs";
 import { applyTransform, breaks, eligibilityFn } from "./contest.mjs";
 import { normaliseEmission } from "./ramp.mjs";
 import { TIER, resolveTier, stepTier, tierCeiling, tierOf } from "./tiers.mjs";
@@ -615,33 +615,38 @@ function stampDomains(cells, domains, sceneTier) {
       continue;
     }
 
+    // §9.13: a polygon split against these domains before needs no Clipper. Same polygon objects
+    // back, which also keeps `clip.assign` (identity) from restaging an unmoved light.
+    const { ref, version } = stampKey(cell);
+    const memo = ref ? stampMemo.get(ref) : null;
+    if (memo && (memo.version === version) && (memo.domains === domains) && (memo.sceneTier === sceneTier)) {
+      for (const part of memo.parts) out.push({ ...cell, ...part });
+      continue;
+    }
+    const parts = [];
+
     const path = toClipperPath(cell.polygon, SCALE);
     // Nowhere near a region, so it stands on the scene's own ambient and needs no Clipper at all.
     // The common case, and the reason the extent of the areas is what is tested.
     if (!path?.length || !boxesOverlap(boundsOf(path), domains.box)) {
-      out.push({ ...cell, base: sceneTier, baseAmbient: true });
-      continue;
-    }
-
-    for (const domain of domains.list) {
-      const part = intersection([path], domain.paths);
-      if (!part.length) continue;
-      // `splitAnnuli` because these cells are drawn by a source, and a source shape is one closed
-      // ring (§6.2.1). Intersecting a disc with "the scene minus this room" produces exactly the
-      // annulus that rule exists for.
-      for (const polygon of toPolygons(splitAnnuli(part))) {
-        // §4.4c. Absent on a §10.7 domain — the fast path hands this function that list directly,
-        // and every entry in it is an ambient area — so the flag reads "ambient unless told
-        // otherwise", which is what `groundDomains` is the only thing able to say.
-        out.push({
-          ...cell,
-          polygon,
-          base: domain.tier,
-          baseAmbient: domain.ambient !== false,
-          clipped: true,
-        });
+      parts.push({ base: sceneTier, baseAmbient: true });
+    } else {
+      for (const domain of domains.list) {
+        const part = intersection([path], domain.paths);
+        if (!part.length) continue;
+        // `splitAnnuli` because these cells are drawn by a source, and a source shape is one closed
+        // ring (§6.2.1). Intersecting a disc with "the scene minus this room" produces exactly the
+        // annulus that rule exists for.
+        for (const polygon of toPolygons(splitAnnuli(part))) {
+          // §4.4c. Absent on a §10.7 domain — the fast path hands this function that list directly,
+          // and every entry in it is an ambient area — so the flag reads "ambient unless told
+          // otherwise", which is what `groundDomains` is the only thing able to say.
+          parts.push({ polygon, base: domain.tier, baseAmbient: domain.ambient !== false, clipped: true });
+        }
       }
     }
+    if (ref) stampMemo.set(ref, { version, domains, sceneTier, parts });
+    for (const part of parts) out.push({ ...cell, ...part });
   }
   return out;
 }
@@ -692,9 +697,68 @@ const groundBrightness = (ambient) => (ambient ? ambient.brightnessAt() : ambien
  * argument, and needs no new parameter.
  */
 function outsideOf(domain, scale) {
+  const hit = outsideMemo.get(domain);
+  if (hit?.scale === scale) return hit.paths;
   const rect = ambientDomain(scale);
-  if (!rect) return [];
-  return difference([rect], domain.paths);
+  const paths = rect ? difference([rect], domain.paths) : [];
+  outsideMemo.set(domain, { scale, paths });
+  return paths;
+}
+
+/* -------------------------------------------- */
+/*  Memos across recomputes – DESIGN.md §9.13   */
+/* -------------------------------------------- */
+
+// A light moving recomputes the whole field, but most of it is lights that did not move. These carry
+// work from one recompute to the next, keyed on objects that only change when their input does: a
+// source keeps its `shape` until it is re-initialised, and the ambient domains depend on the areas
+// alone. A recompute while one torch walks then redoes that torch's share and little else.
+
+/** `outsideOf` per domain object. Domains are cached below, so this hits across recomputes. */
+const outsideMemo = new WeakMap();
+
+/** {@link ambientDomains}, on the areas' version, the scene tier, the scale, and the scene rect. */
+let domainsMemo = null;
+function ambientDomainsCached(scale, base) {
+  const rect = canvas?.dimensions?.sceneRect;
+  const key = `${areas.version()}|${base}|${scale}|${rect?.x},${rect?.y},${rect?.width},${rect?.height}`;
+  if (domainsMemo?.key === key) return domainsMemo.value;
+  const value = ambientDomains(scale, base);
+  domainsMemo = { key, value };
+  return value;
+}
+
+/**
+ * {@link stampDomains}' split of one cell. Keyed on the source with its shape version when the cell
+ * is the source's own shape (the no-suppressor path), on the polygon object otherwise.
+ */
+const stampMemo = new WeakMap();
+const stampKey = (cell) => {
+  const source = cell.emitter?.source;
+  return (source && (cell.polygon === source.shape)) ? { ref: source, version: shapeVersion(source) } : { ref: cell.polygon, version: 0 };
+};
+
+/** {@link bandPaths} per source, on its shape version and the inputs beside the shape that it reads. */
+const bandMemo = new WeakMap();
+function bandPathsCached(emitter, emission) {
+  const source = emitter.source;
+  const key = `${shapeVersion(source)}|${emission.inner}|${source?.x}|${source?.y}`;
+  const hit = source ? bandMemo.get(source) : null;
+  if (hit?.key === key) return hit.paths;
+  const paths = bandPaths(emitter, emission);
+  if (source) bandMemo.set(source, { key, paths });
+  return paths;
+}
+
+/** Two bands' overlap, per pair of cached band path arrays. Independent of the domain, so it also hits
+ * across the once-per-domain `emitStacks` runs within one recompute. */
+const pairMemo = new WeakMap();
+function pairIntersection(a, b) {
+  let row = pairMemo.get(a);
+  if (!row) pairMemo.set(a, (row = new WeakMap()));
+  let inside = row.get(b);
+  if (!inside) row.set(b, (inside = intersection(a, b)));
+  return inside;
 }
 
 /**
@@ -824,7 +888,7 @@ export function compute({ filter = true } = {}) {
   // (§10.7). `null` means there are no such regions and every ambient path below is the one it
   // was before the feature existed.
   const sceneTier = ambientTier();
-  const domains = ambientDomains(SCALE, sceneTier);
+  const domains = ambientDomainsCached(SCALE, sceneTier);
 
   /**
    * The ambient tier a light's zones are **standing on**, for `levels.levelForTier`.
@@ -1297,7 +1361,7 @@ function emitStacks(emitters, base, governed, baseAmbient = true) {
   // --- Only now does anything cost an op. ---
   const bands = [];
   for (const candidate of overlapping) {
-    const paths = bandPaths(candidate.emitter, candidate.emission);
+    const paths = bandPathsCached(candidate.emitter, candidate.emission);
     if (paths) bands.push({ ...candidate, paths });
   }
   if (bands.length < 2) return [];
@@ -1315,7 +1379,8 @@ function emitStacks(emitters, base, governed, baseAmbient = true) {
       const next = bands[j];
       if (!boxesOverlap(box, next.box)) continue;
 
-      const inside = intersection(paths, next.paths);
+      // Depth one is a pair of cached bands (§9.13); deeper overlaps are rare and not memoized.
+      const inside = indices.length === 1 ? pairIntersection(paths, next.paths) : intersection(paths, next.paths);
       if (!inside.length) continue;
 
       const combo = [...indices, j];
@@ -1458,6 +1523,87 @@ function signatureMatches(next) {
 }
 
 /**
+ * What the field was computed from, by value: the second check, run only when {@link signatureMatches}
+ * fails. DESIGN.md §9.12.
+ *
+ * @remarks
+ * The identity signature cannot tell a re-initialised light from a changed one: `initialize` hands
+ * every source a new `shape` and every registry rebuild bumps `version()`, whatever changed. Selecting
+ * a token re-initialises every light three times over (PF1's debounced low-light re-init, this
+ * module's §4.4d sync, and its §4.4c settle), and on a 25-roof town each identical re-init cost a
+ * 75 ms recompute (measured 2026-10-08: three ~300 ms frames per click). `resync` already declined
+ * value comparison as dearer than the rebuild; that held at §9.6's 4.4 ms and not at 75.
+ *
+ * Per entry: the source object itself (a replaced source is a change), its polygon's points, and
+ * everything else as JSON (the entry's own config and emission, the source's position, elevation,
+ * radius, and `data`). Compared element by element; well under a millisecond for a town's lights.
+ */
+/** JSON replacer: the animation object's `time`, and nothing else. `this` is the object holding `key`. */
+function dropClock(key, value) {
+  if ((key === "time") && this && ("type" in this) && ("speed" in this)) return undefined;
+  return value;
+}
+
+function currentContent() {
+  const entries = [];
+  const add = (entry) => {
+    const { source, ...rest } = entry;
+    let data = null;
+    try {
+      // The animation clock (`data.animation.time`) advances every frame on an animated light and
+      // changes nothing the field reads.
+      data = JSON.stringify([rest, source?.x, source?.y, source?.elevation, source?.radius, source?.data], dropClock);
+    } catch {
+      // Unserializable: never equal, so the field recomputes as before.
+      data = Symbol("unserializable");
+    }
+    entries.push({ source, points: entry.shape?.points ?? null, data });
+  };
+  for (const entry of registryEmitters()) if (!entry.isGlobal) add(entry);
+  for (const entry of registrySuppressors()) add(entry);
+  return { scalars: [ambientBrightness(), areas.version(), lowLightActive()], entries };
+}
+
+function samePoints(a, b) {
+  if (a === b) return true;
+  if (!a || !b || (a.length !== b.length)) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+/** First difference between two contents, or null when equal. For {@link cacheStats}. */
+function contentDiff(a, b) {
+  if (!a || !b) return { reason: "no previous content" };
+  if (a.entries.length !== b.entries.length) return { reason: "entry count", was: a.entries.length, now: b.entries.length };
+  for (let i = 0; i < a.scalars.length; i++) {
+    if (a.scalars[i] !== b.scalars[i]) return { reason: ["ambient", "areas", "lowLight"][i], was: a.scalars[i], now: b.scalars[i] };
+  }
+  for (let i = 0; i < a.entries.length; i++) {
+    const x = a.entries[i];
+    const y = b.entries[i];
+    const id = y.source?.sourceId ?? i;
+    if (x.source !== y.source) return { reason: "source replaced", id };
+    if (!samePoints(x.points, y.points)) {
+      return { reason: "points", id, was: x.points?.length ?? null, now: y.points?.length ?? null };
+    }
+    if (x.data !== y.data) {
+      // The first differing character, with some context either side.
+      let k = 0;
+      while ((k < x.data.length) && (x.data[k] === y.data?.[k])) k++;
+      return { reason: "data", id, was: String(x.data).slice(Math.max(0, k - 60), k + 60), now: String(y.data).slice(Math.max(0, k - 60), k + 60) };
+    }
+  }
+  return null;
+}
+
+
+/** The content the cached field was computed from; see {@link currentContent}. */
+let content = null;
+
+/** Recomputes avoided by the content check, for the console. */
+const contentStats = { identityMisses: 0, contentHits: 0, recomputes: 0, mismatches: [] };
+
+/**
  * The current field, recomputed only when something it depends on has changed.
  *
  * @remarks
@@ -1472,8 +1618,24 @@ export function get() {
   const next = currentSignature();
   if (cached && signatureMatches(next)) return cached;
   signature = next;
+  // §9.12: a re-initialisation that changed nothing keeps the field.
+  const now = currentContent();
+  if (cached) {
+    contentStats.identityMisses++;
+    const diff = contentDiff(content, now);
+    if (!diff) {
+      contentStats.contentHits++;
+      return cached;
+    }
+    contentStats.mismatches = [...contentStats.mismatches, diff].slice(-5);
+  }
+  content = now;
+  contentStats.recomputes++;
   return (cached = compute());
 }
+
+/** How often the field was recomputed, and how often the content check saved one. */
+export const cacheStats = () => ({ ...contentStats });
 
 /**
  * Adopt the current geometry as the baseline without recomputing the field.
@@ -1504,6 +1666,7 @@ export function resync() {
 export function invalidate() {
   cached = null;
   signature = null;
+  content = null;
 }
 
 /** Debug readout: compute fresh and report only the statistics. */

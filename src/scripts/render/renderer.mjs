@@ -314,8 +314,9 @@ export function rebuild({ force = false } = {}) {
     if (clip.assign(source, primary.clipped ? primary.polygon : null)) restage.add(source);
     // The other half of the hide below: a source put out on one rebuild and lit again on the next
     // has to be told, or it stays dark for the rest of the session. Every per-source flag this file
-    // sets needs both directions — the same rule as `pool.fill`'s.
-    clip.setHidden(source, false);
+    // sets needs both directions — the same rule as `pool.fill`'s. Restaged on change, since a
+    // hidden light's reveal is withheld too and core's light cache redraws only on a new `updateId`.
+    if (clip.setHidden(source, false)) restage.add(source);
     // A split cell's pieces must abut with no fade, or the seam shows — a dark line if they meet, a
     // bright one if they overlap (coloration blends additively).
     if (clip.setHardEdges(source, split)) restage.add(source);
@@ -402,7 +403,8 @@ export function rebuild({ force = false } = {}) {
   for (const entry of allEmitters()) {
     if (entry.isGlobal || touched.has(entry.source)) continue;
     if (clip.assign(entry.source, null)) restage.add(entry.source);
-    clip.setHidden(entry.source, true);
+    // Restaged on change: see the matching line above.
+    if (clip.setHidden(entry.source, true)) restage.add(entry.source);
   }
 
   // --- `reduced` — the emitter's own geometry at a lowered set tier (§3.2.1). ---
@@ -750,6 +752,12 @@ export function registerHooks() {
   // does (`placeables/light.mjs:328`). Without this, dropping a dragged light left the render
   // showing its old position until something unrelated fired.
   Hooks.on("refreshAmbientLight", schedule);
+  // A light re-initialised through its placeable (`initializeLightSource`, which is how PF1 resizes
+  // every light for low-light vision after a selection change) fires none of the hooks above; it
+  // only requests `refreshLighting`, which ends in `lightingRefresh`. Without it a GM deselecting a
+  // token kept the selected token's low-light radii in the render until something unrelated fired
+  // (DESIGN.md §9.12; masked until then by the repeat recomputes that section removed).
+  Hooks.on("lightingRefresh", schedule);
 
   // The scene's own ambience — global illumination, darkness level, ambient colours. None of the
   // three above fire for it, and the render was only ever kept current by accident: a scene change

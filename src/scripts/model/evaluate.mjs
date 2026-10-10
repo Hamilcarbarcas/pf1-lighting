@@ -37,14 +37,38 @@ export { ELIGIBILITY_PRESETS, contest } from "./contest.mjs";
  */
 
 /**
+ * Is this registry entry's source at or above an elevation?
+ *
+ * @remarks
+ * The one place §3.6's planar model reads elevation, and only for a roof: core tests a light against
+ * a light-restricting roof by elevation alone (`base-lighting.mjs:394`), so the roof's answer is
+ * elevation-dependent whatever the field is.
+ */
+const reachesRoof = (entry, roof) => (entry.source?.elevation ?? 0) >= roof;
+
+/**
  * Light level at a point.
  *
  * @param {{x: number, y: number, elevation?: number}} point - Scene pixel coordinates
+ * @param {object} [options]
+ * @param {number|null} [options.roof] - Elevation of a light-restricting roof drawn over the point.
+ *   The answer is then the roof's, as §6.2.12 paints it: the sky, not any ambient area beneath, plus
+ *   only the lights and darknesses at or above the roof.
  * @returns {Evaluation}
  */
-export function evaluate(point) {
-  const reaching = emittersAt(point);
-  const suppressors = suppressorsAt(point);
+export function evaluate(point, { roof = null } = {}) {
+  let reaching = emittersAt(point);
+  let suppressors = suppressorsAt(point);
+
+  // A roof is outdoors. Global illumination is kept and re-read without the point, which is the
+  // scene's own tier with no §10.7 area folded in – the sky the render paints there.
+  if (roof !== null) {
+    const sky = ambientTier();
+    reaching = reaching
+      .filter(({ entry }) => entry.isGlobal || reachesRoof(entry, roof))
+      .map((hit) => (hit.entry.isGlobal ? { ...hit, B: tierCeiling(sky), tier: sky } : hit));
+    suppressors = suppressors.filter((entry) => reachesRoof(entry, roof));
+  }
 
   // The contest wants brightness alongside the rules fields; the registry keeps them apart, an
   // entry being a source and `B` what it contributes here.
@@ -84,7 +108,10 @@ export function evaluate(point) {
   // Falling out of that: a torch on a moonlit night lights nothing extra for an elf, its ring and
   // the night around it both reading Normal. Which is the rule.
   const lifted =
-    !applied && resolved === TIER.DIM && lowLightActive() && ambientTier(point) === TIER.DIM;
+    !applied &&
+    resolved === TIER.DIM &&
+    lowLightActive() &&
+    ambientTier(roof === null ? point : undefined) === TIER.DIM;
   const tier = lifted ? TIER.NORMAL : resolved;
 
   return {

@@ -50,19 +50,21 @@ import { MODULE_ID, SETTING_RENDER } from "../constants.mjs";
 import { flag } from "../settings-cache.mjs";
 import {
   CLIPPER_SCALE,
-  containsPoint,
   difference,
   fromClipperPaths,
   groupRings,
   intersection,
+  outsideRange,
   splitRings,
   toClipperPath,
   union,
 } from "../geometry.mjs";
 import { TIER, tierOf } from "../model/tiers.mjs";
 import * as field from "../model/field.mjs";
+import { lowLightActive, lowLightAmbient } from "../model/registry.mjs";
 import * as umbra from "../vision/umbra.mjs";
 import * as withheld from "../withheld.mjs";
+import * as revealed from "../revealed.mjs";
 import * as ambientTakeover from "./ambient.mjs";
 import * as darknessTexture from "./darkness-texture.mjs";
 import { CLAMP_SORT } from "./darkness-shaders.mjs";
@@ -324,7 +326,9 @@ function unseenOnly(sources) {
   if (!seen.length) return [];
 
   const rectPath = [toClipperPath(rect.toPolygon(), CLIPPER_SCALE)];
-  const paths = difference(rectPath, union(seen));
+  // One observer's paths are a single `los` or one Clipper result, already free of overlaps: the
+  // union only re-derives them (DESIGN.md §9.12).
+  const paths = difference(rectPath, sources.length === 1 ? seen : union(seen));
   return paths.length ? [{ clamp: TIER.DARK, paths }] : [];
 }
 
@@ -343,10 +347,14 @@ function unseenOnly(sources) {
  * none of them is obvious from outside: the `hideUnseen` gate, god's eye clamping nothing (§5.4), and
  * an observer with no `los` disabling the clamp everywhere rather than only for itself.
  *
+ * A roof point (`surface`) skips withheld regions: those are ground, and a roof above them is not
+ * hidden by what hides the ground beneath it.
+ *
  * @param {{x: number, y: number}} point
+ * @param {{surface?: boolean}} [options]
  * @returns {boolean}
  */
-export function unseenAt(point) {
+export function unseenAt(point, { surface = false } = {}) {
   if (!hideUnseen()) return false;
 
   const sources = observers();
@@ -358,7 +366,10 @@ export function unseenAt(point) {
     // of sight, rather than treating it as an observer who sees nothing.
     if (!source.los) return false;
     // §5.3: seen by one observer is seen. The first hit ends it. §4.3.2: not where withheld.
-    if (source.los.contains(point.x, point.y) && !withheld.unseenFor(source, point)) return false;
+    // §4.3.3: revealed regions within light range count as seen, as in seenPaths, and withheld
+    // regions do not apply to them.
+    const inLos = source.los.contains(point.x, point.y) && (surface || !withheld.unseenFor(source, point));
+    if (inLos || (revealed.revealedFor(source, point) && withinLightRange(source, point))) return false;
   }
   return true;
 }
@@ -372,10 +383,26 @@ export function unseenAt(point) {
  * @param {object[]} losPath  `source.los` as a Clipper path
  * @returns {object[][]}
  */
+/** Within an observer's light-perception range; unbounded counts as within, none as never. */
+function withinLightRange(source, point) {
+  const r = source.lightRadius;
+  if (!(r > 0)) return false;
+  if (!Number.isFinite(r)) return true;
+  return Math.hypot(point.x - source.origin.x, point.y - source.origin.y) <= r;
+}
+
 function seenPaths(source, losPath) {
-  const { unseen } = withheld.collect(source);
-  if (!unseen.length) return [losPath];
-  return difference([losPath], unseen);
+  // Wound positive, as Clipper writes every ring it returns: under non-zero fill a negative `los`
+  // unioned with a positive reveal, or with another observer's output, cancels where they overlap.
+  if (!ClipperLib.Clipper.Orientation(losPath)) losPath = [...losPath].reverse();
+  const { every: unseen } = withheld.collect(source);
+  // §4.3.3: regions revealed on every layer are seen too, within the observer's light range.
+  // Withheld regions carve only the `los` half (decided 2026-10-08; see umbra-mask's queueReveals).
+  const shown = (source.lightRadius > 0) ? revealed.collect(source).every : [];
+  const fromLos = unseen.length ? difference([losPath], unseen) : [losPath];
+  if (!shown.length) return fromLos;
+  const range = outsideRange(source.origin, source.lightRadius);
+  return [...fromLos, ...(range.length ? difference(shown, range) : shown)];
 }
 
 /**
@@ -568,14 +595,19 @@ function offsetPaths(paths, delta) {
  * regression belonged to. The cut can come out once this is proven, and that is worth doing — it is
  * most of what a token drag costs.
  *
+ * While an observer is moving the collar is skipped and only the hard core drawn: the erosion and
+ * its differences were ~10 ms of every animation step (DESIGN.md §9.12). {@link settleAfterMotion}
+ * repaints with the collar once movement stops.
+ *
  * @param {{clamp: number, paths: object[][]}[]} shadows
+ * @param {{collar?: boolean}} [options]
  * @returns {object[]} Ramp payloads in `render/gradient.mjs`'s shape
  */
-function clampRamps(shadows) {
+function clampRamps(shadows, { collar: withCollar = true } = {}) {
   const out = [];
   let index = 0;
 
-  const half = transitionWidth() / 2;
+  const half = withCollar ? transitionWidth() / 2 : 0;
 
   for (const { clamp, paths } of shadows) {
     const { level } = darknessFor(clamp);
@@ -636,12 +668,18 @@ function clampRamps(shadows) {
       }
     };
 
-    // The interior is the clamp outright; the collar fades it out across the boundary. A vertex
-    // still inside the eroded core is the inner end of the ramp, everything else the outer.
+    // The interior is the clamp outright; the collar fades it out across the boundary. A collar
+    // vertex on the eroded core is the inner end of the ramp, everything else the outer. The core
+    // lies strictly inside the region (an erosion, less the holes both share), so the two boundaries
+    // never cross and every inner-end vertex is one of the core's own: a set lookup on its integer
+    // coordinates. It replaced a `containsPoint` per collar vertex against every core ring, which was
+    // quadratic and ~12 ms a frame while a token moved (DESIGN.md §9.12).
     emit(core.length ? core : paths, () => level);
     if (collar.length) {
-      const coreRings = fromClipperPaths(core, CLIPPER_SCALE);
-      emit(collar, (point) => (containsPoint(coreRings, point) ? level : 0));
+      const inner = new Set();
+      for (const path of core) for (const p of path) inner.add(`${p.X},${p.Y}`);
+      emit(collar, (point) => (inner.has(`${Math.round(point.x * CLIPPER_SCALE)},${Math.round(point.y * CLIPPER_SCALE)}`)
+        ? level : 0));
     }
 
     if (indices.length < 3) continue;
@@ -684,8 +722,12 @@ function clampRamps(shadows) {
  * That is what makes this safe to hang off `refreshToken`, which fires far above frame rate.
  */
 function currentSignature() {
-  // The withheld generation: a provider's output can change without any `los` being replaced.
-  const parts = [field.get(), withheld.currentGeneration()];
+  // The withheld and revealed generations: a provider's output can change without any `los` being
+  // replaced. The lights' re-initialisation count: the light ramps read each source's live state,
+  // which a re-initialisation resets even when the field (geometry and data) is unchanged. Before
+  // §9.12 every re-init also recomputed the field, which carried this; since the field keeps itself
+  // across identical re-inits, a GM deselect left the ramps of the selection's last pass on the map.
+  const parts = [field.get(), withheld.currentGeneration(), revealed.currentGeneration(), lightsVersion()];
   for (const source of observers()) parts.push(source.los);
   return parts;
 }
@@ -717,8 +759,12 @@ export function repaint({ force = false } = {}) {
   }
 
   const next = currentSignature();
-  if (!force && matches(next)) return lastStats;
+  if (!force && matches(next)) {
+    note(force ? "repaint (forced)" : "repaint", true, next[0]);
+    return lastStats;
+  }
   signature = next;
+  note(force ? "repaint (forced)" : "repaint", false, next[0]);
 
   // Which half of this pass was wasted. The signature above is `[field, ...los]`, and an observer
   // walking replaces its own `los` every time vision re-initialises, so the pass reruns with the
@@ -758,7 +804,9 @@ export function repaint({ force = false } = {}) {
   const tCut = performance.now();
   const lights = lightRamps.rampsFrom(currentField.cells, tierOf(currentField.stats?.ambientB ?? 0));
   const tLights = performance.now();
-  const clamps = softClamps() ? clampRamps(shadows) : [];
+  const moving = observerMoving();
+  const clamps = softClamps() ? clampRamps(shadows, { collar: !moving }) : [];
+  if (moving) settleAfterMotion();
   const tClamps = performance.now();
   // §6.4.3 — the ground's own boundaries, as ramps rather than as a blur.
   //
@@ -778,7 +826,10 @@ export function repaint({ force = false } = {}) {
   const tGradient = performance.now();
   lastCellList = cells;
   lastRampList = [...halos, ...lights, ...clamps];
-  const painted = darknessTexture.paint(cells);
+  // §6.2.12: what a light-restricting roof reads. The outdoor tier, as the field's own `ambient`
+  // cell has it, §4.4c lift included.
+  const sky = lowLightAmbient(tierOf(currentField.stats?.ambientB ?? 0));
+  const painted = darknessTexture.paint(cells, { sky });
   const tGround = performance.now();
 
   lastStats = {
@@ -796,6 +847,8 @@ export function repaint({ force = false } = {}) {
     // the note at `cut`. Only meaningful with `softClamps` turned off.
     split,
     softClamps: softClamps(),
+    // §9.12: false while an observer is mid-move, when only the clamps' hard cores are drawn.
+    collar: !moving,
     // §9.10. `"general"` on a scene with no magical darkness would mean the closed form is being
     // skipped, which is the difference between 2 Clipper ops per repaint and 17.
     shadowPath: lastShadowPath,
@@ -847,14 +900,80 @@ function explainQuiet(base, shadows) {
   return `${above} cell(s) above the clamp were not cut — the shadow may not reach them`;
 }
 
+/** Sum of every light source's `updateId`: moves on any light's (re-)initialisation. */
+function lightsVersion() {
+  let sum = 0;
+  for (const source of canvas?.effects?.lightSources?.values() ?? []) sum += source.updateId ?? 0;
+  return sum;
+}
+
+/** Is any observer partway through a movement animation? */
+function observerMoving() {
+  for (const source of observers()) {
+    const token = source.object;
+    if (token?.animationContexts?.has?.(token.movementAnimationName)) return true;
+  }
+  return false;
+}
+
+/** Milliseconds after the last moving repaint before the collar is restored. */
+const SETTLE_MS = 120;
+let settleTimer = null;
+
+/** Repaint with the clamp collar once no repaint has seen an observer moving for {@link SETTLE_MS}. */
+function settleAfterMotion() {
+  clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => {
+    settleTimer = null;
+    if (observerMoving()) return settleAfterMotion();
+    repaint({ force: true });
+  }, SETTLE_MS);
+}
+
 /** Coalesce to one repaint per frame; the driving hooks fire well above frame rate. */
 function schedule() {
   if (scheduled) return;
   scheduled = true;
   requestAnimationFrame(() => {
     scheduled = false;
-    repaint();
+    try {
+      repaint();
+    } catch (error) {
+      signature = null;
+      console.error(`${MODULE_ID} | scheduled repaint failed`, error);
+    }
   });
+}
+
+let visibilityPatched = false;
+
+/**
+ * Repaint, if stale, before every visibility refresh. DESIGN.md §6.4.5.
+ *
+ * @remarks
+ * A refresh commits fog with whatever erase meshes exist at that moment, and {@link schedule} only
+ * reaches the next frame. A GM selecting a token raced the two: the first refresh with the new
+ * observer could commit god's eye's erase set, and global light explored every dark region in line
+ * of sight. Repainting here costs nothing extra: the scheduled pass then finds the signature matched.
+ */
+export function patchVisibility() {
+  if (visibilityPatched) return;
+  const proto = foundry.canvas.groups?.CanvasVisibility?.prototype;
+  if (!proto?.refreshVisibility) return;
+  visibilityPatched = true;
+
+  const original = proto.refreshVisibility;
+  proto.refreshVisibility = function pf1LightingPaintRefreshVisibility(...args) {
+    try {
+      repaint();
+    } catch (error) {
+      // A paint fault must not stop the canvas drawing its visibility. The signature was recorded
+      // before the fault, so drop it: otherwise every later repaint matches it and skips.
+      signature = null;
+      console.error(`${MODULE_ID} | repaint before visibility refresh failed`, error);
+    }
+    return original.apply(this, args);
+  };
 }
 
 export function registerHooks() {
@@ -871,6 +990,8 @@ export function registerHooks() {
     "refreshAmbientLight",
     "refreshToken",
     "initializeCanvasEnvironment",
+    // A placeable-level light re-init (PF1's low-light resize) fires only this. See the renderer's note.
+    "lightingRefresh",
     // The observer half of the same gap the renderer names: a deleted token cannot fire
     // `refreshToken`, and losing the last vision source is precisely the change this pass exists to
     // notice — `observers()` goes empty, the signature drops a term, and the clamp should lift.
@@ -880,7 +1001,13 @@ export function registerHooks() {
     Hooks.on(hook, () => schedule());
   }
 
+  // Context for `repaintLog`.
+  Hooks.on("controlToken", (token, controlled) => note(controlled ? "controlToken (select)" : "controlToken (release)"));
+  Hooks.on("lightingRefresh", () => note("lightingRefresh"));
+
   Hooks.on("canvasTearDown", () => {
+    clearTimeout(settleTimer);
+    settleTimer = null;
     signature = null;
     lastStats = null;
     lastPaintedField = null;
@@ -904,6 +1031,27 @@ export function lastCells() {
 export function lastRamps() {
   return lastRampList;
 }
+
+/** The last repaint request: when, how many observers it saw, and whether the signature skipped it. */
+let lastCall = null;
+export const lastRepaint = () => (lastCall ? { ...lastCall, now: Math.round(performance.now()) } : null);
+
+/**
+ * The last 40 repaint requests and the events around them, for the console (`render.repaintLog()`).
+ * `lights` sums every light source's `updateId`, so a re-initialisation shows as a change.
+ */
+const log = [];
+function note(event, skipped = null, fieldNow = null) {
+  const lights = lightsVersion();
+  const entry = {
+    at: Math.round(performance.now()), event, observers: observers().length, skipped,
+    field: fieldNow?.generation ?? null, lowLight: lowLightActive(), lights,
+  };
+  if (event.startsWith("repaint")) lastCall = entry;
+  log.push(entry);
+  if (log.length > 40) log.shift();
+}
+export const repaintLog = () => log.map((entry) => ({ ...entry }));
 
 /** Drop the cached signature so the next call recomputes. */
 export function invalidate() {

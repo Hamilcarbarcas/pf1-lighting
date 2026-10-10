@@ -215,6 +215,17 @@ The whole-scene cell decomposition — what the renderer consumes. Cells partiti
 | `game.pf1Lighting.render.noErase(true)` | Suppresses the `ERASE` mesh every region darker than Dim adds to the visibility mask. With it off, a *darkness* on a globally-lit map stops being dark |
 | `game.pf1Lighting.render.noErase(false)` | Puts it back |
 
+#### A roof that shows the room beneath
+
+Hover the roof and run `game.pf1Lighting.render.meshAt()`, then compare `pixel` with
+`game.pf1Lighting.render.texture().sky`:
+
+| Reading | Means |
+| --- | --- |
+| `sky: null` | No sky was painted, so a roof reads the scene's raw darkness instead of its tier |
+| `pixel` is the room's level, not `sky` | The tile is not writing roof depth. Select it and run `canvas.tiles.controlled.map((t) => ({ restrictsLight: t.document.restrictions.light, elevation: t.document.elevation }))`; it needs `restrictsLight: true` and an elevation above 0 |
+| `pixel` is brighter than `sky` | A light at or above the roof's elevation is lighting it, as Foundry would |
+
 ### Brightness ladder and transitions
 
 | Function | What it does |

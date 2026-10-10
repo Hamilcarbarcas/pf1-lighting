@@ -887,6 +887,14 @@ export function tierAtDistance(steps, feet) {
  * could land in the strip a flanking wall had eaten and be discarded, so an opening under three cells
  * wide produced `seeds: 0` and no spill. Walls are links now ({@link cutLinks}), no ground is eaten,
  * and a seed can only fail by being off the grid.
+ *
+ * The push decides the side across the opening; nothing decided it **along** the opening until
+ * 2026-10-08. An end sample sits on the opening's endpoint, and where that endpoint is on a cell
+ * boundary (a grid-snapped wall corner), rounding put its cell past the corner: outside the room, past
+ * the wall the window ends at. That seed marched freely outside and drew a spill band round the
+ * building's corner (DESIGN.md §3.4, "Seeds past the opening's end"). A cell now seeds only if its
+ * center projects onto the opening and lies on its inward side; an opening too narrow to contain a
+ * center keeps its midpoint's cell, as before.
  */
 export function seedAperture(grid, { a, b, normal }) {
   const seeds = [];
@@ -894,7 +902,19 @@ export function seedAperture(grid, { a, b, normal }) {
   const length = Math.hypot(b.x - a.x, b.y - a.y);
   const count = Math.max(2, Math.ceil(length / (grid.cell * 0.5)) + 1);
   const push = grid.cell;
+  const ux = length > 0 ? (b.x - a.x) / length : 0;
+  const uy = length > 0 ? (b.y - a.y) / length : 0;
 
+  // Is this cell's center over the opening (projected within its ends) and on its inward side?
+  const onOpening = (index) => {
+    const cx = grid.x0 + (((index % grid.cols) + 0.5) * grid.cell);
+    const cy = grid.y0 + ((Math.floor(index / grid.cols) + 0.5) * grid.cell);
+    const along = ((cx - a.x) * ux) + ((cy - a.y) * uy);
+    const across = ((cx - a.x) * normal.x) + ((cy - a.y) * normal.y);
+    return (along >= 0) && (along <= length) && (across > 0);
+  };
+
+  let fallback = -1;
   for (let k = 0; k < count; k++) {
     const t = k / (count - 1);
     const x = a.x + (b.x - a.x) * t + normal.x * push;
@@ -902,8 +922,11 @@ export function seedAperture(grid, { a, b, normal }) {
     const index = indexAt(grid, x, y);
     if (index < 0 || seen.has(index)) continue;
     seen.add(index);
+    if ((fallback < 0) && (k === Math.floor((count - 1) / 2))) fallback = index;
+    if (!onOpening(index)) continue;
     seeds.push({ index, value: 0 });
   }
+  if (!seeds.length && (fallback >= 0)) seeds.push({ index: fallback, value: 0 });
   return seeds;
 }
 

@@ -27,6 +27,7 @@ import { evaluate } from "../model/evaluate.mjs";
 import { TIER, tierLabel } from "../model/tiers.mjs";
 import { viewerTier } from "../vision/perception.mjs";
 import { PAINTED_HOOK, unseenAt } from "../render/paint.mjs";
+import { roofAt } from "../render/roofs.mjs";
 
 export const SETTING_ENABLED = "readoutEnabled";
 export const SETTING_DETAIL = "readoutDetail";
@@ -308,6 +309,9 @@ function update() {
 
   let result;
   let label = null;
+  // Elevation of a roof drawn over the cursor, or null. A hovered token is under any roof, never on
+  // it, so only the cursor path asks.
+  let roof = null;
   if (hovered) {
     result = evaluateToken(hovered);
     label = tokenLabel(hovered);
@@ -317,7 +321,12 @@ function update() {
       element.style.display = "none";
       return;
     }
-    result = { ...evaluate({ x: point.x, y: point.y, elevation: 0 }), point: { ...point, elevation: 0 } };
+    // §6.2.12. The screen shows the roof's light there, not the room's, and so must the chip.
+    roof = roofAt(point);
+    result = {
+      ...evaluate({ x: point.x, y: point.y, elevation: 0 }, { roof }),
+      point: { ...point, elevation: roof ?? 0 },
+    };
   }
 
   // The readout is a view, so it reports what the view sees. `evaluate()` is god's eye with no
@@ -327,7 +336,9 @@ function update() {
   //
   // `null` means god's eye, where there is no observer and so no clamp, and the raw tier is then the
   // right answer rather than a fallback.
-  const seen = viewerTier(result.point);
+  //
+  // Neither clamp reaches a roof: both are painted at ground and fail its depth test (§6.2.12).
+  const seen = roof === null ? viewerTier(result.point) : null;
   const clamped = seen !== null && seen < result.tier ? seen : null;
 
   // The second half of the same argument, and the term the umbra clamp does not cover: a wall.
@@ -335,7 +346,15 @@ function update() {
   // viewer simply cannot see was reported at whatever the model says is there while the screen drew
   // it dark. Applied as a floor rather than an assignment, for the reason `applyShadows` skips cells
   // already below a clamp: a supernatural darkness behind a wall is not made brighter by the wall.
-  const unseen = unseenAt(result.point);
+  //
+  // Not for a token this user can see, though. A token seen over a wall (astora-mod's sight over walls)
+  // stands on ground the viewer cannot see, so the floor would call it Dark whatever light it stands
+  // in; the token itself is what is seen, and its light is the answer (reported 2026-10-08).
+  //
+  // A roof is unseen the same way, out of every view and not revealed (§4.3.3), which the screen
+  // draws as fog whatever light falls on it. Only the withheld term is skipped there, being ground.
+  const tokenSeen = !!hovered && hovered.visible && !hovered.document.hidden;
+  const unseen = !tokenSeen && unseenAt(result.point, { surface: roof !== null });
   const tierShown = unseen
     ? Math.min(clamped ?? result.tier, TIER.DARK)
     : (clamped ?? result.tier);

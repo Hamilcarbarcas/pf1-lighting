@@ -16,6 +16,8 @@ import * as perception from "./vision/perception.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
 import * as companion from "./model/companion.mjs";
 import * as withheldRegions from "./withheld.mjs";
+import * as revealedRegions from "./revealed.mjs";
+import * as unexploredRegions from "./unexplored.mjs";
 import { isPatched as umbraMaskPatched } from "./vision/umbra-mask.mjs";
 
 /**
@@ -34,6 +36,43 @@ const withheld = Object.freeze({
   active: () => umbraMaskPatched(),
   get generation() {
     return withheldRegions.currentGeneration();
+  },
+});
+
+/**
+ * Regions revealed to an observer beyond its `los`. DESIGN.md §4.3.3.
+ *
+ * @remarks
+ * Drawn into the light-perception and sight `.preview` graphics, so light decides what shows and
+ * fog never explores them; paint counts them as seen ground. Same contract as {@link withheld}.
+ */
+const revealed = Object.freeze({
+  LAYERS: revealedRegions.LAYERS,
+  register: revealedRegions.register,
+  unregister: revealedRegions.unregister,
+  invalidate: revealedRegions.invalidate,
+  active: () => umbraMaskPatched(),
+  get generation() {
+    return revealedRegions.currentGeneration();
+  },
+});
+
+/**
+ * Regions an observer sees that fog must not explore. DESIGN.md §4.3.4.
+ *
+ * @remarks
+ * The observer's light perception and sight inside these regions are drawn into the `.preview`
+ * graphics, which show but which fog's commit hides. Nothing else changes: light, paint, and
+ * detection still treat them as seen. Same contract as {@link withheld}.
+ */
+const unexplored = Object.freeze({
+  LAYERS: unexploredRegions.LAYERS,
+  register: unexploredRegions.register,
+  unregister: unexploredRegions.unregister,
+  invalidate: unexploredRegions.invalidate,
+  active: () => umbraMaskPatched(),
+  get generation() {
+    return unexploredRegions.currentGeneration();
   },
 });
 
@@ -660,6 +699,14 @@ export function build() {
     // §4.3.2. Added 2026-10-05 for astora-mod's wall umbras; feature-detect with
     // `api.withheld !== undefined`.
     withheld,
+
+    // §4.3.3. Added 2026-10-08 for astora-mod's tile reveals; feature-detect with
+    // `api.revealed !== undefined`.
+    revealed,
+
+    // §4.3.4. Added 2026-10-08 for astora-mod's roofs seen from above; feature-detect with
+    // `api.unexplored !== undefined`.
+    unexplored,
   }));
 }
 

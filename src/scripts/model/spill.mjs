@@ -702,6 +702,24 @@ function spillFor(room) {
 /*  Rebuild                                     */
 /* -------------------------------------------- */
 
+/** Are two band lists the same: ids, modes, tiers, and Clipper paths point for point? */
+function sameAreas(a, b) {
+  if (a === b) return true;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if ((x.id !== y.id) || (x.mode !== y.mode) || (x.tier !== y.tier) || (x.paths.length !== y.paths.length)) return false;
+    for (let j = 0; j < x.paths.length; j++) {
+      const p = x.paths[j];
+      const q = y.paths[j];
+      if (p.length !== q.length) return false;
+      for (let k = 0; k < p.length; k++) if ((p[k].X !== q[k].X) || (p[k].Y !== q[k].Y)) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * Mark the bands stale. `geometry` also bumps {@link geometryEpoch}.
  *
@@ -726,6 +744,11 @@ export function invalidate({ geometry = false } = {}) {
  * Ends by invalidating `areas`, which is what actually publishes the result: `areas()` caches
  * its folded list, and `field()` keys its own signature on `areas.version()`. Without it the new
  * bands sit in this module and nothing on the map or in the model ever reads them.
+ *
+ * Publishes only a result that differs (DESIGN.md §9.12). The signature below keys on the registry's
+ * version, which moves on every light re-initialisation, so an unchanged scene re-ran this and
+ * republished identical bands: a new `areas` version (a field recompute) and, through `schedule`, a
+ * whole-canvas lighting and vision refresh, per re-init.
  */
 export function rebuild() {
   const t0 = performance.now();
@@ -736,10 +759,12 @@ export function rebuild() {
   let cells = 0;
 
   const publish = (stats) => {
-    cache = next;
     dirty = false;
-    generation++;
-    areas.invalidate();
+    if (!sameAreas(cache, next)) {
+      cache = next;
+      generation++;
+      areas.invalidate();
+    }
     return (lastStats = stats);
   };
 

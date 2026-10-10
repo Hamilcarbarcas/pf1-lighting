@@ -30,6 +30,8 @@ import * as umbra from "./vision/umbra.mjs";
 import * as umbraEdges from "./vision/umbra-edges.mjs";
 import * as umbraMask from "./vision/umbra-mask.mjs";
 import * as withheld from "./withheld.mjs";
+import * as revealed from "./revealed.mjs";
+import * as unexplored from "./unexplored.mjs";
 import * as readout from "./ui/readout.mjs";
 import * as cellOverlay from "./ui/cell-overlay.mjs";
 import * as lightConfig from "./ui/light-config.mjs";
@@ -289,6 +291,16 @@ Hooks.once("init", () => {
   // light perception reveals (§4.3). Separate from `clip.patchVisibility` because `render/` must not
   // import from `vision/`.
   umbraMask.applyPatch();
+
+  // Fog explores the global-light erase's hard boundary, not its blurred rim (§6.4.5).
+  darknessTexture.patchFogCommit();
+
+  // And with the current observer's erase set, not one a frame stale (§6.4.5).
+  tierPaint.patchVisibility();
+
+  // And with lights already sized for the current selection's low-light vision (§4.4d). Installed
+  // last so it runs first: the repaint above has to see the new radii.
+  llv.patchVisibility();
 
   // The darkness layer is the one effects layer core never vision-masks, so a darkness source
   // draws through walls. A prototype patch on the layer's `_draw`, at `init` because the canvas
@@ -585,6 +597,8 @@ Hooks.once("ready", () => {
       stats: field.stats,
       explain: field.explain,
       invalidate: field.invalidate,
+      // §9.12: recomputes, and identical re-initialisations the content check absorbed.
+      cacheStats: field.cacheStats,
     },
 
     // The renderer (DESIGN.md §6)
@@ -615,6 +629,10 @@ Hooks.once("ready", () => {
       // real and every cell it lands on was already at or below the clamp.
       paint: tierPaint.stats,
       repaint: () => tierPaint.repaint({ force: true }),
+      // The last repaint request, quietly: when, observers seen, skipped as unchanged or not.
+      lastRepaint: tierPaint.lastRepaint,
+      // The last 40 repaint requests and the select, release, and lighting-refresh events around them.
+      repaintLog: tierPaint.repaintLog,
       // §4.3.1's clamp as a point query — is this point outside every observer's line of sight, and
       // so drawn Dark whatever the model says is there. `true` where the readout reads Dark.
       unseenAt: tierPaint.unseenAt,
@@ -813,8 +831,14 @@ Hooks.once("ready", () => {
       regionsFor: umbra.regionsFor,
       isEnabled: umbra.isUmbraPerceptionEnabled,
       mask: umbraMask.status,
+      // The last refresh's counters, quietly; safe to call every frame.
+      lastPass: umbraMask.lastPassReport,
       // §4.3.2: registered withheld-region providers.
       withheld: withheld.list,
+      // §4.3.3: registered revealed-region providers.
+      revealed: revealed.list,
+      // §4.3.4: registered unexplored-region providers.
+      unexplored: unexplored.list,
       invalidate: umbra.invalidate,
       // `stats().rebuildMs` is the cold path by construction; this is the only readout that
       // exercises the one `perceivedTier` actually calls.

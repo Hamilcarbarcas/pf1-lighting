@@ -341,11 +341,46 @@ export function foldTier(base, area) {
  * when §3.6 does.
  */
 export function covers(area, point) {
+  // Bounds first (DESIGN.md §9.12): every token's visibility test asks this of every area, every
+  // frame a token moves, and a spill band's even-odd test walks all its rings.
+  const b = boundsOf(area);
+  if (b && ((point.x < b.x) || (point.x > b.x + b.width) || (point.y < b.y) || (point.y > b.y + b.height))) {
+    return false;
+  }
   // A derived area (§3.4) has no document and no `polygonTree`; it carries its own rings, which can
   // contain holes, so the test is even-odd across all of them rather than inside-any — see
   // `geometry.containsPoint`.
   if (area.derived) return containsPoint(area.polygons ?? [], point);
   return area.region.polygonTree?.testPoint(point) === true;
+}
+
+/** Derived areas' bounds, per area object (spill replaces the objects when it republishes). */
+const derivedBounds = new WeakMap();
+
+/**
+ * An area's bounding rectangle, or null when it has none to offer. A region's is core's own,
+ * cached by core and reset when its shape changes; a derived area's is computed once.
+ */
+function boundsOf(area) {
+  if (!area.derived) return area.region?.bounds ?? null;
+  let b = derivedBounds.get(area);
+  if (b !== undefined) return b;
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (const polygon of area.polygons ?? []) {
+    const p = polygon.points;
+    for (let i = 0; i < p.length; i += 2) {
+      if (p[i] < x0) x0 = p[i];
+      if (p[i] > x1) x1 = p[i];
+      if (p[i + 1] < y0) y0 = p[i + 1];
+      if (p[i + 1] > y1) y1 = p[i + 1];
+    }
+  }
+  b = Number.isFinite(x0) ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : null;
+  derivedBounds.set(area, b);
+  return b;
 }
 
 /**

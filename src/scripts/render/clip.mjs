@@ -42,6 +42,9 @@ import {
 let applied = false;
 let visibilityPatched = false;
 
+/** A put-out light's shape for the visibility mask; `drawShape` renders nothing. */
+const NOTHING = new PIXI.Polygon([]);
+
 /**
  * Give the visibility mask the clipped shape too. DESIGN.md §6.2.4, §7.0.
  *
@@ -67,10 +70,14 @@ let visibilityPatched = false;
  * A hole in a light's mask contribution is the correct answer: inside a darkness that light
  * genuinely does not let anything be seen.
  *
- * Self-gating — only sources carrying a `RENDER_SHAPE` are swapped, and only the renderer ever sets
- * one, so with the renderer off this is a loop over the light sources and nothing else. A prototype
- * patch rather than a class mixin, so it neither races the canvas group's construction nor cares who
- * else has touched `CanvasVisibility`.
+ * A light the renderer has put out ({@link HIDDEN}) reveals nothing at all. Withholding its mesh
+ * stopped it lighting the ground but left its full circle in the mask, so a torch inside a darkness
+ * explored the ground it no longer lit (2026-10-07).
+ *
+ * Self-gating — only sources carrying a `RENDER_SHAPE` or `HIDDEN` are swapped, and only the renderer
+ * ever sets either, so with the renderer off this is a loop over the light sources and nothing else.
+ * A prototype patch rather than a class mixin, so it neither races the canvas group's construction
+ * nor cares who else has touched `CanvasVisibility`.
  */
 export function patchVisibility() {
   if (visibilityPatched) return;
@@ -82,7 +89,7 @@ export function patchVisibility() {
   proto.refreshVisibility = function pf1LightingRefreshVisibility(...args) {
     const swapped = [];
     for (const source of canvas.effects?.lightSources?.values() ?? []) {
-      const render = source[RENDER_SHAPE];
+      const render = source[HIDDEN] ? NOTHING : source[RENDER_SHAPE];
       if (!render) continue;
       swapped.push([source, source.shape]);
       source.shape = render;

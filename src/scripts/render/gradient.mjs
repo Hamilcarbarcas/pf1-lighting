@@ -41,7 +41,7 @@ import { MODULE_ID } from "../constants.mjs";
 import { containsPoint } from "../geometry.mjs";
 import { stepTier } from "../model/tiers.mjs";
 import * as spill from "../model/spill.mjs";
-import { GRADIENT_SORT, classes } from "./darkness-shaders.mjs";
+import { GRADIENT_SORT, GROUND_ELEVATION, classes, elevationBand } from "./darkness-shaders.mjs";
 import * as lightRamps from "./light-ramps.mjs";
 import { levelAtDistance, width as transitionWidth } from "./transition.mjs";
 import { darknessFor } from "./levels.mjs";
@@ -89,6 +89,8 @@ const pool = [];
 let used = 0;
 let lastVersion = null;
 let lastProfile = null;
+/** How many extra meshes the last sync drew; see {@link sync}. */
+let lastExtra = 0;
 let lastStats = null;
 
 /**
@@ -97,8 +99,9 @@ let lastStats = null;
  * @remarks
  * The same five properties `darkness-texture.regionStub` enumerates, listed again rather than shared
  * for the reason that file gives: a missing one throws inside PIXI's render loop, once per frame,
- * blacking the canvas out instead of producing an attributable error. The only difference is
- * `testPoint`, which answers from the ramp's outline rather than a cell's rings.
+ * blacking the canvas out instead of producing an attributable error. Two differences: `testPoint`
+ * answers from the ramp's outline rather than a cell's rings, and `elevation` is per ramp: a light
+ * claims its own, everything else the ground (§6.2.12).
  */
 function regionStub(entry) {
   const inside = (point) =>
@@ -110,7 +113,9 @@ function regionStub(entry) {
     document: {
       testPoint: inside,
       polygonTree: { testPoint: inside },
-      elevation: { bottom: -Infinity, top: Infinity },
+      get elevation() {
+        return entry.elevation;
+      },
     },
   };
 }
@@ -147,6 +152,8 @@ function create(index) {
     blur: null,
     /** `"light"`, `"clamp"`, or undefined for a §3.4 ground ramp. */
     kind: undefined,
+    /** The band core's roof test reads. {@link apply} */
+    elevation: GROUND_ELEVATION,
   };
   entry.stub = regionStub(entry);
   entry.mesh = new RegionMesh(entry.stub, shaders.gradient);
@@ -193,6 +200,7 @@ function park(entry) {
   entry.active = false;
   entry.id = null;
   entry.kind = undefined;
+  entry.elevation = GROUND_ELEVATION;
   entry.outline = [];
   entry.mesh.visible = false;
 }
@@ -237,6 +245,10 @@ function apply(entry, ramp) {
   // Assigned unconditionally, like every other per-entry flag: this project's recurring pooling bug
   // is a reused entry keeping the treatment of what it used to be.
   entry.kind = ramp.kind;
+  // §6.2.12. A light ramp carries its source's elevation and is tested as core tests that source, so
+  // a lamp in a room stops at the roof and one above it lights it. Spill, halos and clamps are the
+  // planar field's (§3.6) and sit at ground.
+  entry.elevation = elevationBand(ramp.elevation);
   entry.outline = ramp.outline ?? [];
   entry.vertices = ramp.vertices.length / 2;
   entry.triangles = ramp.triangles;
@@ -322,11 +334,16 @@ export function sync(extra = [], { force = false } = {}) {
   // would drop light meshes whenever a token moved without a window changing, which is every token
   // move.
   const profile = `${transitionWidth()}|${spill.ramps().length ? ladderFor(spill.ramps()[0]).join(",") : ""}`;
-  if (!force && !extra.length && lastVersion === spill.version() && lastProfile === profile) {
+  // Skipped only when the last call had no extra meshes either: going from some (an observer's
+  // clamps) to none has to park them. Spill used to bump its version on every light re-init, which
+  // hid this; since §9.12 it bumps only on a real change, and a GM deselecting a token kept the
+  // token's clamps on the map until something else repainted (found 2026-10-08).
+  if (!force && !extra.length && !lastExtra && lastVersion === spill.version() && lastProfile === profile) {
     return used;
   }
   lastVersion = spill.version();
   lastProfile = profile;
+  lastExtra = extra.length;
 
   const t0 = performance.now();
 

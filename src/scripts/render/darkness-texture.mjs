@@ -55,7 +55,9 @@
  * half (§6.4.5), where alpha genuinely is the quantity.
  *
  * The texture is cleared to `canvas.environment.darknessLevel`, and since §7.0 step 6 the ground
- * covers the scene rect unconditionally, so that clear is unreachable.
+ * covers the scene rect unconditionally, so that clear is unreachable, except under a
+ * light-restricting roof, where every ground mesh fails core's depth test. The sky covers those
+ * pixels instead (§6.2.12, {@link skyRegion}).
  *
  * ## Duck-typing a Region
  *
@@ -74,7 +76,14 @@ import {
   toClipperPath,
   union,
 } from "../geometry.mjs";
-import { BACKSTOP_SORT, GROUND_SORT, classes } from "./darkness-shaders.mjs";
+import {
+  BACKSTOP_SORT,
+  GROUND_ELEVATION,
+  GROUND_SORT,
+  SKY_ELEVATION,
+  SKY_SORT,
+  classes,
+} from "./darkness-shaders.mjs";
 import * as gradient from "./gradient.mjs";
 import { darknessFor } from "./levels.mjs";
 import * as fieldBlur from "./texture-blur.mjs";
@@ -126,6 +135,9 @@ let merged = 0;
 
 /** Whether the last paint added a seam backstop — see {@link backstopFor}. */
 let backstopped = false;
+
+/** The level the last paint gave the sky, or null for none. See {@link skyRegion}. */
+let skyLevel = null;
 
 /* -------------------------------------------- */
 /*  Ground softening (§6.4.2, reopened)         */
@@ -237,18 +249,87 @@ function syncEraseFilter(entry) {
     canvas.addBlurFilter(entry.eraseBlur);
   }
 
-  // The filter composites, not the mesh. PIXI renders a filtered display object into a temporary
-  // texture and draws that with `filter.blendMode`, which defaults to `NORMAL` — so attaching a
-  // blur to an `ERASE`-blended mesh quietly makes it normal-blended: it stops erasing and starts
-  // painting white into the global light's mask, either invisible or the exact opposite of the
-  // intent depending on what lies under it.
-  //
-  // Read off the mesh rather than assumed, because core owns it: `#refreshDynamicIllumination`
-  // assigns `ERASE` or `MAX_COLOR` per mesh depending on whether the region falls outside the
-  // global light's band (`visibility.mjs:643-651`), on its own clock.
-  entry.eraseBlur.blendMode = mesh.blendMode;
-
+  // Blend modes are split between mesh and filter at render time; see {@link erasingMeshClass}.
   if (mesh.filters?.[0] !== entry.eraseBlur) mesh.filters = [entry.eraseBlur];
+}
+
+/**
+ * `RegionMesh` for the erasing half of a pair, correct under a blur. DESIGN.md §6.4.5.
+ *
+ * @remarks
+ * A filtered mesh draws into a cleared temporary texture, and `ERASE` onto nothing is nothing, so a
+ * blurred erase mesh erased nothing: global light revealed and explored every Dark region on a lit
+ * scene. Inside the filter the mesh draws plain coverage; the filter composites with whatever core
+ * assigned this refresh (`visibility.mjs:643-651`). Set per render, because core reassigns
+ * `blendMode` on its own clock.
+ */
+function erasingMeshClass(RegionMesh) {
+  if (erasing?.base === RegionMesh) return erasing.cls;
+  erasing = { base: RegionMesh, cls: makeErasingMesh(RegionMesh) };
+  return erasing.cls;
+}
+
+let erasing = null;
+
+/** True while core commits fog; see {@link patchFogCommit}. */
+let fogCommitting = false;
+
+let fogPatched = false;
+
+/**
+ * Commit fog with the erase meshes unblurred. DESIGN.md §6.4.5.
+ *
+ * @remarks
+ * Fog records any non-zero reveal as explored, so the blur's soft rim left an explored halo just
+ * inside every erased region. Exploration takes the hard boundary; the screen keeps the soft one.
+ */
+export function patchFogCommit() {
+  if (fogPatched) return;
+  const proto = foundry.canvas.perception?.FogManager?.prototype;
+  if (!proto?.commit) return;
+  fogPatched = true;
+
+  const original = proto.commit;
+  proto.commit = function pf1LightingFogCommit(...args) {
+    fogCommitting = true;
+    try {
+      return original.apply(this, args);
+    } finally {
+      fogCommitting = false;
+    }
+  };
+}
+
+function makeErasingMesh(RegionMesh) {
+  return class PF1LightingErasingRegionMesh extends RegionMesh {
+    /** @override */
+    render(renderer) {
+      if (!fogCommitting || !this.filters?.length) return super.render(renderer);
+      // Unfiltered, `_render` below falls through and the mesh erases with core's own blend.
+      const filters = this.filters;
+      this.filters = null;
+      try {
+        super.render(renderer);
+      } finally {
+        this.filters = filters;
+      }
+    }
+
+    /** @override */
+    _render(renderer) {
+      const filter = this.filters?.[0];
+      if (!filter) return super._render(renderer);
+      const blend = this.blendMode;
+      // Read at filter pop, after this returns.
+      filter.blendMode = blend;
+      this.blendMode = PIXI.BLEND_MODES.NORMAL;
+      try {
+        super._render(renderer);
+      } finally {
+        this.blendMode = blend;
+      }
+    }
+  };
 }
 
 /**
@@ -358,6 +439,47 @@ function mergeByLevel(cells) {
 }
 
 /**
+ * Every erasing region as one, for the illumination meshes only. DESIGN.md §6.4.5.
+ *
+ * @remarks
+ * Two blurred erase meshes that abut each fade to half at the shared edge, and erasing half twice
+ * leaves a quarter revealed: a lit ring around a darkness inside dark ground. Erase is binary, so the
+ * regions union with no loss, and the blur then falls only on edges that border revealed ground.
+ *
+ * @param {{outer: PIXI.Polygon, holes: PIXI.Polygon[], level: number, erase: boolean}[]} regions
+ * @returns {object[]} Erase-only regions
+ */
+function eraseUnion(regions) {
+  const erasing = regions.filter((region) => region.erase);
+  if (!erasing.length) return [];
+
+  let rings;
+  if (erasing.length === 1) rings = [{ outer: erasing[0].outer, holes: erasing[0].holes ?? [] }];
+  else {
+    const paths = [];
+    for (const region of erasing) {
+      paths.push(toClipperPath(region.outer, CLIPPER_SCALE));
+      for (const hole of region.holes ?? []) {
+        const path = toClipperPath(hole, CLIPPER_SCALE);
+        if (path.length >= 3) paths.push(path);
+      }
+    }
+    rings = groupRings(fromClipperPaths(union(paths), CLIPPER_SCALE));
+  }
+
+  // Not a claimant and never drawn into the texture; `level` only keeps the readouts honest.
+  const level = Math.max(...erasing.map((region) => region.level));
+  return rings.map(({ outer, holes }) => ({
+    outer,
+    holes: holes ?? [],
+    level,
+    erase: true,
+    eraseOnly: true,
+    hardEdge: false,
+  }));
+}
+
+/**
  * A scene-wide region at the darkest level present, to sit under every seam.
  *
  * @remarks
@@ -425,6 +547,38 @@ function backstopFor(regions) {
     erase: false,
     backstop: true,
     hardEdge: false,
+  };
+}
+
+/**
+ * The sky: a scene-wide region at the outdoor ambient tier, under everything. DESIGN.md §6.2.12.
+ *
+ * @remarks
+ * What a light-restricting roof shows. Every other mesh in this texture claims {@link
+ * GROUND_ELEVATION} and fails core's depth test under a roof, so without this the roof would read the
+ * container's clear color: `canvas.environment.darknessLevel`, which is the scene's raw number, not
+ * the tier the model quantized it to, and knows nothing of §4.4c.
+ *
+ * Not a claimant, for {@link backstopFor}'s reason. It does carry `erase`: on a roof it stands in for
+ * the outdoor `ambient` cell, and that cell cuts global light's reveal wherever it does. Its erase
+ * mesh runs roof-only; `darkness-shaders`' `illumination` class says why it cannot be unbounded.
+ *
+ * @param {number|undefined} tier - The outdoor ambient tier, as the field's own `ambient` cell has it
+ * @returns {object|null}
+ */
+function skyRegion(tier) {
+  if (tier === undefined) return null;
+  const rect = canvas?.dimensions?.sceneRect;
+  if (!rect) return null;
+  const { level, erase } = darknessFor(tier);
+  return {
+    outer: rect.toPolygon(),
+    holes: [],
+    level,
+    erase,
+    backstop: false,
+    hardEdge: true,
+    sky: true,
   };
 }
 
@@ -518,9 +672,12 @@ function regionStub(entry) {
       polygonTree: { testPoint: inside },
 
       // Required; its absence throws once per frame, since `_preRender` destructures it unguarded.
-      // Unbounded is safe: `mapElevation` binary-searches a sorted table and returns 0 below its
-      // first entry (`masks/depth.mjs:55-57`), converging at the extremes.
-      elevation: { bottom: -Infinity, top: Infinity },
+      // A getter, because the pool reuses an entry as sky or ground from one paint to the next. Was
+      // unbounded for every mesh, which passed the roof test everywhere and painted each room onto
+      // its roof (§6.2.12).
+      get elevation() {
+        return entry.sky ? SKY_ELEVATION : GROUND_ELEVATION;
+      },
     },
   };
 }
@@ -628,6 +785,8 @@ function create(index) {
     blur: null,
     /** Is this the scene-wide seam backstop rather than a region? {@link backstopFor} */
     backstop: false,
+    /** Is this the sky, the one mesh that reaches a roof? {@link skyRegion} */
+    sky: false,
     /** Is this boundary architecture rather than a light falloff? {@link syncFilter} */
     hardEdge: false,
   };
@@ -637,7 +796,9 @@ function create(index) {
   // sort key from the painted level so the backstop can be pinned below the gradient meshes
   // (§7.0 step 5). Everything else about it is core's.
   entry.dl = new RegionMesh(entry.stub, custom.sortable);
-  entry.il = new RegionMesh(entry.stub, shaders.IlluminationDarknessLevelRegionShader);
+  // Core's erasing shader plus a roof-only switch the sky needs (§6.2.12); off, it is core's.
+  const ErasingRegionMesh = erasingMeshClass(RegionMesh);
+  entry.il = new ErasingRegionMesh(entry.stub, custom.illumination);
   entry.dl.name = `${MODULE_ID}.dl.${index}`;
   entry.il.name = `${MODULE_ID}.il.${index}`;
   for (const mesh of [entry.dl, entry.il]) {
@@ -687,11 +848,14 @@ function park(entry) {
   // (`HARD_EDGES`, 2026-08-23). `apply` reassigns it too; clearing here keeps a parked entry from
   // telling `refreshFilters` it is something it is no longer going to be.
   entry.backstop = false;
+  entry.sky = false;
+  entry.eraseOnly = false;
   entry.hardEdge = false;
   entry.dl.visible = false;
   entry.il.visible = false;
   // Invisible is not enough on its own — see {@link PARKED_MODIFIER}.
   entry.il.shader.modifier = PARKED_MODIFIER;
+  entry.il.shader.roofOnly = false;
 }
 
 /**
@@ -721,16 +885,21 @@ export function setEraseDisabled(disabled) {
 
 export const isEraseDisabled = () => eraseDisabled;
 
-function apply(entry, outer, holes, level, erase, backstop = false, hardEdge = false) {
+function apply(
+  entry, outer, holes, level, erase, backstop = false, hardEdge = false, sky = false, eraseOnly = false
+) {
   if (eraseDisabled) erase = false;
   entry.active = true;
-  // Empty for the backstop, on purpose. `rings` is what `regionStub`'s `testPoint` answers from,
-  // and a scene-wide claimant would put its level in front of `getDarknessLevel` for any point no
-  // cell covers. See {@link backstopFor}.
-  entry.rings = backstop ? [] : holes?.length ? [outer, ...holes] : [outer];
+  // Empty for the backstop and the sky, on purpose. `rings` is what `regionStub`'s `testPoint`
+  // answers from, and a scene-wide claimant would put its level in front of `getDarknessLevel` for
+  // any point no cell covers. See {@link backstopFor}. Empty for an erase-only entry too: its
+  // ground mesh is not drawn, so it claims no level.
+  entry.rings = backstop || sky || eraseOnly ? [] : holes?.length ? [outer, ...holes] : [outer];
   entry.level = level;
   entry.erase = erase;
   entry.backstop = backstop;
+  entry.sky = sky;
+  entry.eraseOnly = eraseOnly;
   // Assigned unconditionally, like every other per-entry flag. A pooled entry carrying `hardEdge`
   // from a previous rebuild and reused for an ordinary darkness would silently lose its feather —
   // the fourth instance of this project's recurring pooling bug, after `animation`, `HARD_EDGES`
@@ -745,7 +914,8 @@ function apply(entry, outer, holes, level, erase, backstop = false, hardEdge = f
   // to be assigned above.
   syncFilter(entry);
 
-  entry.dl.visible = true;
+  // An erase-only entry carries the illumination mesh alone; see {@link eraseUnion}.
+  entry.dl.visible = !eraseOnly;
   entry.dl.shader.modifier = level;
   // Where this mesh sits in the container's draw order. The ladder lives in
   // `render/darkness-shaders.mjs` and is the composition rule for the whole texture (§7.0 step 6).
@@ -754,7 +924,7 @@ function apply(entry, outer, holes, level, erase, backstop = false, hardEdge = f
   // partition space — and leaving the two bands below free for the light and clamp passes, which
   // must composite over finished ground. The backstop goes under everything, the spill gradients
   // it exists to sit beneath included.
-  entry.dl.shader.sortLevel = backstop ? BACKSTOP_SORT : GROUND_SORT + level;
+  entry.dl.shader.sortLevel = sky ? SKY_SORT : backstop ? BACKSTOP_SORT : GROUND_SORT + level;
   // `getDarknessLevel` reads the uniform, which `_preRender` writes only when the mesh is drawn
   // (`effects.mjs:395`). Setting it here keeps a point query correct on the tick the cell was
   // painted rather than one frame behind.
@@ -762,6 +932,9 @@ function apply(entry, outer, holes, level, erase, backstop = false, hardEdge = f
 
   entry.il.visible = erase;
   entry.il.shader.modifier = erase ? ERASE_MODIFIER : PARKED_MODIFIER;
+  // The sky erases on roofs only. Scene-wide, it would cut global light's reveal out of every area
+  // brighter than the sky, and nothing un-erases. See {@link skyRegion}.
+  entry.il.shader.roofOnly = sky;
 }
 
 /* -------------------------------------------- */
@@ -775,9 +948,11 @@ function apply(entry, outer, holes, level, erase, backstop = false, hardEdge = f
  * for the ground blur and not merely a tidy-up.
  *
  * @param {{polygon: PIXI.Polygon, holes?: PIXI.Polygon[], tier: number}[]} cells
+ * @param {object} [options]
+ * @param {number} [options.sky] - The outdoor ambient tier, for {@link skyRegion}
  * @returns {number} How many regions were painted
  */
-export function paint(cells) {
+export function paint(cells, { sky } = {}) {
   if (!canvas?.ready) return 0;
   if (stale()) {
     for (const entry of pool) dropFilter(entry);
@@ -788,10 +963,19 @@ export function paint(cells) {
   const regions = mergeByLevel(cells);
   merged = cells.length - regions.length;
 
+  // Ground regions paint brightness only; the erase goes on as one union (§6.4.5).
+  const erased = eraseUnion(regions);
+  for (const region of regions) region.erase = false;
+  regions.push(...erased);
+
   // Underneath everything, and only when the blur can produce a seam for it to fill.
   const backstop = backstopFor(regions);
   if (backstop) regions.push(backstop);
   backstopped = !!backstop;
+
+  const skyward = skyRegion(sky);
+  if (skyward) regions.push(skyward);
+  skyLevel = skyward?.level ?? null;
 
   let index = 0;
   for (const region of regions) {
@@ -804,7 +988,9 @@ export function paint(cells) {
       region.level,
       region.erase,
       region.backstop,
-      region.hardEdge
+      region.hardEdge,
+      region.sky === true,
+      region.eraseOnly === true
     );
     index++;
   }
@@ -823,6 +1009,7 @@ export function clear() {
   used = 0;
   merged = 0;
   backstopped = false;
+  skyLevel = null;
   refresh();
 }
 
@@ -1016,6 +1203,9 @@ export function status(x, y) {
     // The second half of the same fix — a scene-wide mesh at the darkest level, under every
     // seam. Only present with the blur on and more than one level in play.
     backstopped,
+    // §6.2.12: what a light-restricting roof reads. Null means no sky was painted, and a roof then
+    // shows the container's clear color rather than the outdoor tier.
+    sky: skyLevel,
     pooled: pool.length,
     erasing: pool.filter((e) => e.active && e.erase).length,
     levels: pool.filter((e) => e.active).map((e) => e.level),

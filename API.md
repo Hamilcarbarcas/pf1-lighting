@@ -18,6 +18,8 @@ const api = game.modules.get("pf1-lighting")?.api;
 - [The scene's light level](#the-scenes-light-level)
 - [Light effects](#light-effects)
 - [Withheld regions](#withheld-regions)
+- [Revealed regions](#revealed-regions)
+- [Unexplored regions](#unexplored-regions)
 - [Hooks](#hooks)
 - [Cost](#cost)
 - [Examples](#examples)
@@ -277,6 +279,70 @@ api.withheld.register("my-module.test", (source) => {
 });
 ```
 
+
+# Revealed regions
+
+The opposite of withheld regions: show a particular observer areas beyond what it can normally see.
+A revealed area is lit like any other ground (dark where no light reaches, within darkvision range
+for darkvision), counts as seen ground, and is never explored: once the reveal ends, the area returns
+to whatever fog it had. Withheld regions do not apply to it: they carve what the observer sees of the
+ground, and a reveal is something your provider has already decided is seen. Purely visual, as with
+withheld regions.
+
+Feature-detect with `api.revealed !== undefined`.
+
+| | |
+| --- | --- |
+| `api.revealed.register(id, provider, { layers })` | Register a provider. Returns a function that unregisters it |
+| `api.revealed.unregister(id)` | Remove a provider |
+| `api.revealed.invalidate()` | Your provider's output changed for a reason other than an observer moving. Triggers a vision refresh |
+| `api.revealed.active()` | `true` while reveals are drawn, which is always while this module is enabled |
+| `api.revealed.LAYERS` | `{ LIGHT: "light", SIGHT: "sight" }` |
+| `api.revealed.generation` | A counter that changes whenever any provider's output may have |
+
+**`provider(visionSource)`** returns an array of `PIXI.Polygon` to reveal to that observer, or
+`null`, with the same caching contract as withheld regions. Reveals beyond the observer's range for a
+layer (its light-perception range for `"light"`, its sight range for `"sight"`) are trimmed off.
+
+**Raised surfaces.** Set `elevation` on a returned polygon (`polygon.elevation = 15`) when it shows
+something above the ground, such as a rooftop. Its `"light"` reveal then shows only where light
+reaches that height: lights at or above it, or global illumination when the scene is bright enough
+to light roofs. Without it, a lamp inside a building would count as lighting the roof above it.
+
+**`layers`** chooses what is revealed, both by default: `"light"` shows the area where light reaches
+it, `"sight"` within darkvision. Revealed on both, the area is also painted as seen ground.
+
+```js
+const api = game.modules.get("pf1-lighting")?.api;
+// Show every observer a 200 px square beyond a wall (a test, not a use case).
+api.revealed.register("my-module.test", (source) => {
+  const { x, y } = source.origin;
+  return [new PIXI.Polygon([x + 300, y - 100, x + 500, y - 100, x + 500, y + 100, x + 300, y + 100])];
+});
+```
+
+
+# Unexplored regions
+
+Parts of an observer's view that show normally but are never recorded in fog of war. Use it for
+things the observer sees over or onto without seeing into, such as a roof seen from above: the roof
+shows, and the room under it stays unexplored until someone actually sees inside. Purely about fog:
+light, the light level tooltip, and token visibility treat the area as seen.
+
+Feature-detect with `api.unexplored !== undefined`.
+
+| | |
+| --- | --- |
+| `api.unexplored.register(id, provider, { layers })` | Register a provider. Returns a function that unregisters it |
+| `api.unexplored.unregister(id)` | Remove a provider |
+| `api.unexplored.invalidate()` | Your provider's output changed for a reason other than an observer moving. Triggers a vision refresh |
+| `api.unexplored.active()` | `true` while the split is applied, which is always while this module is enabled |
+| `api.unexplored.LAYERS` | `{ LIGHT: "light", SIGHT: "sight" }` |
+| `api.unexplored.generation` | A counter that changes whenever any provider's output may have |
+
+**`provider(visionSource)`** returns an array of `PIXI.Polygon` to keep out of fog for that observer,
+or `null`, with the same caching contract as withheld regions. Withheld regions still win: a part of
+the view another provider withholds stays hidden, kept or not.
 
 # Hooks
 
