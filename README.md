@@ -33,6 +33,7 @@ A complete overhaul of foundry's lighting system to match pathfinder 1e's rules 
     - [Roofs](#roofs)
   - [Light level tooltip](#light-level-tooltip)
   - [Token Vision](#token-vision)
+  - [Roll Bonuses light level](#roll-bonuses-light-level)
 - [Configuration](#configuration)
   - [Edit Light Sources](#edit-light-sources)
   - [Edit Presets](#edit-presets)
@@ -419,6 +420,19 @@ controls, or a hotkey (**Alt+O** by default).
 - **Off** - you keep full GM vision regardless of selected tokens
 
 This setting has no effect on non-GM users.
+
+## Roll Bonuses light level
+
+With [Roll Bonuses](https://github.com/dmrickey/fvtt-ckl-roll-bonuses) installed, items gain a
+**Light Level** target: the bonus applies only while a token's light is **at**, **above**, or
+**below** a chosen level.
+
+- **Whose light** - Self, Target, Self or Target, or Self and Target. With several targets, every
+  target must match.
+- A token's light is its **brightest** square, read from the map rather than from anyone's view.
+
+For light sensitivity, use **Self**, **At**, **Bright** with a -1 attack bonus and a -1 Perception
+bonus (dazzled).
 
 # Configuration
 

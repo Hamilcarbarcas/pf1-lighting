@@ -37,6 +37,8 @@ import * as cellOverlay from "./ui/cell-overlay.mjs";
 import * as lightConfig from "./ui/light-config.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
 import * as publicApi from "./api.mjs";
+// Self-registering on roll-bonuses' ready hook; inert without that module (§13).
+import "./roll-bonuses-target.mjs";
 import * as presets from "./model/presets.mjs";
 import * as presetEditor from "./ui/preset-editor.mjs";
 import * as companion from "./model/companion.mjs";

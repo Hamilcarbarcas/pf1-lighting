@@ -336,6 +336,34 @@
     "Senses": {
       "Sightless": "Sightless",
       "SightlessOverrides": "No visual senses: {senses} ignored."
+    },
+    "RollBonuses": {
+      "LightLevel": {
+        "Label": "Light Level",
+        "Tooltip": "Applies while the light a token stands in is at, above, or below a chosen level. A token's light is its brightest square. Self is the actor's token; Target is every current target.",
+        "SubjectLabel": "Whose light",
+        "SubjectTooltip": "Self or Target: either one matches. Self and Target: both must match. With several targets, every target must match.",
+        "Subject": {
+          "self": "Self",
+          "target": "Target",
+          "either": "Self or Target",
+          "both": "Self and Target"
+        },
+        "ComparisonLabel": "Compared",
+        "ComparisonTooltip": "At matches the chosen level only. Above and Below exclude it.",
+        "Comparison": {
+          "at": "At",
+          "above": "Above",
+          "below": "Below"
+        },
+        "TierLabel": "Level",
+        "TierTooltip": "The light level compared against, as shown by the light level tooltip.",
+        "Fluent": {
+          "at": "Light at {subject}: {tier}",
+          "above": "Light at {subject}: above {tier}",
+          "below": "Light at {subject}: below {tier}"
+        }
+      }
     }
   }
 }

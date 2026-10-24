@@ -10,6 +10,9 @@
 ## Unreleased
 
 ### Added
+- **Light Level target for Roll Bonuses**: with Roll Bonuses installed, a bonus can apply only while
+  the actor's token, its target, or both are at, above, or below a chosen light level, for effects
+  such as light sensitivity.
 - **Other modules can keep part of a view out of fog of war** (`api.unexplored`, documented in API.md):
   the area shows normally but is never recorded as explored.
 - **Revealed areas can be raised** (`polygon.elevation`, in API.md): a revealed rooftop is lit only by
