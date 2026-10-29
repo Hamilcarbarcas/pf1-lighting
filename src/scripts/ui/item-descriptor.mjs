@@ -231,6 +231,7 @@ function inject(app, html) {
     // add a second one.
     badge: null,
     title: t("Emits.Toggle"),
+    niche: true,
   });
 }
 

@@ -273,7 +273,8 @@ in the mod's settings allows for custom registration of more items.
 ### Light on an item
 
 Items can be configured individually as light sources directly on the item as well, on the **Advanced** 
-tab of its item sheet:
+tab of its item sheet (on an item that doesn't emit light yet, click **Show N more sections** at the
+foot of the tab to reveal the section):
 
 | Control | What it does |
 | --- | --- |

@@ -74,6 +74,7 @@
 - **Show light level** is saved per user instead of per browser, so a player's choice follows them to
   any device. A choice saved under the old per-browser setting is not carried over and starts from
   the default (off).
+- The **Emits Light** section is hidden on items that don't emit light. A **Show N more sections** line at the foot of the Advanced tab reveals it (shared sheet kit 1.7.0).
 
 ### Added
 - **Light badge on tokens.** A token with a light effect on it shows a small flame on its right
