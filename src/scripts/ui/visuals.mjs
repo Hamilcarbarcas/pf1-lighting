@@ -45,6 +45,7 @@ import { TIER_SETTINGS } from "../render/levels.mjs";
 import { SETTING_DARK_SIGHT_BRIGHTNESS } from "../vision/blindness.mjs";
 import { SETTING_WIDTH } from "../render/transition.mjs";
 import { SETTING_UNSEEN_DIMMING } from "../render/darkness-mask.mjs";
+import { SETTING_FADE as SETTING_OBSTRUCTED_FADE, SETTING_MEMORY as SETTING_OBSTRUCTED_MEMORY } from "../render/obstructed.mjs";
 
 export const MENU_KEY = "visualsConfig";
 
@@ -71,6 +72,8 @@ const LADDER = [TIER.BRIGHT, TIER.NORMAL, TIER.DIM, TIER.DARK];
 const SLIDERS = [
   { key: SETTING_WIDTH, text: "TransitionWidth", min: 0, max: 4, step: 0.05 },
   { key: SETTING_UNSEEN_DIMMING, text: "UnseenDimming", min: 0, max: 1, step: 0.05 },
+  { key: SETTING_OBSTRUCTED_MEMORY, text: "ObstructedMemory", min: 0, max: 1, step: 0.05 },
+  { key: SETTING_OBSTRUCTED_FADE, text: "ObstructedEdgeFade", min: 0, max: 2, step: 0.05 },
   { key: SETTING_DARK_SIGHT_BRIGHTNESS, text: "DarkSightBrightness", min: -1, max: 1, step: 0.05 },
 ];
 

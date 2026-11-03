@@ -19,6 +19,15 @@ export const LAYERS = Object.freeze({
 
 const VALID_LAYERS = new Set(Object.values(LAYERS));
 
+/**
+ * How a withheld region is drawn (§4.3.5). `unseen` is ground in another room: clamped to Dark and
+ * fogged as usual. `obstructed` is ground in line of sight that something low hides: its light level
+ * shows and its fog is a lighter memory. Only `withheld` reads it; the other registries ignore it.
+ */
+export const TREATMENTS = Object.freeze({ UNSEEN: "unseen", OBSTRUCTED: "obstructed" });
+
+const VALID_TREATMENTS = new Set(Object.values(TREATMENTS));
+
 /** Signed crossings of a ring around a point: +1 per counter-clockwise turn, −1 per clockwise. */
 function windingNumber(points, x, y) {
   let winding = 0;
@@ -44,11 +53,15 @@ function windingNumber(points, x, y) {
  * @property {object[][]} sight   Clipper paths for sight
  * @property {object[][]} every   Clipper paths registered for every layer
  * @property {PIXI.Polygon[]} everyPolygons  The same, as polygons, for point queries
+ * @property {object[][]} unseen  The `every` paths of the `unseen` treatment only (§4.3.5)
+ * @property {PIXI.Polygon[]} unseenPolygons  The same, as polygons
+ * @property {object[][]} obstructed  The `every` paths of the `obstructed` treatment only (§4.3.5)
  * @property {Record<string, number>} byProvider  Polygon counts, for diagnostics
  */
 
 const EMPTY_COLLECTED = Object.freeze({
-  light: [], lightElevations: [], sight: [], every: [], everyPolygons: [], byProvider: Object.freeze({}),
+  light: [], lightElevations: [], sight: [], every: [], everyPolygons: [],
+  unseen: [], unseenPolygons: [], obstructed: [], byProvider: Object.freeze({}),
 });
 
 /**
@@ -57,7 +70,7 @@ const EMPTY_COLLECTED = Object.freeze({
  * @param {string} name  For messages: "withheld" or "revealed"
  */
 export function createRegistry(name) {
-  /** @type {Map<string, {provider: Function, layers: Set<string>}>} */
+  /** @type {Map<string, {provider: Function, layers: Set<string>, treatment: string, depth: Function|null}>} */
   const providers = new Map();
 
   // Bumped on registration changes and invalidate(); paint's signature includes it.
@@ -71,6 +84,10 @@ export function createRegistry(name) {
   /** @type {WeakMap<object, {los: object, generation: number, value: Collected}>} */
   const cache = new WeakMap();
 
+  // §4.3.5: depth meshes per source, on the same key.
+  /** @type {WeakMap<object, {los: object, generation: number, value: object[]}>} */
+  const depthCache = new WeakMap();
+
   /**
    * Something other than an observer's `los` changed what a provider returns. Never asks for
    * `initializeLighting`, which would close §8.3's loop.
@@ -81,14 +98,24 @@ export function createRegistry(name) {
     if (canvas?.ready) canvas.perception.update({ initializeVision: true, refreshVision: true });
   }
 
-  function register(id, provider, { layers = Object.values(LAYERS) } = {}) {
+  function register(id, provider, { layers = Object.values(LAYERS), treatment = TREATMENTS.UNSEEN, depth = null } = {}) {
     if (!id || (typeof id !== "string")) throw new Error(`${name}.register: id must be a string`);
     if (typeof provider !== "function") throw new Error(`${name}.register: provider must be a function`);
     const set = new Set(layers);
     if (!set.size || [...set].some((l) => !VALID_LAYERS.has(l))) {
       throw new Error(`${name}.register: layers must be a non-empty subset of ${[...VALID_LAYERS].join(", ")}`);
     }
-    providers.set(id, { provider, layers: set });
+    if (!VALID_TREATMENTS.has(treatment)) {
+      throw new Error(`${name}.register: treatment must be one of ${[...VALID_TREATMENTS].join(", ")}`);
+    }
+    // A region still visible to one layer is not obstructed ground (§4.3.5).
+    if ((treatment === TREATMENTS.OBSTRUCTED) && (set.size !== VALID_LAYERS.size)) {
+      throw new Error(`${name}.register: the obstructed treatment needs every layer`);
+    }
+    if ((depth !== null) && ((typeof depth !== "function") || (treatment !== TREATMENTS.OBSTRUCTED))) {
+      throw new Error(`${name}.register: depth must be a function, and only with the obstructed treatment`);
+    }
+    providers.set(id, { provider, layers: set, treatment, depth });
     invalidate();
     return () => unregister(id);
   }
@@ -104,8 +131,11 @@ export function createRegistry(name) {
     const hit = cache.get(source);
     if (hit && (hit.los === source.los) && (hit.generation === generation)) return hit.value;
 
-    const value = { light: [], lightElevations: [], sight: [], every: [], everyPolygons: [], byProvider: {} };
-    for (const [id, { provider, layers }] of providers) {
+    const value = {
+      light: [], lightElevations: [], sight: [], every: [], everyPolygons: [],
+      unseen: [], unseenPolygons: [], obstructed: [], byProvider: {},
+    };
+    for (const [id, { provider, layers, treatment }] of providers) {
       let polygons;
       try {
         polygons = provider(source);
@@ -119,6 +149,7 @@ export function createRegistry(name) {
       if (!polygons?.length) continue;
 
       const everyLayer = layers.size === VALID_LAYERS.size;
+      const obstructed = treatment === TREATMENTS.OBSTRUCTED;
       let count = 0;
       for (const polygon of polygons) {
         const path = toClipperPath(polygon, CLIPPER_SCALE);
@@ -129,8 +160,14 @@ export function createRegistry(name) {
         }
         if (layers.has(LAYERS.SIGHT)) value.sight.push(path);
         if (everyLayer) {
+          const asPolygon = polygon instanceof PIXI.Polygon ? polygon : new PIXI.Polygon(polygon.points);
           value.every.push(path);
-          value.everyPolygons.push(polygon instanceof PIXI.Polygon ? polygon : new PIXI.Polygon(polygon.points));
+          value.everyPolygons.push(asPolygon);
+          if (obstructed) value.obstructed.push(path);
+          else {
+            value.unseen.push(path);
+            value.unseenPolygons.push(asPolygon);
+          }
         }
         count++;
       }
@@ -142,13 +179,45 @@ export function createRegistry(name) {
   }
 
   /**
+   * §4.3.5: every depth mesh registered for one observer, `{points, depths, indices}` each. Fails open
+   * per provider: a provider that throws or returns nothing leaves its regions at their lightest.
+   */
+  function collectDepth(source) {
+    if (!providers.size || !source?.los) return [];
+    const hit = depthCache.get(source);
+    if (hit && (hit.los === source.los) && (hit.generation === generation)) return hit.value;
+
+    const value = [];
+    for (const [id, { depth }] of providers) {
+      if (!depth) continue;
+      let mesh;
+      try {
+        mesh = depth(source);
+      } catch (error) {
+        if (!failed.has(`${id}#depth`)) {
+          failed.add(`${id}#depth`);
+          console.error(`PF1 Lighting | ${name} depth provider "${id}" failed; its regions draw flat`, error);
+        }
+        continue;
+      }
+      if (!mesh?.points?.length || !mesh.indices?.length) continue;
+      if (mesh.depths?.length !== mesh.points.length / 2) continue;
+      value.push(mesh);
+    }
+    depthCache.set(source, { los: source.los, generation, value });
+    return value;
+  }
+
+  /**
    * Is this point inside the every-layer regions for this observer? Non-zero winding summed over every
    * polygon, the rule the carve's Clipper ops apply: overlapping regions union, and a hole wound
-   * against its outer ring cancels it.
+   * against its outer ring cancels it. `obstructed: false` leaves out obstructed regions (§4.3.5).
    */
-  function covers(source, point) {
+  function covers(source, point, { obstructed = true } = {}) {
+    const collected = collect(source);
+    const polygons = obstructed ? collected.everyPolygons : collected.unseenPolygons;
     let winding = 0;
-    for (const polygon of collect(source).everyPolygons) winding += windingNumber(polygon.points, point.x, point.y);
+    for (const polygon of polygons) winding += windingNumber(polygon.points, point.x, point.y);
     return winding !== 0;
   }
 
@@ -157,10 +226,11 @@ export function createRegistry(name) {
     unregister,
     invalidate,
     collect,
+    collectDepth,
     covers,
     currentGeneration: () => generation,
     hasProviders: () => providers.size > 0,
     /** Registered ids and their layers, for the console. */
-    list: () => [...providers].map(([id, { layers }]) => ({ id, layers: [...layers] })),
+    list: () => [...providers].map(([id, { layers, treatment, depth }]) => ({ id, layers: [...layers], treatment, depth: !!depth })),
   };
 }

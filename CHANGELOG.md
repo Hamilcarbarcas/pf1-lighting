@@ -10,6 +10,12 @@
 ## Unreleased
 
 ### Added
+- **Obstructed ground** (`treatment: "obstructed"` on withheld regions, documented in API.md): ground
+  that something low hides from an observer, rather than a wall, shows its current light level under
+  thinner fog, set by the new **Obstructed ground memory** slider in Visuals, and is never brighter
+  than the same ground seen directly. Unexplored ground stays black. A module can also shade that
+  ground by depth (`depth`, in API.md), so it fades from ordinary fog to its lightest. It blends into
+  the ground in view beside it over the **Obstructed ground edge fade** width (half a square).
 - **Light Level target for Roll Bonuses**: with Roll Bonuses installed, a bonus can apply only while
   the actor's token, its target, or both are at, above, or below a chosen light level, for effects
   such as light sensitivity.

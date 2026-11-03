@@ -244,11 +244,12 @@ Feature-detect with `api.withheld !== undefined`.
 
 | | |
 | --- | --- |
-| `api.withheld.register(id, provider, { layers })` | Register a provider. Returns a function that unregisters it |
+| `api.withheld.register(id, provider, { layers, treatment, depth })` | Register a provider. Returns a function that unregisters it |
 | `api.withheld.unregister(id)` | Remove a provider |
 | `api.withheld.invalidate()` | Your provider's output changed for a reason other than an observer moving: a setting, your own data. Triggers a vision refresh |
 | `api.withheld.active()` | `true` while the carve is installed, which is always while this module is enabled |
 | `api.withheld.LAYERS` | `{ LIGHT: "light", SIGHT: "sight" }` |
+| `api.withheld.TREATMENTS` | `{ UNSEEN: "unseen", OBSTRUCTED: "obstructed" }`. Present only in versions that support `treatment` |
 | `api.withheld.generation` | A counter that changes whenever any provider's output may have |
 
 **`provider(visionSource)`** returns an array of `PIXI.Polygon` to hide from that observer, or
@@ -266,6 +267,29 @@ contributes nothing until `invalidate()`.
 
 Hidden from both, an area is also painted as unseen ground: fogged at the scene's darkness, with the
 light-level readout reporting fog rather than a level.
+
+**`treatment`** chooses how a hidden area is drawn, `"unseen"` by default:
+
+| Treatment | Drawn as |
+| --- | --- |
+| `"unseen"` | Ground in another room: the fog described above |
+| `"obstructed"` | Ground in the observer's line of sight that something low hides. It shows its current light level under the fog, explored fog over it is thinner (the *Obstructed ground memory* setting), never brighter than the ground seen directly, and the readout reports its level. Unexplored ground stays black. Needs both layers |
+
+`"obstructed"` changes drawing only: the area is still hidden from both layers and never explored.
+Versions without `TREATMENTS` ignore the option and draw the area as unseen.
+
+**`depth`** (obstructed only, optional) shades the area by how deeply it is hidden. It is a function of
+the vision source, cached the same way as the provider, returning triangles over the area or `null`:
+
+```js
+{ points: Float32Array,   // x, y per vertex
+  depths: Float32Array,   // one per vertex: 0 is lightest, 1 or more is ordinary fog
+  indices: Uint16Array }  // or Uint32Array; three per triangle
+```
+
+Depths are interpolated linearly across each triangle and clamped per pixel, where triangles overlap
+the deepest wins, and where several observers see the same spot the one with the shallowest depth wins.
+Parts of the area no triangle covers draw at their lightest, as does the whole area without `depth`.
 
 Register at `setup` or later; the API is published during this module's own `init`, and modules'
 `init` hooks do not run in dependency order.

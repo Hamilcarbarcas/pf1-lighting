@@ -12,9 +12,9 @@
  * Render only, like §4.3.1's unseen ground: `perceivedTier` and detection never read this.
  */
 
-import { createRegistry, LAYERS } from "./region-registry.mjs";
+import { createRegistry, LAYERS, TREATMENTS } from "./region-registry.mjs";
 
-export { LAYERS };
+export { LAYERS, TREATMENTS };
 
 const registry = createRegistry("withheld");
 
@@ -27,6 +27,11 @@ const registry = createRegistry("withheld");
  *   implied. Null or empty means nothing withheld for this observer.
  * @param {object} [options]
  * @param {string[]} [options.layers]  Subset of {@link LAYERS}; both by default
+ * @param {string} [options.treatment]  One of {@link TREATMENTS}; `unseen` by default. `obstructed`
+ *   needs both layers (§4.3.5)
+ * @param {(source: PointVisionSource) => {points: ArrayLike<number>, depths: ArrayLike<number>,
+ *   indices: ArrayLike<number>}|null} [options.depth]  Obstructed only: triangles over the regions,
+ *   one depth per vertex (0 lightest, 1 or more ordinary fog), interpolated linearly (§4.3.5)
  * @returns {() => void} Unregisters
  */
 export const register = registry.register;
@@ -53,5 +58,11 @@ export const list = registry.list;
  */
 export const collect = registry.collect;
 
-/** Is this point withheld from every layer for this observer? Non-zero winding, the carve's own rule. */
+/** §4.3.5: every depth mesh for one observer. Cached like {@link collect}; fails open per provider. */
+export const collectDepth = registry.collectDepth;
+
+/**
+ * Is this point withheld from every layer for this observer? Non-zero winding, the carve's own rule.
+ * `{obstructed: false}` counts only unseen-treatment regions (§4.3.5).
+ */
 export const unseenFor = registry.covers;

@@ -65,6 +65,7 @@ import { lowLightActive, lowLightAmbient } from "../model/registry.mjs";
 import * as umbra from "../vision/umbra.mjs";
 import * as withheld from "../withheld.mjs";
 import * as revealed from "../revealed.mjs";
+import { lightShows as obstructedLightShows } from "./obstructed.mjs";
 import * as ambientTakeover from "./ambient.mjs";
 import * as darknessTexture from "./darkness-texture.mjs";
 import { CLAMP_SORT } from "./darkness-shaders.mjs";
@@ -368,7 +369,9 @@ export function unseenAt(point, { surface = false } = {}) {
     // §5.3: seen by one observer is seen. The first hit ends it. §4.3.2: not where withheld.
     // §4.3.3: revealed regions within light range count as seen, as in seenPaths, and withheld
     // regions do not apply to them.
-    const inLos = source.los.contains(point.x, point.y) && (surface || !withheld.unseenFor(source, point));
+    // §4.3.5: obstructed ground counts as seen here while its light level shows, as in seenPaths.
+    const inLos = source.los.contains(point.x, point.y)
+      && (surface || !withheld.unseenFor(source, point, { obstructed: !obstructedLightShows() }));
     if (inLos || (revealed.revealedFor(source, point) && withinLightRange(source, point))) return false;
   }
   return true;
@@ -395,7 +398,9 @@ function seenPaths(source, losPath) {
   // Wound positive, as Clipper writes every ring it returns: under non-zero fill a negative `los`
   // unioned with a positive reveal, or with another observer's output, cancels where they overlap.
   if (!ClipperLib.Clipper.Orientation(losPath)) losPath = [...losPath].reverse();
-  const { every: unseen } = withheld.collect(source);
+  // §4.3.5: obstructed ground is not clamped while its light level shows; only unseen regions are.
+  const collected = withheld.collect(source);
+  const unseen = obstructedLightShows() ? collected.unseen : collected.every;
   // §4.3.3: regions revealed on every layer are seen too, within the observer's light range.
   // Withheld regions carve only the `los` half (decided 2026-10-08; see umbra-mask's queueReveals).
   const shown = (source.lightRadius > 0) ? revealed.collect(source).every : [];

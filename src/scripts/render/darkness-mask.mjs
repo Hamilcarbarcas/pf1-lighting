@@ -69,6 +69,7 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { TIER, darknessTable } from "../model/tiers.mjs";
+import * as obstructed from "./obstructed.mjs";
 
 export const SETTING_DARKNESS_MASK = "maskDarknessByVision";
 
@@ -188,10 +189,25 @@ export function applyFowPatch() {
   CONFIG.Canvas.visibilityFilter = class extends Base {
     static [FOW_MARK] = true;
 
-    static defaultUniforms = { ...Base.defaultUniforms, pf1ExploredAlpha: 0.2 };
+    static defaultUniforms = {
+      ...Base.defaultUniforms,
+      pf1ExploredAlpha: 0.2,
+      pf1HasObstructed: false,
+      pf1ObstructedMemory: 0.5,
+      pf1HasFeather: false,
+      pf1FeatherTexture: PIXI.Texture.EMPTY,
+      pf1ObstructedTexture: PIXI.Texture.EMPTY,
+    };
 
     /** Whether the substitution took, for {@link status}. */
     static pf1Matched = null;
+
+    /** Whether §4.3.5's obstructed-memory substitution took, for {@link status}. */
+    static pf1ObstructedMatched = null;
+
+    /** Whether §4.3.5's edge-fade substitution took, for {@link status}. */
+    static pf1FeatherMatched = null;
+
 
     /** @override */
     static fragmentShader(options = {}) {
@@ -204,19 +220,71 @@ export function applyFowPatch() {
         .replace("uniform vec3 unexploredColor;", "uniform vec3 unexploredColor;\n    uniform float pf1ExploredAlpha;");
 
       const took = patched !== source;
+
+      // §4.3.5: obstructed ground keeps core's explored fog, thinned by the memory setting, so it is
+      // lighter than ordinary fog but never brighter than the ground seen directly. An untinted map
+      // laid over it instead (the first build) outshone Dark ground at night. `v` is core's vision
+      // sample, declared earlier in the same branch.
+      const anchor = "vec3(1.0)), pf1ExploredAlpha);";
+      const withObstructed = (took && patched.includes(anchor))
+        ? patched
+          .replace(anchor, `${anchor}
+      if ( pf1HasObstructed ) {
+        float pf1Obstructed = texture2D(pf1ObstructedTexture, vMaskTextureCoord).r * (1.0 - v);
+        explored.a *= 1.0 - (pf1ObstructedMemory * pf1Obstructed);
+      }`)
+          .replace("uniform float pf1ExploredAlpha;", `uniform float pf1ExploredAlpha;
+    uniform bool pf1HasObstructed;
+    uniform float pf1ObstructedMemory;
+    uniform sampler2D pf1ObstructedTexture;
+    uniform bool pf1HasFeather;
+    uniform sampler2D pf1FeatherTexture;`)
+        : patched;
+
+      // §4.3.5's edge fade: on seen ground (`v`), core draws nothing; draw the explored overlay on the
+      // rim, twice the feather's red, at the strength the umbra had at the boundary (its lightness is
+      // green over red), fading out from it.
+      const fadeAnchor = "gl_FragColor = mix(fow, vec4(0.0), v);";
+      const withFeather = (withObstructed !== patched) && withObstructed.includes(fadeAnchor)
+        ? withObstructed.replace(fadeAnchor, `${fadeAnchor}
+      if ( pf1HasFeather ) {
+        vec4 pf1Feather = texture2D(pf1FeatherTexture, vMaskTextureCoord);
+        float pf1Edge = clamp(pf1Feather.r * 2.0, 0.0, 1.0);
+        float pf1RimAlpha = pf1ExploredAlpha * (1.0 - (pf1ObstructedMemory * pf1Feather.g / max(pf1Feather.r, 0.001)));
+        gl_FragColor = mix(gl_FragColor, vec4(explored.rgb, pf1RimAlpha * pf1Edge), v);
+      }`)
+        : withObstructed;
+
       if (expected && !took) {
         console.error(
           `${MODULE_ID} | fog dimming: core's VisibilityFilter no longer matches — leaving it alone.`
         );
       }
       if (expected) CONFIG.Canvas.visibilityFilter.pf1Matched = took;
-      return took ? patched : source;
+      // The persistent-vision variant has no explored branch, so nothing to match there.
+      if (expected && !options.persistentVision) {
+        CONFIG.Canvas.visibilityFilter.pf1ObstructedMatched = withObstructed !== patched;
+        CONFIG.Canvas.visibilityFilter.pf1FeatherMatched = withFeather !== withObstructed;
+        if (withObstructed === patched) {
+          console.error(`${MODULE_ID} | obstructed ground: the fog memory substitution did not match – leaving it out.`);
+        }
+      }
+      return took ? withFeather : source;
     }
 
     /** @override */
     apply(filterManager, input, output, clear, currentState) {
       // Live, so the setting is a slider rather than a redraw.
       if ("pf1ExploredAlpha" in this.uniforms) this.uniforms.pf1ExploredAlpha = unseenDimming();
+      if ("pf1HasObstructed" in this.uniforms) {
+        const texture = obstructed.activeTexture();
+        this.uniforms.pf1HasObstructed = !!texture;
+        this.uniforms.pf1ObstructedTexture = texture ?? PIXI.Texture.EMPTY;
+        this.uniforms.pf1ObstructedMemory = obstructed.memory();
+        const feather = obstructed.featherTexture();
+        this.uniforms.pf1HasFeather = !!feather;
+        this.uniforms.pf1FeatherTexture = feather ?? PIXI.Texture.EMPTY;
+      }
       super.apply(filterManager, input, output, clear, currentState);
     }
   };
@@ -365,7 +433,14 @@ export function applyFilterPatch() {
   CONFIG.Canvas.visualEffectsMaskingFilter = class extends Base {
     static [FILTER_MARK] = true;
 
-    static defaultUniforms = { ...Base.defaultUniforms, pf1SceneDarkness: 0 };
+    static defaultUniforms = {
+      ...Base.defaultUniforms,
+      pf1SceneDarkness: 0,
+      pf1HasObstructed: false,
+      pf1ObstructedTexture: PIXI.Texture.EMPTY,
+      pf1HasFeather: false,
+      pf1FeatherTexture: PIXI.Texture.EMPTY,
+    };
 
     static fragmentHeader = `
     varying vec2 vTextureCoord;
@@ -383,10 +458,32 @@ export function applyFilterPatch() {
     uniform bool enableVisionMasking;
     uniform int mode;
     uniform float pf1SceneDarkness;
+    uniform bool pf1HasObstructed;
+    uniform sampler2D pf1ObstructedTexture;
+    uniform bool pf1HasFeather;
+    uniform sampler2D pf1FeatherTexture;
     vec4 baseColor;
     vec4 finalColor;
     ${this.CONSTANTS}
     ${this.PERCEIVED_BRIGHTNESS}
+
+    // §4.3.5's edge fade. \`pf1Vision\` is the vision mask with a rim beside obstructed ground taken
+    // out of it, so the replacement reaches past the umbra's edge and fades; \`pf1Seen\` is the mask as
+    // core has it, and \`pf1RimLight\` the umbra's lightness at the boundary. Set by \`pf1ReadVision\`.
+    float pf1Vision;
+    float pf1Seen;
+    float pf1RimLight;
+
+    void pf1ReadVision() {
+      pf1Seen = texture2D(visionTexture, vMaskTextureCoord).r;
+      pf1Vision = pf1Seen;
+      pf1RimLight = 0.0;
+      if ( pf1HasFeather ) {
+        vec4 feather = texture2D(pf1FeatherTexture, vMaskTextureCoord);
+        pf1Vision = pf1Seen * (1.0 - clamp(feather.r * 2.0, 0.0, 1.0));
+        pf1RimLight = feather.g / max(feather.r, 0.001);
+      }
+    }
 
     vec4 getReplacementColor() {
       if ( mode == 0 ) return vec4(0.0);
@@ -398,12 +495,47 @@ export function applyFilterPatch() {
       float darknessLevel = pf1SceneDarkness >= 0.0
         ? pf1SceneDarkness
         : texture2D(darknessLevelTexture, vMaskTextureCoord).r;
+      // §4.3.5: obstructed ground takes its level from the model after all, so its tier shows.
+      // Paint leaves it unclamped, and the rest of unseen ground keeps the constant above.
+      if ( pf1HasObstructed && (pf1SceneDarkness >= 0.0) ) {
+        float obstructed = texture2D(pf1ObstructedTexture, vMaskTextureCoord).r;
+        // On the rim (seen ground beside it), the lightness the umbra had at the boundary.
+        if ( pf1HasFeather ) obstructed = mix(obstructed, pf1RimLight, pf1Seen);
+        darknessLevel = mix(darknessLevel, texture2D(darknessLevelTexture, vMaskTextureCoord).r, obstructed);
+      }
       return vec4(mix(ambientDaylight, ambientDarkness, darknessLevel), 1.0);
+    }
+    `;
+
+    // Copied from core (`effects-masking.mjs` `fragmentCore`) with the vision sample replaced by
+    // §4.3.5's softened one, for the header's reason: a copy breaks loudly on a version bump.
+    static fragmentCore = `
+    // Get the base color from the filter sampler
+    finalColor = texture2D(uSampler, vTextureCoord);
+
+    // Handling vision masking
+    if ( enableVisionMasking ) {
+      pf1ReadVision();
+      finalColor = mix( getReplacementColor(),
+                        finalColor,
+                        pf1Vision);
     }
     `;
 
     /** @override */
     apply(filterManager, input, output, clear, currentState) {
+      // §4.3.5: only the illumination layer's replacement reads obstructed ground, and only while
+      // the model is kept out of fog everywhere else.
+      const illumination = this.uniforms.mode === this.constructor.FILTER_MODES.ILLUMINATION;
+      const texture = (illumination && fogIgnoresModel() && obstructed.lightShows())
+        ? obstructed.activeTexture()
+        : null;
+      this.uniforms.pf1HasObstructed = !!texture;
+      this.uniforms.pf1ObstructedTexture = texture ?? PIXI.Texture.EMPTY;
+      // Every mode fades: lighting, light color, and the darkness layer all step at the same edge.
+      const feather = obstructed.featherTexture();
+      this.uniforms.pf1HasFeather = !!feather;
+      this.uniforms.pf1FeatherTexture = feather ?? PIXI.Texture.EMPTY;
       if (this.uniforms.mode === this.constructor.FILTER_MODES.ILLUMINATION) {
         // Read live, per frame. Foundry animates darkness transitions without firing a document
         // update, so a value cached at filter creation is correct only until someone drags the
@@ -482,6 +614,11 @@ export function status() {
     fowPatched: CONFIG.Canvas?.visibilityFilter?.[FOW_MARK] === true,
     fowMatched: CONFIG.Canvas?.visibilityFilter?.pf1Matched ?? null,
     fowAlpha: canvas?.visibility?.filter?.uniforms?.pf1ExploredAlpha ?? null,
+    // §4.3.5. `obstructedMatched: false` means the fog memory substitution found nothing.
+    obstructedMatched: CONFIG.Canvas?.visibilityFilter?.pf1ObstructedMatched ?? null,
+    obstructedActive: !!obstructed.activeTexture(),
+    featherMatched: CONFIG.Canvas?.visibilityFilter?.pf1FeatherMatched ?? null,
+    featherActive: !!obstructed.featherTexture(),
   };
   console.error(`${MODULE_ID} | vision masking`, report);
   return report;

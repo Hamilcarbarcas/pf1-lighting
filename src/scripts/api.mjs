@@ -30,6 +30,8 @@ import { isPatched as umbraMaskPatched } from "./vision/umbra-mask.mjs";
  */
 const withheld = Object.freeze({
   LAYERS: withheldRegions.LAYERS,
+  // §4.3.5: `register(id, provider, {treatment: "obstructed"})`; present means supported.
+  TREATMENTS: withheldRegions.TREATMENTS,
   register: withheldRegions.register,
   unregister: withheldRegions.unregister,
   invalidate: withheldRegions.invalidate,

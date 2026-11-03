@@ -522,6 +522,15 @@ makes every transition a sharp line.
 Default for core Foundry is 0.5, but this mod makes all areas outside your field of view dark, which
 already acts to darken it. Areas hidden by fog remain black and are unaffected.
 
+**Obstructed ground memory** is how lightly explored ground is fogged when the only thing hiding it
+is something low, such as the strip behind a short wall seen from above (another module decides which
+ground that is). 0 fogs it like any other unseen ground; 1 makes it as bright as if it were seen, and
+it is never brighter. That ground also shows its current light level. Unexplored ground stays black.
+
+**Obstructed ground edge fade** is how far, in grid squares, that ground fades into the ground beside
+it that is in view: its light, light color, and fog blend across instead of stopping at a line. 0 leaves
+only Foundry's own soft edge.
+
 **See-in-darkness brightness** adjusts how bright terrain looks to a creature with *see in darkness* 
 or *true seeing*. Foundry lightens this vision type by default; negative values dim it back toward 
 a normal vision.

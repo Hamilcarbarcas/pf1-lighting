@@ -128,6 +128,14 @@
         "Label": "Unseen ground dimming",
         "Hint": "How far explored ground outside your current vision is darkened."
       },
+      "ObstructedEdgeFade": {
+        "Label": "Obstructed ground edge fade",
+        "Hint": "How far, in grid squares, ground hidden only by something low fades into the ground beside it that is in view. 0 leaves only Foundry's own soft edge."
+      },
+      "ObstructedMemory": {
+        "Label": "Obstructed ground memory",
+        "Hint": "How close explored ground hidden only by something low, such as a short wall, comes to looking seen. 0 is ordinary fog, 1 is as bright as seen ground, never brighter. Unexplored ground stays black."
+      },
       "DarkSightBrightness": {
         "Label": "See-in-darkness brightness",
         "Hint": "Adjusts how bright terrain looks to a creature with see in darkness or true seeing. Foundry lightens this vision type by default. Negative values dim it back towards normal vision."

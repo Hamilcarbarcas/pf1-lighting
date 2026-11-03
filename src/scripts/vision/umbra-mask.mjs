@@ -98,6 +98,7 @@ import * as field from "../model/field.mjs";
 import { lowLightAmbient } from "../model/registry.mjs";
 import { tierOf } from "../model/tiers.mjs";
 import { darknessFor } from "../render/levels.mjs";
+import * as obstructed from "../render/obstructed.mjs";
 import { SIGHT_TIER } from "./perception.mjs";
 import { regionsFor } from "./umbra.mjs";
 import * as withheld from "../withheld.mjs";
@@ -147,6 +148,8 @@ function freshPass() {
     // §4.3.4: view moved to the preview graphics so fog does not explore it, per layer, queued and drawn.
     unexploredLight: 0, unexploredSight: 0, drawnUnexploredLight: 0, drawnUnexploredSight: 0,
     rings: 0, holes: 0, routedPreview: 0,
+    // §4.3.5: observers with obstructed ground in their `los`, and its rings, for the obstructed mask.
+    obstructedObservers: 0, obstructedRings: 0,
   };
 }
 
@@ -368,6 +371,8 @@ export function applyPatch() {
     // [source, property, original polygon]
     const swapped = [];
     pending = [];
+    // §4.3.5: per observer, its obstructed ground clipped to `los` and its depth, for `render/obstructed.mjs`.
+    const obstructedSets = [];
 
     // Swap one property for EMPTY and queue its trimmed rings; core then draws nothing for it.
     const substitute = (source, property, rings, layer, preview) => {
@@ -394,6 +399,15 @@ export function applyPatch() {
       let keptSight = [];
       try {
         const collected = withheld.collect(source);
+        // §4.3.5: a preview or blinded source sees nothing it could be looking across.
+        if (!source.isPreview && !source.isBlinded) {
+          const entry = obstructed.entryFor(source, collected);
+          if (entry) {
+            obstructedSets.push(entry);
+            lastPass.obstructedObservers++;
+            lastPass.obstructedRings += entry.rings.length;
+          }
+        }
         // §4.3.4: the part of the view fog must not explore, split off into the preview graphics.
         const keep = unexplored.collect(source);
         ({ live: light, preview: keptLight } = split(source.light, [...blockingPaths(source), ...collected.light], keep.light));
@@ -416,6 +430,13 @@ export function applyPatch() {
         lastPass.unexploredSight++;
       }
       queueReveals(source);
+    }
+
+    try {
+      obstructed.publish(obstructedSets);
+    } catch (error) {
+      // Failing open: obstructed ground keeps whatever the mask last held, and the carve is unaffected.
+      console.error("PF1 Lighting | obstructed mask update failed", error);
     }
 
     try {

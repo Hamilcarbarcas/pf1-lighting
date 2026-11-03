@@ -58,6 +58,7 @@ import * as desaturate from "./render/desaturate.mjs";
 import * as colorationBlend from "./render/coloration-blend.mjs";
 import * as greyscale from "./render/greyscale.mjs";
 import * as darknessMask from "./render/darkness-mask.mjs";
+import * as obstructed from "./render/obstructed.mjs";
 import * as ambient from "./render/ambient.mjs";
 import * as soften from "./render/soften.mjs";
 import * as darknessTexture from "./render/darkness-texture.mjs";
@@ -111,6 +112,7 @@ Hooks.once("init", () => {
   // dial by name.
   greyscale.registerSettings();
   darknessMask.registerSettings();
+  obstructed.registerSettings();
   ambient.registerSettings();
   // The tier → darkness-level table, as four world settings (§10.5). Registered before
   // anything reads a tier so the stored table is in force from the first query.
@@ -293,6 +295,8 @@ Hooks.once("init", () => {
   // light perception reveals (§4.3). Separate from `clip.patchVisibility` because `render/` must not
   // import from `vision/`.
   umbraMask.applyPatch();
+  // §4.3.5: obstructed ground's mask, fed by the carve above and read by the two filters below.
+  obstructed.registerHooks();
 
   // Fog explores the global-light erase's hard boundary, not its blurred rim (§6.4.5).
   darknessTexture.patchFogCommit();
@@ -841,6 +845,9 @@ Hooks.once("ready", () => {
       revealed: revealed.list,
       // §4.3.4: registered unexplored-region providers.
       unexplored: unexplored.list,
+      // §4.3.5: obstructed ground, its mask, and a red overlay of it.
+      obstructed: obstructed.status,
+      showObstructed: obstructed.show,
       invalidate: umbra.invalidate,
       // `stats().rebuildMs` is the cold path by construction; this is the only readout that
       // exercises the one `perceivedTier` actually calls.
