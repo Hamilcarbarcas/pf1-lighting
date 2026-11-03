@@ -22,6 +22,9 @@
   darkvision, and is never recorded in fog of war.
 
 ### Fixed
+- **Low-light vision no longer enlarges lights when no one is looking through a token.** On a scene
+  with token vision off, or for a GM with observer view off, selecting a token with low-light vision
+  doubled every light on the scene.
 - **A token carrying a light moves more smoothly on large scenes.** Moving one light no longer redoes
   the work for every other light on the scene.
 - **Light spill no longer leaks out of a room around its corners.** A window or door ending exactly on

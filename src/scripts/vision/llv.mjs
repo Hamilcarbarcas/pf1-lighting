@@ -29,6 +29,7 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { flag } from "../settings-cache.mjs";
+import { isGmObserverMode } from "./observer.mjs";
 import { isSightless } from "./sightless.mjs";
 
 export const SETTING_LLV_GUARD = "guardNegativeLowLight";
@@ -190,6 +191,43 @@ function refresh() {
   canvas.perception.update({ initializeLighting: true, refreshLighting: true, refreshVision: true });
 }
 
+/**
+ * Is anyone looking? DESIGN.md §4.4e.
+ *
+ * @remarks
+ * Low-light vision is a property of an eye, and with no observer there is no eye. PF1's `getRadius`
+ * asks only which tokens are selected, so a selected low-light token doubled every light on a scene
+ * with token vision off, and on a GM's god's-eye view with observer mode off (§5.1) — both of which
+ * show the scene for no one.
+ *
+ * `isGmObserverMode`, not the settings cache: the toggle's `onChange` runs before
+ * `clientSettingChanged` invalidates the cache (`client-settings.mjs:320-321`), so a cached read
+ * during {@link resync} answers with the value being replaced. A client read is a storage lookup,
+ * not the world-settings scan the cache exists for.
+ */
+function hasObserver() {
+  if (canvas?.scene?.tokenVision === false) return false;
+  if (game.user?.isGM && !isGmObserverMode()) return false;
+  return true;
+}
+
+/**
+ * Re-size every light for a change {@link hasObserver} turns on.
+ *
+ * @remarks
+ * Neither change goes through `controlToken`, so nothing else re-asks `getRadius`: core's
+ * `initializeLightSources` re-initializes each source from its cached data
+ * (`canvas/groups/effects.mjs:172-175`), and the radii stay at the last observer's multiplier.
+ */
+export function resync() {
+  if (!canvas?.ready) return;
+  invalidate();
+  appliedKey = multiplierKey();
+  painted = isActive();
+  pf1.canvas.lowLightVision.reinitLightSources();
+  refresh();
+}
+
 /** The answer as of the last repaint, so {@link registerHooks} can tell a change from a no-op. */
 let painted = null;
 
@@ -282,6 +320,11 @@ export function registerHooks() {
     invalidate();
     painted = isActive();
   });
+
+  // After core's own `_onUpdate` has rebuilt the vision sources (`documents/scene.mjs:599-603`).
+  Hooks.on("updateScene", (scene, changed) => {
+    if (scene === canvas?.scene && "tokenVision" in changed) resync();
+  });
 }
 
 /**
@@ -296,6 +339,8 @@ export function status() {
     enabled: flag(SETTING_LLV_AMBIENT, true),
     // PF1's own answer, uncached, so a stale memo cannot be what is being reported.
     active: probe(),
+    // §4.4e: false means token vision is off or a GM is in god's eye, and the multiplier is 1.
+    hasObserver: hasObserver(),
     // The three globals `getRadius` decides on, spelled out: a `false` here is the reason.
     systemVision: (() => {
       try {
@@ -371,6 +416,8 @@ export function applyMixin() {
       /** @override */
       getRadius(dim, bright) {
         if (isGuardEnabled() && isNegative(this)) return { dim, bright };
+        // §4.4e. Also answers the §4.4c probe, so the ambient lift goes off with the radii.
+        if (!hasObserver()) return { dim, bright };
 
         const result = super.getRadius(dim, bright);
 

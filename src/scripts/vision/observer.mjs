@@ -25,6 +25,7 @@
 
 import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
 import { t } from "../i18n.mjs";
+import { resync as resyncLowLight } from "./llv.mjs";
 
 export const SETTING_GM_OBSERVER = "gmObserverMode";
 
@@ -80,6 +81,8 @@ export function refreshVision() {
   for (const token of canvas.tokens.placeables) {
     if (!token.vision === token._isVisionSource()) token.initializeVisionSource();
   }
+  // Observer mode decides whether a GM's selection has eyes, so low-light radii move with it (§4.4e).
+  resyncLowLight();
   canvas.perception.update({ initializeVision: true, refreshVision: true });
 }
 
