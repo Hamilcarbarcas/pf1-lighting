@@ -81,6 +81,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { flag, number } from "../settings-cache.mjs";
 import { TIER, darknessTable } from "../model/tiers.mjs";
 
 export const SETTING_REGIONAL_GREY = "regionalGreyscale";
@@ -119,21 +120,12 @@ let neutralised = false;
 /* -------------------------------------------- */
 
 export function isEnabled() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_REGIONAL_GREY) === true;
-  } catch {
-    return true;
-  }
+  return flag(SETTING_REGIONAL_GREY, true);
 }
 
 /** How much of the greyscale reaches explored ground outside current vision, 0..1. */
 export function fogGrey() {
-  try {
-    const value = game.settings.get(MODULE_ID, SETTING_FOG_GREY);
-    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : FOG_GREY_DEFAULT;
-  } catch {
-    return FOG_GREY_DEFAULT;
-  }
+  return Math.min(1, Math.max(0, number(SETTING_FOG_GREY, FOG_GREY_DEFAULT)));
 }
 
 export function registerSettings() {
@@ -325,7 +317,9 @@ export function neutralise() {
     0,
     1
   );
-  greynessByMode.set(data.id ?? "darkvision", greyness);
+  const id = data.id ?? "darkvision";
+  greynessByMode.set(id, greyness);
+  const oldSaturation = data.vision?.defaults?.saturation;
 
   if (data.canvas?.uniforms) data.canvas.uniforms.saturation = 0;
   if (data.vision?.defaults) data.vision.defaults.saturation = 0;
@@ -336,6 +330,22 @@ export function neutralise() {
   }
 
   CONFIG.Canvas.visionModes.darkvision = new mode.constructor(data);
+  clearStaleSaturation(id, oldSaturation);
+}
+
+/**
+ * Documents are prepared before `setup`, so a token that has not been re-prepared since still holds
+ * the old mode's saturation from PF1's `_syncSenses`, which route 2 then reads. §6.2.11.
+ */
+function clearStaleSaturation(id, oldSaturation) {
+  if (!oldSaturation) return;
+  for (const scene of game.scenes ?? []) {
+    for (const token of scene.tokens ?? []) {
+      if ((token.sight?.visionMode !== id) || (token.sight.saturation !== oldSaturation)) continue;
+      if (token.flags?.pf1?.customVisionRules) continue;
+      token.sight.saturation = 0;
+    }
+  }
 }
 
 /* -------------------------------------------- */

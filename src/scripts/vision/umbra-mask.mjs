@@ -99,6 +99,8 @@ import { lowLightAmbient } from "../model/registry.mjs";
 import { tierOf } from "../model/tiers.mjs";
 import { darknessFor } from "../render/levels.mjs";
 import * as obstructed from "../render/obstructed.mjs";
+import * as carveWorker from "./carve-worker-client.mjs";
+import * as motion from "./motion.mjs";
 import { SIGHT_TIER } from "./perception.mjs";
 import { regionsFor } from "./umbra.mjs";
 import * as withheld from "../withheld.mjs";
@@ -109,6 +111,57 @@ const PATCH_MARK = "pf1LightingUmbraMaskPatched";
 
 /** Handed to core in place of a trimmed polygon (`light` or `shape`); `drawShape` renders nothing. */
 const EMPTY = new PIXI.Polygon([]);
+
+/** Per observer, Clipper results kept until something they read changes. §9.14. */
+const carveCache = new WeakMap();
+/** A cut costing less than this, in milliseconds, stays here and never trails. */
+const CUT_WORKER_ABOVE_MS = 1.5;
+/** A source further than this from its last cut, in squares, is cut at once. */
+const TRAIL_SQUARES = 4;
+const revealCache = new WeakMap();
+/** Light paths per elevation, for one state of the lights. */
+let coverage = { version: null, byElevation: new Map() };
+
+/** Bounds of Clipper paths. */
+function boxOf(paths) {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const path of paths) {
+    for (const { X, Y } of path) {
+      if (X < minX) minX = X;
+      if (X > maxX) maxX = X;
+      if (Y < minY) minY = Y;
+      if (Y > maxY) maxY = Y;
+    }
+  }
+  return { minX, minY, maxX, maxY };
+}
+
+/** A ring's bounds, kept: most rings come back unchanged step to step. */
+const ringBoxes = new WeakMap();
+
+function ringBox(path) {
+  let box = ringBoxes.get(path);
+  if (!box) ringBoxes.set(path, box = boxOf([path]));
+  return box;
+}
+
+const boxesTouch = (a, b) => (a.minX <= b.maxX) && (b.minX <= a.maxX) && (a.minY <= b.maxY) && (b.minY <= a.maxY);
+
+const sameList = (a, b) => (a.length === b.length) && a.every((item, i) => item === b[i]);
+
+/** Moves on any light's (re-)initialisation, or one coming or going. */
+function lightsVersion() {
+  let sum = 0;
+  let count = 0;
+  for (const source of canvas?.effects?.lightSources?.values() ?? []) {
+    sum += source.updateId ?? 0;
+    count++;
+  }
+  return `${count}|${sum}`;
+}
 
 /** Core's fill for `vision.sight` (`groups/visibility.mjs:516`), read by the visibility filter's red channel. */
 const SIGHT_FILL = 0xff0000;
@@ -188,6 +241,17 @@ function trim(polygon, removed) {
   return fromClipperPaths(remaining, CLIPPER_SCALE);
 }
 
+/** A cut's inputs, less the rings that can't touch the polygon: Clipper's cost follows its input. */
+function narrowed(polygon, removed, keep) {
+  if (!polygon?.points?.length) return { polygon: null, removed: [], keep: [] };
+  const box = boxOf([toClipperPath(polygon, CLIPPER_SCALE)]);
+  return {
+    polygon,
+    removed: removed.filter((path) => boxesTouch(ringBox(path), box)),
+    keep: keep.filter((path) => boxesTouch(ringBox(path), box)),
+  };
+}
+
 /**
  * One layer of an observer's view, trimmed by `removed` (as {@link trim}) and split by `keep`, the
  * regions fog must not explore (§4.3.4): `live` is drawn as before, `preview` into the `.preview`
@@ -197,9 +261,8 @@ function trim(polygon, removed) {
  *
  * @returns {{live: PIXI.Polygon[]|null, preview: PIXI.Polygon[]}}
  */
-function split(polygon, removed, keep) {
+function split({ polygon, removed, keep }) {
   if (!keep.length) return { live: trim(polygon, removed), preview: [] };
-  if (!polygon?.points?.length) return { live: null, preview: [] };
   let paths = [toClipperPath(polygon, CLIPPER_SCALE)];
   if (removed.length) paths = difference(paths, removed);
   return {
@@ -234,6 +297,10 @@ function skyLit() {
  * every active light at or above it, core's own roof test (`base-lighting.mjs:394`).
  */
 function coverageAt(elevation) {
+  const version = lightsVersion();
+  if (coverage.version !== version) coverage = { version, byElevation: new Map() };
+  const hit = coverage.byElevation.get(elevation);
+  if (hit) return hit;
   const paths = [];
   for (const source of canvas?.effects?.lightSources?.values() ?? []) {
     if (!source.active || (source instanceof foundry.canvas.sources.GlobalLightSource)) continue;
@@ -241,7 +308,9 @@ function coverageAt(elevation) {
     const path = toClipperPath(source[RENDER_SHAPE] ?? source.shape, CLIPPER_SCALE);
     if (path.length >= 3) paths.push(path);
   }
-  return paths;
+  const entries = paths.map((path) => ({ path, box: boxOf([path]) }));
+  coverage.byElevation.set(elevation, entries);
+  return entries;
 }
 
 /**
@@ -263,35 +332,21 @@ function queueReveals(source) {
   try {
     const shown = revealed.collect(source);
     if (!shown.light.length && !shown.sight.length) return;
-    if (shown.light.length && (source.lightRadius > 0)) {
-      const clip = [...blockingPaths(source), ...outsideRange(source.origin, source.lightRadius)];
-      const byElevation = new Map();
-      shown.light.forEach((path, i) => {
-        const elevation = shown.lightElevations?.[i] ?? null;
-        if (!byElevation.has(elevation)) byElevation.set(elevation, []);
-        byElevation.get(elevation).push(path);
-      });
-      let sky = null;
-      for (const [elevation, paths] of byElevation) {
-        let out = difference(paths, clip);
-        if (out.length && (elevation !== null) && !(sky ??= skyLit())) {
-          const coverage = coverageAt(elevation);
-          out = coverage.length ? intersection(out, coverage) : [];
-          if (!out.length) lastPass.revealUnlit++;
-        }
-        const rings = fromClipperPaths(out, CLIPPER_SCALE);
-        if (!rings.length) continue;
-        pending.push({ rings, preview: true, layer: withheld.LAYERS.LIGHT, reveal: true });
-        lastPass.revealedLight++;
+    const trimmed = trimmedReveals(source, shown);
+    let sky = null;
+    for (const group of trimmed.light) {
+      let rings = group.rings;
+      if (group.paths.length && (group.elevation !== null) && !(sky ??= skyLit())) {
+        rings = coveredRings(group);
+        if (!rings.length) lastPass.revealUnlit++;
       }
+      if (!rings.length) continue;
+      pending.push({ rings, preview: true, layer: withheld.LAYERS.LIGHT, reveal: true });
+      lastPass.revealedLight++;
     }
-    if (shown.sight.length && (source.radius > 0)) {
-      const clip = outsideRange(source.origin, source.radius);
-      const rings = fromClipperPaths(difference(shown.sight, clip), CLIPPER_SCALE);
-      if (rings.length) {
-        pending.push({ rings, preview: true, layer: withheld.LAYERS.SIGHT, reveal: true });
-        lastPass.revealedSight++;
-      }
+    if (trimmed.sight.length) {
+      pending.push({ rings: trimmed.sight, preview: true, layer: withheld.LAYERS.SIGHT, reveal: true });
+      lastPass.revealedSight++;
     }
   } catch (error) {
     // Fail closed for reveals: a fault reveals nothing, and the rest of the pass is unaffected.
@@ -357,6 +412,126 @@ function sightDrawsToPreview(source) {
  * `finally`. `los` is never touched, which matters: the umbra is computed from `los` and cached on
  * its identity, so modifying it would invalidate the cache that produced the modification.
  */
+/** Identity of every input is enough: each is replaced when it changes. */
+const sameCarve = (a, b) => (a.light === b.light) && (a.shape === b.shape) && (a.collected === b.collected)
+  && (a.keep === b.keep) && (a.umbrae === b.umbrae);
+
+const carveValue = (light, sight) => ({
+  light: light.live,
+  keptLight: light.preview,
+  sight: sight.live,
+  keptSight: sight.preview,
+});
+
+const polygonsOf = ({ live, preview }) => ({
+  live: live && live.map((flat) => new PIXI.Polygon(Array.from(flat))),
+  preview: preview.map((flat) => new PIXI.Polygon(Array.from(flat))),
+});
+
+/** May this cut go to the worker, with the last one standing in until it's back? §9.14. */
+function trails(source, hit) {
+  if (!motion.switches.trail || !motion.isMoving() || source.isPreview || (hit.ms < CUT_WORKER_ABOVE_MS)) return false;
+  if (hit.elevation !== source.elevation) return false;
+  const reach = TRAIL_SQUARES * (canvas.grid?.size ?? 100);
+  if (Math.hypot(source.origin.x - hit.origin.x, source.origin.y - hit.origin.y) > reach) return false;
+  return carveWorker.available();
+}
+
+/** One observer's carve. */
+function carveFor(source, collected, keep) {
+  const regions = regionsFor(source);
+  const umbrae = regions.length ? regions : null;
+  const inputs = { light: source.light, shape: source.shape, collected, keep, umbrae };
+  const hit = carveCache.get(source);
+  if (hit && (sameCarve(hit.inputs, inputs) || (hit.asked && sameCarve(hit.asked, inputs)))) return hit.value;
+
+  const layers = {
+    light: narrowed(source.light, [...blockingPaths(source), ...collected.light], keep.light),
+    sight: narrowed(source.shape, collected.sight, keep.sight),
+  };
+  // A copy: core writes `source.origin` in place.
+  const origin = { x: source.origin.x, y: source.origin.y };
+  const { elevation } = source;
+  if (hit && trails(source, hit)) {
+    hit.asked = inputs;
+    carveWorker.submit(source, layers, (result) => {
+      if (carveCache.get(source) !== hit) return;
+      if (hit.asked === inputs) hit.asked = null;
+      if (result) {
+        Object.assign(hit, {
+          inputs, origin, elevation, ms: result.ms,
+          value: carveValue(polygonsOf(result.light), polygonsOf(result.sight)),
+        });
+      }
+      if (canvas?.ready) canvas.perception.update({ refreshVision: true });
+    });
+    return hit.value;
+  }
+
+  const start = performance.now();
+  const value = carveValue(split(layers.light), split(layers.sight));
+  carveCache.set(source, { inputs, value, origin, elevation, ms: performance.now() - start, asked: null });
+  return value;
+}
+
+/** Is this observer's newest cut still on the worker? Asks for it if it hasn't been. §9.14. */
+export function cutPending(source) {
+  carveFor(source, withheld.collect(source), unexplored.collect(source));
+  return !!carveCache.get(source)?.asked;
+}
+
+/** One observer's reveals, trimmed to its range and umbras, before light coverage. */
+function trimmedReveals(source, shown) {
+  const regions = regionsFor(source);
+  const umbrae = regions.length ? regions : null;
+  const { lightRadius, radius } = source;
+  const hit = revealCache.get(source);
+  if (hit && (hit.shown === shown) && (hit.umbrae === umbrae) && (hit.lightRadius === lightRadius)
+    && (hit.radius === radius)) return hit;
+
+  const light = [];
+  if (shown.light.length && (lightRadius > 0)) {
+    const outside = outsideRange(source.origin, lightRadius);
+    const clip = [...blockingPaths(source), ...outside];
+    // Nothing moves the clip but a finite range or an umbra, so unchanged paths keep their results,
+    // light coverage included. A whole roof stays put as an observer walks.
+    const reusable = hit && (hit.umbrae === umbrae) && !outside.length;
+    const byElevation = new Map();
+    shown.light.forEach((path, i) => {
+      const elevation = shown.lightElevations?.[i] ?? null;
+      if (!byElevation.has(elevation)) byElevation.set(elevation, []);
+      byElevation.get(elevation).push(path);
+    });
+    for (const [elevation, group] of byElevation) {
+      const prior = reusable ? hit.light.find((entry) => entry.elevation === elevation) : null;
+      if (prior && sameList(prior.input, group)) {
+        light.push(prior);
+        continue;
+      }
+      const paths = difference(group, clip);
+      light.push({ elevation, input: group, paths, rings: fromClipperPaths(paths, CLIPPER_SCALE), box: boxOf(paths), covered: null });
+    }
+  }
+  const sight = (shown.sight.length && (radius > 0))
+    ? fromClipperPaths(difference(shown.sight, outsideRange(source.origin, radius)), CLIPPER_SCALE)
+    : [];
+  const entry = { shown, umbrae, lightRadius, radius, light, sight };
+  revealCache.set(source, entry);
+  return entry;
+}
+
+/** A raised reveal group cut to the light that reaches its height, for this state of the lights. */
+function coveredRings(group) {
+  const version = lightsVersion();
+  if (group.covered?.version === version) return group.covered.rings;
+  // Only the lights that can touch it: a clip of every light on the scene is the expensive part.
+  const lit = coverageAt(group.elevation).filter((entry) => boxesTouch(entry.box, group.box)).map((entry) => entry.path);
+  const paths = lit.length ? intersection(group.paths, lit) : [];
+  const rings = fromClipperPaths(paths, CLIPPER_SCALE);
+  group.covered = { version, rings };
+  return rings;
+}
+
 export function applyPatch() {
   if (patched) return;
   const proto = foundry.canvas.groups?.CanvasVisibility?.prototype;
@@ -409,9 +584,7 @@ export function applyPatch() {
           }
         }
         // §4.3.4: the part of the view fog must not explore, split off into the preview graphics.
-        const keep = unexplored.collect(source);
-        ({ live: light, preview: keptLight } = split(source.light, [...blockingPaths(source), ...collected.light], keep.light));
-        ({ live: sight, preview: keptSight } = split(source.shape, collected.sight, keep.sight));
+        ({ light, keptLight, sight, keptSight } = carveFor(source, collected, unexplored.collect(source)));
       } catch (error) {
         // A geometry fault must never stop the canvas drawing its visibility. Failing open leaves
         // the pre-umbra picture rather than a broken one.
@@ -456,6 +629,7 @@ export function applyPatch() {
   // `endFill`s and before `canvas.fog.commit()` (`groups/visibility.mjs:588-606`), the only window
   // where a contribution to `vision.light.mask` is both inside the fill and visible to fog.
   Hooks.on("visibilityRefresh", drawPending);
+  Hooks.on("canvasTearDown", () => carveWorker.reset());
 }
 
 /**
@@ -574,6 +748,8 @@ export function status() {
   const report = {
     patched,
     ...lastPass,
+    motion: motion.status(),
+    worker: carveWorker.workerStats(),
     providers: withheld.list(),
     revealProviders: revealed.list(),
     unexploredProviders: unexplored.list(),

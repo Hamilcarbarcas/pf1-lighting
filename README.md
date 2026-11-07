@@ -278,8 +278,12 @@ tab of its item sheet (on an item that doesn't emit light yet, tick the section 
 | Control | What it does |
 | --- | --- |
 | **Emits light** | Whether this item gives off light |
-| **Light preset** | Which preset it gives off |
+| **Light preset** | Which preset it gives off, or **Custom** for a light configured on this item alone |
 | **Fuel** | The item consumed while it burns, and how long one item lasts |
+
+The edit button beside the preset opens the light configuration window, filled in from the selected
+preset, so an item can start from a preset and change only what differs. Saving it switches the item to
+**Custom**. Switching back to a preset keeps the custom light saved for later.
 
 A blank fuel field defaults to a light source that works indefinitely.
 
@@ -418,6 +422,10 @@ controls, or a hotkey (**Alt+O** by default).
 
 - **On** (default) - selecting a token as GM shows you what that token perceives.
 - **Off** - you keep full GM vision regardless of selected tokens
+
+With two or more sighted tokens selected, **GM vision with several tokens selected** decides what you
+see. The default is full GM vision, by far the fastest. It can instead follow the first selected
+token, or combine all of them.
 
 This setting has no effect on non-GM users.
 
@@ -568,10 +576,16 @@ only matters for determining the accuracy of lighting lines along walls and othe
 
 ![Light Spill at 5 Pixels](assets/spill-5-pixel.png)
 
-**Dragging many tokens at once as a GM with token vision on** can be another slowdown point. If token
-vision animation is enabled, a token's vision model is re-calculated repeatedly as it moves across the
-scene. If many tokens are selected, it recalculates for each of them, stacking additively. Turning
-**Token Vision** off (**Alt+O** by default) prevents those calculations.
+**Dragging many tokens at once as a GM with token vision on** can be another slowdown point. A token's
+vision model is re-calculated repeatedly as it moves across the scene, and with several tokens it
+recalculates for each of them. Selecting several tokens shows full GM vision by default, which avoids
+this; **GM vision with several tokens selected** changes that.
+
+**Vision update interval while moving** sets how often a moving token's vision and light update. Raising
+it makes movement smoother on large scenes, with the edge of vision and light trailing a little further
+behind the token. If updates are slow on a busy scene, they space out on their own, as far as about eight a
+second. While something moves, other tokens check whether they can be seen in turn, so one may appear or
+vanish a moment late, and the rest catch up within a moment of it stopping. 0 updates every frame and checks every token.
 
 # More
 

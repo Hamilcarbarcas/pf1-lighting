@@ -29,7 +29,7 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { flag } from "../settings-cache.mjs";
-import { isGmObserverMode } from "./observer.mjs";
+import { isGmObserverMode, multiSelectGodsEye } from "./observer.mjs";
 import { isSightless } from "./sightless.mjs";
 
 export const SETTING_LLV_GUARD = "guardNegativeLowLight";
@@ -208,6 +208,8 @@ function refresh() {
 function hasObserver() {
   if (canvas?.scene?.tokenVision === false) return false;
   if (game.user?.isGM && !isGmObserverMode()) return false;
+  // §9.14: several selected tokens read as god's eye.
+  if (multiSelectGodsEye()) return false;
   return true;
 }
 
@@ -251,6 +253,24 @@ function multiplierKey() {
   } catch {
     return null;
   }
+}
+
+/**
+ * Skip PF1's re-init of every light when the low-light multiplier did not move. §9.14.
+ *
+ * PF1 requests it on every select and release, through its `pf1` global, and each one re-sweeps every
+ * light on the scene.
+ */
+export function gatePf1Reinit() {
+  const lowLight = globalThis.pf1?.canvas?.lowLightVision;
+  if (!lowLight?.reinitLightSources) return;
+  lowLight.debouncedLightSourceReInit = foundry.utils.debounce(() => {
+    if (!canvas?.ready) return;
+    const key = multiplierKey();
+    if ((key !== null) && (key === appliedKey)) return;
+    appliedKey = key;
+    lowLight.reinitLightSources();
+  }, 100);
 }
 
 let visibilityPatched = false;

@@ -68,6 +68,7 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
+import { flag, number } from "../settings-cache.mjs";
 import { TIER, darknessTable } from "../model/tiers.mjs";
 import * as obstructed from "./obstructed.mjs";
 
@@ -151,12 +152,7 @@ let fowPatched = false;
 
 /** How far explored-but-currently-unseen ground is taken toward black, 0..1. */
 export function unseenDimming() {
-  try {
-    const value = game.settings.get(MODULE_ID, SETTING_UNSEEN_DIMMING);
-    return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : 0.2;
-  } catch {
-    return 0.2;
-  }
+  return Math.min(1, Math.max(0, number(SETTING_UNSEEN_DIMMING, 0.2)));
 }
 
 /**
@@ -404,11 +400,7 @@ const FILTER_MARK = "pf1LightingFogFilter";
 let filterPatched = false;
 
 export function fogIgnoresModel() {
-  try {
-    return game.settings.get(MODULE_ID, SETTING_FOG_IGNORES_MODEL) === true;
-  } catch {
-    return true;
-  }
+  return flag(SETTING_FOG_IGNORES_MODEL, true);
 }
 
 /**

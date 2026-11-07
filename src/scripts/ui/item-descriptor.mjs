@@ -31,9 +31,10 @@
 import { MODULE_ID } from "../constants.mjs";
 import { makeCollapsible } from "../../common/sheet/collapse.mjs";
 import { t } from "../i18n.mjs";
-import { CUSTOM, presetChoices } from "../model/presets.mjs";
+import { CUSTOM, presetChoices, table as presetTable } from "../model/presets.mjs";
 import * as descriptor from "../model/descriptor.mjs";
 import { table as lightItemTable } from "../model/light-items.mjs";
+import { PresetLightConfig } from "./preset-light-config.mjs";
 
 /** De-dup marker. Per-feature, never a shared class. */
 const MARKER = "pf1-lighting-emits";
@@ -71,9 +72,11 @@ function fuelSuggestions(item) {
 /* -------------------------------------------- */
 
 function presetOptions(selected) {
-  // `Custom` means *these numbers came from nowhere in particular*, which is not something to emit.
-  return presetChoices()
-    .filter((choice) => choice.value !== CUSTOM)
+  // Custom last: a new descriptor defaults to the first option, and an unsaved custom light emits
+  // nothing. §12.7.1
+  const choices = presetChoices();
+  const custom = choices.filter((choice) => choice.value === CUSTOM);
+  return [...choices.filter((choice) => choice.value !== CUSTOM), ...custom]
     .map(
       (choice) =>
         `<option value="${esc(choice.value)}"${choice.value === selected ? " selected" : ""}>${esc(choice.label)}</option>`
@@ -100,6 +103,7 @@ function section(item, { trigger, stored, editable }) {
   const disabled = editable ? "" : " disabled";
   const listId = `${MARKER}-fuel-${item.id ?? "new"}`;
   const badge = badgeFor(stored);
+  const unset = stored?.preset === CUSTOM && !descriptor.customOf(item);
 
   const fuelRow = lit
     ? `
@@ -146,14 +150,66 @@ function section(item, { trigger, stored, editable }) {
         <select name="flags.${MODULE_ID}.${descriptor.EMITS_FLAG}.preset"${disabled}>
           ${presetOptions(stored?.preset ?? null)}
         </select>
+        <button type="button" class="${MARKER}-edit" data-tooltip="${esc(t("Emits.Customize"))}"
+                aria-label="${esc(t("Emits.Customize"))}"${disabled}>
+          <i class="fa-solid fa-pen-to-square" inert></i>
+        </button>
       </div>
       <p class="notes">${esc(t("Emits.PresetHint"))}</p>
+      <p class="notes ${MARKER}-unset"${unset ? "" : ' style="display:none"'}>${esc(t("Emits.CustomUnset"))}</p>
     </div>
     ${fuelRow}
   </div>
 
   <input type="hidden" name="flags.${MODULE_ID}.${descriptor.EMITS_FLAG}.trigger" value="${esc(trigger)}">
 </div>`;
+}
+
+/* -------------------------------------------- */
+/*  Custom light (§12.7.1)                      */
+/* -------------------------------------------- */
+
+/** Root fields the companion source sets for itself (`model/companion.mjs`), so nothing harvests. */
+const ITEM_HIDDEN_FIELDS = ['[name="rotation"]', '[name="walls"]', '[name="vision"]', '[name="hidden"]'];
+
+/** What the editor opens on: the saved custom light under Custom, otherwise the selected preset. */
+function seedFor(item, selected) {
+  if (selected === CUSTOM) return descriptor.customOf(item) ?? { light: {}, config: {} };
+  const preset = presetTable()[selected];
+  return preset ? foundry.utils.deepClone(preset) : { light: {}, config: {} };
+}
+
+/**
+ * Open the light sheet for this item's custom light.
+ *
+ * Saving selects Custom. `==` replaces the stored light whole, so a field the sheet no longer
+ * submits cannot survive from an earlier save.
+ */
+function editCustom(item, trigger, selected) {
+  const id = `${MARKER}-config-${item.uuid.replace(/\./g, "-")}`;
+  const open = foundry.applications.instances.get(id);
+  if (open) return open.bringToFront();
+
+  const path = `flags.${MODULE_ID}.${descriptor.EMITS_FLAG}`;
+  const app = new PresetLightConfig({
+    id,
+    preset: seedFor(item, selected),
+    label: item.name,
+    title: t("Emits.EditTitle", { name: item.name }),
+    submitLabel: t("Emits.SaveLight"),
+    hide: ITEM_HIDDEN_FIELDS,
+    onSave: ({ negative, light, config }) =>
+      item
+        .update({
+          [`${path}.enabled`]: true,
+          [`${path}.trigger`]: trigger,
+          [`${path}.preset`]: CUSTOM,
+          [`${path}.==${descriptor.CUSTOM_KEY}`]: { negative, light, config },
+        })
+        .catch((error) => console.error(`${MODULE_ID} | custom item light save failed`, error)),
+  });
+  app.render({ force: true });
+  return app;
 }
 
 /* -------------------------------------------- */
@@ -208,10 +264,13 @@ function inject(app, html) {
     `select[name="flags.${MODULE_ID}.${descriptor.EMITS_FLAG}.preset"]`
   );
   const badgeEl = container.querySelector(`.${MARKER}-badge`);
+  const unsetEl = container.querySelector(`.${MARKER}-unset`);
+  const hasCustom = !!descriptor.customOf(item);
 
   const refresh = () => {
     const on = enabledBox?.checked === true;
     container.classList.toggle(`${MARKER}-off`, !on);
+    if (unsetEl) unsetEl.style.display = presetSelect?.value === CUSTOM && !hasCustom ? "" : "none";
     if (!badgeEl) return;
     const label = on ? (presetSelect?.selectedOptions?.[0]?.textContent ?? "") : "";
     badgeEl.textContent = label;
@@ -220,6 +279,10 @@ function inject(app, html) {
 
   enabledBox?.addEventListener("change", refresh);
   presetSelect?.addEventListener("change", refresh);
+  container.querySelector(`.${MARKER}-edit`)?.addEventListener("click", (event) => {
+    event.preventDefault();
+    editCustom(item, trigger, presetSelect?.value ?? CUSTOM);
+  });
 
   // Collapsed unless this item actually emits something. Most items on an Advanced tab configure
   // nothing here and should cost a line rather than a screen.

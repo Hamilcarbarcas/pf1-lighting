@@ -7,8 +7,9 @@
  * flags["pf1-lighting"].emits = {
  *   enabled: true,
  *   trigger: "active",              // decided by the item's type, not chosen — see triggerFor
- *   preset: "torch",
- *   light: {}, config: {},          // overrides on top of the preset; no sheet control yet
+ *   preset: "torch",                // or "custom", which reads `custom` instead of the table
+ *   light: {}, config: {},          // overrides on top of a table preset; script-only
+ *   custom: { negative, light, config },   // preset-shaped; edited from the sheet, §12.7.1
  *   fuel: { item: "Oil (flask)", hours: 6 },   // "lit" only; omit for indefinite
  * }
  * ```
@@ -33,10 +34,13 @@
  */
 
 import { MODULE_ID } from "../constants.mjs";
-import { table as presetTable } from "./presets.mjs";
+import { CUSTOM, table as presetTable } from "./presets.mjs";
 
 /** Where a descriptor lives, under this module's flag scope. */
 export const EMITS_FLAG = "emits";
+
+/** The item's own light, under the descriptor. Kept while a table preset is selected. §12.7.1 */
+export const CUSTOM_KEY = "custom";
 
 /**
  * What makes the light appear. Two, and there will not be a third here.
@@ -89,6 +93,12 @@ function normaliseFuel(fuel) {
   return { item, hours };
 }
 
+/** The stored custom light in preset shape, or null if none has been saved. */
+export function customOf(item) {
+  const custom = raw(item)?.[CUSTOM_KEY];
+  return custom?.light ? custom : null;
+}
+
 /**
  * What this item's descriptor says, normalised, or null if it says nothing usable.
  *
@@ -99,9 +109,10 @@ function normaliseFuel(fuel) {
 export function read(item) {
   const stored = raw(item);
   if (!stored?.enabled || !stored.preset) return null;
-  // A preset the table no longer holds. Same rule as `model/light-items.resolve`: not an error, just
-  // an entry that would light nothing.
-  if (!presetTable()[stored.preset]) return null;
+  const custom = stored.preset === CUSTOM ? customOf(item) : null;
+  // Custom with nothing saved yet, or a preset the table no longer holds: an entry that would
+  // light nothing, not an error.
+  if (stored.preset === CUSTOM ? !custom : !presetTable()[stored.preset]) return null;
 
   // **Derived, never the stored value.** Both triggers follow from the item's type, so a stored one
   // can only be stale — a `"use"` left by the withdrawn build, or a descriptor copied onto an item
@@ -111,12 +122,19 @@ export function read(item) {
 
   const fuel = trigger === TRIGGER.LIT ? normaliseFuel(stored.fuel) : null;
 
+  // A complete light rather than overrides. `negative` rides in `light` because `companion.toRecord`
+  // takes it from the preset and `custom` resolves to none.
+  const light = custom
+    ? { ...custom.light, negative: custom.negative === true }
+    : stored.light ?? {};
+  const config = custom ? custom.config ?? {} : stored.config ?? {};
+
   return {
     trigger,
     preset: stored.preset,
     name: item.name,
-    light: stored.light ?? {},
-    config: stored.config ?? {},
+    light,
+    config,
     ...(fuel ? { fuel } : {}),
   };
 }

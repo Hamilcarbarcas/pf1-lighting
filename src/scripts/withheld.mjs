@@ -58,6 +58,9 @@ export const list = registry.list;
  */
 export const collect = registry.collect;
 
+/** §9.14: is a provider still working out this observer's newest answer? */
+export const isPending = registry.isPending;
+
 /** §4.3.5: every depth mesh for one observer. Cached like {@link collect}; fails open per provider. */
 export const collectDepth = registry.collectDepth;
 

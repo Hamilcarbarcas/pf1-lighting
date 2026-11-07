@@ -39,6 +39,7 @@
 
 import { MODULE_ID } from "../constants.mjs";
 import { containsPoint } from "../geometry.mjs";
+import { MODEL_MESH } from "../constants.mjs";
 import { stepTier } from "../model/tiers.mjs";
 import * as spill from "../model/spill.mjs";
 import { GRADIENT_SORT, GROUND_ELEVATION, classes, elevationBand } from "./darkness-shaders.mjs";
@@ -157,6 +158,7 @@ function create(index) {
   };
   entry.stub = regionStub(entry);
   entry.mesh = new RegionMesh(entry.stub, shaders.gradient);
+  entry.mesh[MODEL_MESH] = true;
   entry.mesh.name = `${MODULE_ID}.gradient.${index}`;
   entry.mesh.visible = false;
 
@@ -197,6 +199,7 @@ function dropFilter(entry) {
 }
 
 function park(entry) {
+  entry.ramp = null;
   entry.active = false;
   entry.id = null;
   entry.kind = undefined;
@@ -239,7 +242,11 @@ function uploadLevels(entry, ramp) {
   entry.mesh.shader.sortLevel = GRADIENT_SORT + levels[0];
 }
 
-function apply(entry, ramp) {
+function apply(entry, ramp, profile, force) {
+  // §9.14: the buffers already hold this ramp.
+  if (!force && entry.active && (entry.ramp === ramp) && (entry.profile === profile)) return;
+  entry.ramp = ramp;
+  entry.profile = profile;
   entry.active = true;
   entry.id = ramp.id;
   // Assigned unconditionally, like every other per-entry flag: this project's recurring pooling bug
@@ -351,7 +358,7 @@ export function sync(extra = [], { force = false } = {}) {
   for (const ramp of ramps) {
     const entry = pool[index] ?? create(index);
     if (!entry) break;
-    apply(entry, ramp);
+    apply(entry, ramp, profile, force);
     index++;
   }
   for (let i = index; i < pool.length; i++) park(pool[i]);

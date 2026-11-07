@@ -25,11 +25,52 @@
 
 import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
 import { t } from "../i18n.mjs";
+import { read } from "../settings-cache.mjs";
 import { resync as resyncLowLight } from "./llv.mjs";
+import * as motion from "./motion.mjs";
 
 export const SETTING_GM_OBSERVER = "gmObserverMode";
+export const SETTING_GM_MULTI_SELECT = "gmMultiSelectVision";
+
+/** What a GM sees with two or more sighted tokens selected. §9.14. */
+export const MULTI_SELECT = Object.freeze({ GODS_EYE: "godsEye", FIRST: "first", ALL: "all" });
 
 const PATCH_MARK = "pf1LightingObserverPatched";
+
+/** The token whose `_onAnimationUpdate` is running. */
+let animating = null;
+
+/** The token whose step is updating its sources. */
+let stepping = null;
+
+const multiSelectMode = () => read(SETTING_GM_MULTI_SELECT, MULTI_SELECT.GODS_EYE);
+
+/** The sighted tokens this client controls: the first, and whether there is a second. */
+function sightedSelection(layer) {
+  let first = null;
+  for (const token of layer.controlledObjects.values()) {
+    if (!token.hasSight) continue;
+    if (first) return { first, several: true };
+    first = token;
+  }
+  return { first, several: false };
+}
+
+/** Does the multi-select rule take this controlled token out of a GM's view? §9.14. */
+function excludedFromSelection(token) {
+  const mode = multiSelectMode();
+  if (mode === MULTI_SELECT.ALL) return false;
+  const { first, several } = sightedSelection(token.layer);
+  if (!several) return false;
+  return (mode === MULTI_SELECT.GODS_EYE) || (token !== first);
+}
+
+/** Is this GM in god's eye only because several tokens are selected? */
+export function multiSelectGodsEye() {
+  if (!game.user?.isGM || (multiSelectMode() !== MULTI_SELECT.GODS_EYE)) return false;
+  const layer = canvas?.tokens;
+  return !!layer?.controlledObjects && sightedSelection(layer).several;
+}
 
 /**
  * Does a GM's selected token become the observer?
@@ -103,6 +144,21 @@ export function registerSettings() {
     default: true,
     onChange: () => refreshVision(),
   });
+
+  game.settings.register(MODULE_ID, SETTING_GM_MULTI_SELECT, {
+    name: "PF1LIGHTING.Setting.gmMultiSelectVision.Name",
+    hint: "PF1LIGHTING.Setting.gmMultiSelectVision.Hint",
+    scope: "client",
+    config: true,
+    type: String,
+    choices: {
+      [MULTI_SELECT.GODS_EYE]: "PF1LIGHTING.Setting.gmMultiSelectVision.GodsEye",
+      [MULTI_SELECT.FIRST]: "PF1LIGHTING.Setting.gmMultiSelectVision.First",
+      [MULTI_SELECT.ALL]: "PF1LIGHTING.Setting.gmMultiSelectVision.All",
+    },
+    default: MULTI_SELECT.GODS_EYE,
+    onChange: () => refreshVision(),
+  });
 }
 
 /**
@@ -114,7 +170,10 @@ export function registerSettings() {
  * was and `isGmObserverMode` already returns early for them.
  */
 export function registerHooks() {
-  Hooks.once("ready", () => setSettingVisibility(SETTING_GM_OBSERVER, game.user?.isGM === true));
+  Hooks.once("ready", () => {
+    setSettingVisibility(SETTING_GM_OBSERVER, game.user?.isGM === true);
+    setSettingVisibility(SETTING_GM_MULTI_SELECT, game.user?.isGM === true);
+  });
 }
 
 export function registerKeybindings() {
@@ -177,7 +236,19 @@ export function registerSceneControls() {
  *
  * Applied at `setup`, alongside the other placeable-class mixins, and once.
  */
+/** §9.14: door icons test a few per frame while something moves, as idle tokens do. */
+function applyDoorMixin() {
+  const Base = CONFIG.Canvas.doorControlClass;
+  CONFIG.Canvas.doorControlClass = class extends Base {
+    /** @override */
+    get isVisible() {
+      return motion.queueDoor(this) ? this.visible : super.isVisible;
+    }
+  };
+}
+
 export function applyMixin() {
+  applyDoorMixin();
   const Base = CONFIG.Token.objectClass;
   if (!Base || Base[PATCH_MARK]) return;
 
@@ -202,7 +273,7 @@ export function applyMixin() {
      * that skipped it. Harmless where redundant.
      */
     _isVisionSource() {
-      if (game.user.isGM && this.controlled && !isGmObserverMode()) return false;
+      if (game.user.isGM && this.controlled && (!isGmObserverMode() || excludedFromSelection(this))) return false;
 
       if (!super._isVisionSource()) return false;
 
@@ -210,6 +281,42 @@ export function applyMixin() {
         return !this.layer.controlled.some((t) => !t.document.hidden && t.hasSight);
       }
       return true;
+    }
+
+    /** @override §9.14: idle tokens test a few per frame while something moves. */
+    _refreshVisibility() {
+      if (motion.queueVisibility(this)) return;
+      return super._refreshVisibility();
+    }
+
+    /** @override §9.14: marks source updates that come from an animation frame. */
+    _onAnimationUpdate(changed, context) {
+      const outer = animating;
+      animating = this;
+      try {
+        return super._onAnimationUpdate(changed, context);
+      } finally {
+        animating = outer;
+      }
+    }
+
+    /** @override §9.14: an animation frame's update waits for the next perception step. */
+    initializeSources(options) {
+      if ((animating === this) && motion.defer(this)) return;
+      const outer = stepping;
+      stepping = ((animating === this) || motion.isFlushing()) ? this : null;
+      try {
+        return super.initializeSources(options);
+      } finally {
+        stepping = outer;
+      }
+    }
+
+    /** @override §9.14: a step's light goes out with its held visuals. */
+    initializeLightSource(options) {
+      const waits = (stepping === this) && !options?.deleted && this.light && this._isLightSource();
+      if (waits && motion.oweLight(this)) return;
+      return super.initializeLightSource(options);
     }
   };
 }

@@ -244,7 +244,7 @@ Feature-detect with `api.withheld !== undefined`.
 
 | | |
 | --- | --- |
-| `api.withheld.register(id, provider, { layers, treatment, depth })` | Register a provider. Returns a function that unregisters it |
+| `api.withheld.register(id, provider, { layers, treatment, depth, pending })` | Register a provider. `pending(source)`, optional, is true while its answer for that observer is still being worked out off the main thread: a moving observer's visuals then wait for it, for up to 200 ms. Call `invalidate()` when it's ready. Returns a function that unregisters it |
 | `api.withheld.unregister(id)` | Remove a provider |
 | `api.withheld.invalidate()` | Your provider's output changed for a reason other than an observer moving: a setting, your own data. Triggers a vision refresh |
 | `api.withheld.active()` | `true` while the carve is installed, which is always while this module is enabled |

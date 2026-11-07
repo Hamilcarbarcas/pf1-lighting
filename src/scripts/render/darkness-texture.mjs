@@ -67,7 +67,7 @@
  * after two were found one crash at a time during the spike.
  */
 
-import { MODULE_ID } from "../constants.mjs";
+import { MODEL_MESH, MODULE_ID } from "../constants.mjs";
 import {
   CLIPPER_SCALE,
   containsPoint,
@@ -84,6 +84,7 @@ import {
   SKY_SORT,
   classes,
 } from "./darkness-shaders.mjs";
+import { darknessTable } from "../model/tiers.mjs";
 import * as gradient from "./gradient.mjs";
 import { darknessFor } from "./levels.mjs";
 import * as fieldBlur from "./texture-blur.mjs";
@@ -102,7 +103,7 @@ const MODE_OVERRIDE = 0;
  * Core expresses "not lit by global light" as outside the global light's darkness band
  * (`visibility.mjs:646`), and going through its own test is what also sets `#needsContainment` —
  * a private field enabling the fence filter that keeps an `ERASE` blend inside the container.
- * Setting `blendMode` by hand skips that.
+ * Setting `blendMode` by hand skips that, so it's set both ways; see {@link syncBlend}.
  *
  * `-1` is below every possible band because `darkness.min` is an `AlphaField` and never negative
  * (`common/data/data.mjs:64`). The upper bound is unusable for this: its default is 1 and nothing
@@ -735,6 +736,31 @@ function setGeometry(entry, outer, holes) {
 /*  Pool                                        */
 /* -------------------------------------------- */
 
+/**
+ * Keep wall-height's region handling off this module's meshes. §9.14.
+ *
+ * `processRegions` shows a region mesh only when the viewer's eye is inside its elevation band. These
+ * meshes borrow that band for the roof test, and a light's is its exact elevation, so they would all
+ * vanish except at an eye of exactly that height. Real regions are left to it.
+ */
+export function guardWallHeight() {
+  const wallHeight = globalThis.WallHeight;
+  const original = wallHeight?.processRegions;
+  if (typeof original !== "function") return;
+  wallHeight.processRegions = function (...args) {
+    const containers = [canvas.effects?.illumination?.darknessLevelMeshes, canvas.visibility?.vision?.light?.global?.meshes];
+    const kept = [];
+    for (const container of containers) {
+      for (const mesh of container?.children ?? []) if (mesh[MODEL_MESH]) kept.push([mesh, mesh.visible]);
+    }
+    try {
+      return original.apply(this, args);
+    } finally {
+      for (const [mesh, visible] of kept) mesh.visible = visible;
+    }
+  };
+}
+
 function meshClass() {
   const regions = foundry.canvas.placeables?.regions ?? foundry.canvas.regions;
   return regions?.RegionMesh ?? null;
@@ -799,6 +825,8 @@ function create(index) {
   // Core's erasing shader plus a roof-only switch the sky needs (§6.2.12); off, it is core's.
   const ErasingRegionMesh = erasingMeshClass(RegionMesh);
   entry.il = new ErasingRegionMesh(entry.stub, custom.illumination);
+  entry.dl[MODEL_MESH] = true;
+  entry.il[MODEL_MESH] = true;
   entry.dl.name = `${MODULE_ID}.dl.${index}`;
   entry.il.name = `${MODULE_ID}.il.${index}`;
   for (const mesh of [entry.dl, entry.il]) {
@@ -856,6 +884,22 @@ function park(entry) {
   // Invisible is not enough on its own — see {@link PARKED_MODIFIER}.
   entry.il.shader.modifier = PARKED_MODIFIER;
   entry.il.shader.roofOnly = false;
+  syncBlend(entry.il);
+}
+
+/**
+ * Core's band test (`visibility.mjs:643-651`), run as the level changes.
+ *
+ * @remarks
+ * Core assigns the blend only inside a visibility refresh, but {@link refresh} marks the vision mask
+ * dirty at once. A parked mesh, blended `MAX_COLOR`, reused as an eraser drew as a reveal of the
+ * very area it cuts until core's next refresh, which a held step delays. §9.14.
+ */
+function syncBlend(mesh) {
+  const band = canvas.environment?.globalLightSource?.data?.darkness;
+  if (!band) return;
+  const level = mesh.shader.darknessLevel;
+  mesh.blendMode = (level < band.min) || (level > band.max) ? PIXI.BLEND_MODES.ERASE : PIXI.BLEND_MODES.MAX_COLOR;
 }
 
 /**
@@ -876,6 +920,8 @@ function park(entry) {
  * whole thing §7.0 exists to fix.
  */
 let eraseDisabled = false;
+/** The inputs of the last completed geometry pass. */
+let lastPaint = null;
 
 /** @param {boolean} disabled @returns {boolean} The flag now in force */
 export function setEraseDisabled(disabled) {
@@ -935,6 +981,7 @@ function apply(
   // The sky erases on roofs only. Scene-wide, it would cut global light's reveal out of every area
   // brighter than the sky, and nothing un-erases. See {@link skyRegion}.
   entry.il.shader.roofOnly = sky;
+  syncBlend(entry.il);
 }
 
 /* -------------------------------------------- */
@@ -958,7 +1005,17 @@ export function paint(cells, { sky } = {}) {
     for (const entry of pool) dropFilter(entry);
     pool.length = 0;
     used = 0;
+    lastPaint = null;
   }
+
+  // §9.14: the same cells make the same geometry; an observer moving changes none of it.
+  const context = `${sky}|${gradient.isActive()}|${eraseDisabled}|${JSON.stringify(darknessTable())}`;
+  if (lastPaint && (lastPaint.context === context) && (lastPaint.cells.length === cells.length)
+    && lastPaint.cells.every((cell, i) => cell === cells[i])) {
+    refresh();
+    return used;
+  }
+  lastPaint = { context, cells };
 
   const regions = mergeByLevel(cells);
   merged = cells.length - regions.length;
@@ -1004,6 +1061,7 @@ export function paint(cells, { sky } = {}) {
 
 /** Park every mesh, handing the scene back to its own darkness level. */
 export function clear() {
+  lastPaint = null;
   if (!used && !pool.length) return;
   for (const entry of pool) park(entry);
   used = 0;
@@ -1040,6 +1098,7 @@ function refresh() {
  * gets there first.
  */
 export function dispose() {
+  lastPaint = null;
   for (const entry of pool) {
     dropFilter(entry);
     for (const mesh of [entry.dl, entry.il]) {

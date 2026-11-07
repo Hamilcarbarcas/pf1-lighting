@@ -25,6 +25,7 @@ import { t } from "../i18n.mjs";
 import { isNativeSuppressionDisabled } from "../suppression.mjs";
 import { flag } from "../settings-cache.mjs";
 import * as field from "../model/field.mjs";
+import * as motion from "../vision/motion.mjs";
 import {
   emitters as allEmitters,
   suppressors as registrySuppressors,
@@ -276,6 +277,9 @@ export function rebuild({ force = false } = {}) {
       ui.notifications?.warn(t("Notify.RendererNeedsSuppression"));
     }
   }
+
+  // §9.14: lights and the ground go out with the rest of a held step, which rebuilds as it's released.
+  if (!force && motion.isHolding()) return lastStats;
 
   const current = field.get();
   if (!force && current === lastField) return lastStats;

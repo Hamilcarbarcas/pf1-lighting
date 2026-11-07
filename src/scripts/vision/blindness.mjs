@@ -36,6 +36,7 @@
 import { MODULE_ID } from "../constants.mjs";
 import { castsUmbra } from "../model/contest.mjs";
 import { evaluate } from "../model/evaluate.mjs";
+import { version as registryVersion } from "../model/registry.mjs";
 import { TIER } from "../model/tiers.mjs";
 import { blindsightRange, darkSightRange, isPerceptionEnabled, refresh } from "./perception.mjs";
 
@@ -170,6 +171,9 @@ export function blindsightRadius(source) {
  */
 let resolving = false;
 
+/** One answer per source per tick: `blinded.darkness` is read for every test point. §9.14. */
+const blindMemo = new WeakMap();
+
 /**
  * Should the model blind this vision source outright?
  *
@@ -186,6 +190,16 @@ export function modelBlinds(source) {
 
   resolving = true;
   try {
+    const tick = canvas?.app?.ticker?.lastTime;
+    const lights = registryVersion();
+    const known = blindMemo.get(source);
+    if (known && (known.tick === tick) && (known.lights === lights) && (known.x === source.x) && (known.y === source.y)) {
+      return known.value;
+    }
+    const remember = (value) => {
+      blindMemo.set(source, { tick, lights, x: source.x, y: source.y, value });
+      return value;
+    };
     const origin = {
       x: source.x,
       y: source.y,
@@ -193,15 +207,15 @@ export function modelBlinds(source) {
     };
 
     // `evaluate` rather than `perceivedTier`: the tier alone is not enough, what made it that dark
-    // matters. Cheap — once per vision source per initialisation, not per frame.
+    // matters.
     const result = evaluate(origin);
-    if (result.tier > TIER.SUPERNATURAL_DARK) return false;
+    if (result.tier > TIER.SUPERNATURAL_DARK) return remember(false);
 
     // The suppressor must be magical. Blinding is the degenerate case of a 360° umbra (§4.3), so
     // it is only correct where an umbra would exist. A mundane source cannot normally reach
     // Supernatural Dark, but a homebrew one with an explicit `floor` could — and standing in a
     // very dark room is not a disability.
-    return castsUmbra(result.winner);
+    return remember(castsUmbra(result.winner));
   } catch {
     // A diagnostic layer must never be the reason a canvas fails to draw.
     return false;

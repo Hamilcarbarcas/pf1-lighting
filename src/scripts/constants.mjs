@@ -134,6 +134,9 @@ export const DARK_ANIMATION = "pf1LightingDarkAnimation";
  */
 export const HIDDEN = "pf1LightingHidden";
 
+/** Marks this module's meshes in the darkness containers, which only look like region meshes. §9.14. */
+export const MODEL_MESH = "pf1LightingModelMesh";
+
 /**
  * Force hard edges on a source whose cell was split into several rings.
  *

@@ -123,6 +123,7 @@ export function sync({ force = false } = {}) {
   const next = new Set();
   const Edge = foundry.canvas.geometry.edges.Edge;
   let count = 0;
+  let changed = false;
 
   for (const [rank, rings] of byRank) {
     for (let r = 0; r < rings.length; r++) {
@@ -131,12 +132,22 @@ export function sync({ force = false } = {}) {
         const a = ring[i];
         const b = ring[(i + 1) % ring.length];
         const id = `${EDGE_PREFIX}.${rank}.${r}.${i}`;
+        next.add(id);
+        count++;
+        const ax = a.X / CLIPPER_SCALE;
+        const ay = a.Y / CLIPPER_SCALE;
+        const bx = b.X / CLIPPER_SCALE;
+        const by = b.Y / CLIPPER_SCALE;
+        // The rank is in the id, so an edge with the same ends is the same edge.
+        const old = canvas.edges.get(id);
+        if (old && (old.a.x === ax) && (old.a.y === ay) && (old.b.x === bx) && (old.b.y === by)) continue;
+        changed = true;
 
         canvas.edges.set(
           id,
           new Edge(
-            { x: a.X / CLIPPER_SCALE, y: a.Y / CLIPPER_SCALE },
-            { x: b.X / CLIPPER_SCALE, y: b.Y / CLIPPER_SCALE },
+            { x: ax, y: ay },
+            { x: bx, y: by },
             {
               id,
               type: "darkness",
@@ -153,8 +164,6 @@ export function sync({ force = false } = {}) {
             }
           )
         );
-        next.add(id);
-        count++;
       }
     }
   }
@@ -162,7 +171,9 @@ export function sync({ force = false } = {}) {
   // Reconcile rather than clear-and-rebuild: surviving ids keep their identity, and an unchanged
   // scene does no deletion work at all.
   for (const id of owned) {
-    if (!next.has(id)) canvas.edges.delete(id);
+    if (next.has(id)) continue;
+    canvas.edges.delete(id);
+    changed = true;
   }
   owned = next;
 
@@ -173,11 +184,14 @@ export function sync({ force = false } = {}) {
     // if vision starts feeling slow.
     edges: count,
     ms: Math.round((performance.now() - t0) * 100) / 100,
+    changed,
   };
 
   // Vision only. Requesting lighting here would close the loop §8.3 warns about, for no gain:
-  // these edges are invisible to light sweeps.
-  canvas.perception.update({ initializeVision: true, refreshVision: true });
+  // these edges are invisible to light sweeps. Only on a change: every light that moves changes the
+  // field, and `initializeVision` re-sweeps every observer and switches off vision masking until
+  // the next refresh (§9.14).
+  if (changed) canvas.perception.update({ initializeVision: true, refreshVision: true });
 
   return lastStats;
 }

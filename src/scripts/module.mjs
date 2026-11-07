@@ -26,8 +26,10 @@ import * as llv from "./vision/llv.mjs";
 import * as senses from "./vision/senses.mjs";
 import * as sightless from "./vision/sightless.mjs";
 import * as observer from "./vision/observer.mjs";
+import * as motion from "./vision/motion.mjs";
 import * as umbra from "./vision/umbra.mjs";
 import * as umbraEdges from "./vision/umbra-edges.mjs";
+import * as publish from "./vision/publish.mjs";
 import * as umbraMask from "./vision/umbra-mask.mjs";
 import * as withheld from "./withheld.mjs";
 import * as revealed from "./revealed.mjs";
@@ -154,6 +156,7 @@ Hooks.once("init", () => {
   senses.registerSettings();
   umbra.registerSettings();
   observer.registerSettings();
+  motion.registerSettings();
   // §3.4's six numbers, and the window that edits them (§10.10). Same rule as the menus below:
   // the keys are registered here, by the module that reads them, before the menu that edits them
   // by name.
@@ -169,6 +172,7 @@ Hooks.once("init", () => {
   // Hides its settings row from players at `ready` — client-scoped, so Foundry's own world-scope
   // filter cannot do it.
   observer.registerHooks();
+  motion.registerHooks();
 
   // The vision layer's verdicts, handed down to the suppression layer. Injected rather than imported
   // so the dependency runs one way only — see `setVisionModel`.
@@ -307,6 +311,8 @@ Hooks.once("init", () => {
   // And with lights already sized for the current selection's low-light vision (§4.4d). Installed
   // last so it runs first: the repaint above has to see the new radii.
   llv.patchVisibility();
+  // §9.14: a held refresh runs none of the above.
+  publish.applyPatch({ beforePublish: () => renderer.rebuild() });
 
   // The darkness layer is the one effects layer core never vision-masks, so a darkness source
   // draws through walls. A prototype patch on the layer's `_draw`, at `init` because the canvas
@@ -348,6 +354,8 @@ Hooks.once("setup", () => {
   // during `init`, so this must follow it, and run once, so the chain does not grow a link per canvas
   // draw.
   llv.applyMixin();
+  llv.gatePf1Reinit();
+  darknessTexture.guardWallHeight();
 
   // Must follow `llv.applyMixin()` — both wrap `CONFIG.Token.objectClass`, each guarding on its own
   // static mark, so order decides the chain but not whether both apply.
@@ -377,6 +385,7 @@ Hooks.on("canvasInit", () => {
 
 Hooks.once("ready", () => {
   game.pf1Lighting = {
+    motionSwitches: motion.switches,
     // The supported surface — DESIGN.md §11. Everything else on this object is a debug readout: it
     // logs, gains and loses fields as diagnoses need them, and several entries hand back live
     // internals. `api` is the half that promises not to change under a consumer, and `api.version`

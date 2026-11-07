@@ -105,17 +105,26 @@ export class PresetLightConfig extends Base {
    * @param {object} options.preset - The working copy to edit
    * @param {string} options.label  - Shown in the window title, so the GM knows which one this is
    * @param {(preset: object) => void} options.onSave - Handed the harvested preset on submit
+   * @param {string} [options.title] - Replaces the preset-editor window title
+   * @param {string} [options.submitLabel] - Replaces the preset-editor submit label
+   * @param {string[]} [options.hide] - Further selectors to hide, for a caller that harvests less
    */
-  constructor({ preset, label, onSave, ...options } = {}) {
+  constructor({ preset, label, onSave, title, submitLabel, hide = [], ...options } = {}) {
     super({ ...options, document: documentFor(preset) });
     this.#preset = preset;
     this.#label = label;
     this.#onSave = onSave;
+    this.#title = title;
+    this.#submitLabel = submitLabel;
+    this.#hide = hide;
   }
 
   #preset;
   #label;
   #onSave;
+  #title;
+  #submitLabel;
+  #hide;
 
   static DEFAULT_OPTIONS = {
     // Not `id: "{id}"`. The inherited default keys the application by document id, which is a fresh
@@ -128,7 +137,7 @@ export class PresetLightConfig extends Base {
 
   /** @inheritDoc */
   get title() {
-    return t("Presets.EditTitle", { label: this.#label ?? "" });
+    return this.#title ?? t("Presets.EditTitle", { label: this.#label ?? "" });
   }
 
   /**
@@ -148,7 +157,7 @@ export class PresetLightConfig extends Base {
   async _onRender(context, options) {
     await super._onRender(context, options);
 
-    for (const selector of HIDDEN_FIELDS) {
+    for (const selector of [...HIDDEN_FIELDS, ...this.#hide]) {
       const field = this.element.querySelector(selector);
       // The whole row, not the input: a label with nothing under it reads as a rendering fault.
       field?.closest(".form-group")?.classList.add("pf1-lighting-off");
@@ -170,7 +179,7 @@ export class PresetLightConfig extends Base {
     // Core labels the submit button CREATE for a document its collection does not hold, which is
     // true and unhelpful — nothing is created.
     const submit = context.buttons?.find((button) => button.type === "submit");
-    if (submit) submit.label = t("Presets.SaveEdits");
+    if (submit) submit.label = this.#submitLabel ?? t("Presets.SaveEdits");
     return context;
   }
 

@@ -10,6 +10,9 @@
 ## Unreleased
 
 ### Added
+- **Custom lights on items and buffs**: the Light section of an item's Advanced tab offers **Custom**
+  beside the presets, and an edit button that opens the light configuration window for that item alone,
+  filled in from the selected preset.
 - **Obstructed ground** (`treatment: "obstructed"` on withheld regions, documented in API.md): ground
   that something low hides from an observer, rather than a wall, shows its current light level under
   thinner fog, set by the new **Obstructed ground memory** slider in Visuals, and is never brighter
@@ -27,7 +30,29 @@
   opposite of withheld regions. A revealed area shows lit by whatever light reaches it, or within
   darkvision, and is never recorded in fog of war.
 
+### Changed
+- **Selecting several tokens as GM now shows full GM vision by default**, which is far faster on large
+  scenes. The new **GM vision with several tokens selected** setting can follow the first selected token
+  or combine them all instead, as before.
+- **Moving tokens update their vision and light every 50 ms instead of every frame**, while the token
+  itself still moves at full frame rate. The new **Vision update interval while moving** setting changes
+  this; 0 restores the old behavior.
+- **While something moves, tokens and door icons check whether they can be seen in turn rather than all at once**, so one
+  may appear or vanish a moment late. The rest catch up within a moment of movement stopping, without a pause
+  when a token arrives. The same setting at 0 turns this off.
+- **Vision and light updates space out on their own when they are slow**, as far as about eight a second, so a busy
+  scene keeps its frame rate while a token moves.
+- **On busy scenes, cutting a moving token's view runs on a background thread.** The view, the lighting and any
+  shadows a module works out in the background change together in one frame, a moment behind the token, rather
+  than each at its own pace. A view that is quick to cut doesn't wait, and neither does a token that jumps or stops.
+
 ### Fixed
+- **Lights no longer disappear for some selected tokens.** With Wall Height active, lights could stop drawing for a viewer whose eye height differed from the light's, so the ground looked unlit while the light level tooltip still read correctly.
+- **Tokens with darkvision no longer lose light color after a reload.** A token could keep Foundry's full desaturation until something updated it, so its view stayed grey even in lit areas.
+- **Moving a token you are seeing through is faster.** The check for whether the viewer stands in a blinding darkness ran for every point tested on every token. It now runs once per viewer per frame.
+- **Moving a light, selecting tokens, and walking with several observers are faster on large scenes.**
+  Work for lights and observers that did not change is no longer repeated, and selecting a token no longer
+  rebuilds every light unless its low-light vision changes them.
 - **Low-light vision no longer enlarges lights when no one is looking through a token.** On a scene
   with token vision off, or for a GM with observer view off, selecting a token with low-light vision
   doubled every light on the scene.

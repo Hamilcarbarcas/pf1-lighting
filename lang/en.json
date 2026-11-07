@@ -31,6 +31,17 @@
         "Name": "GM sees token vision",
         "Hint": "When enabled, selecting a token as GM shows you what that token perceives. Can also be toggled from the token controls button."
       },
+      "gmMultiSelectVision": {
+        "Name": "GM vision with several tokens selected",
+        "Hint": "What you see as GM with two or more sighted tokens selected. Full GM vision is by far the fastest, since no token's view has to be worked out.",
+        "GodsEye": "Full GM vision",
+        "First": "The first selected token's vision",
+        "All": "All selected tokens' vision combined"
+      },
+      "movementPerceptionStep": {
+        "Name": "Vision update interval while moving",
+        "Hint": "How often, in milliseconds, a moving token's vision and light update, at most. The token itself still moves at full frame rate, and other tokens check whether they can be seen in turn. If updates are slow on a busy scene they space out on their own. Higher is smoother, with the edge of vision and light trailing a little further behind. 0 updates every frame and checks every token, as Foundry does by default."
+      },
       "readoutEnabled": {
         "Name": "Show light level",
         "Hint": "Displays the light level under the cursor or of a hovered token as a tooltip beside the pointer."
@@ -327,7 +338,11 @@
       "ActiveHint": "While this buff is active, its actor's tokens emit light or darkness as configured. Emissions only take effect when enabled.",
       "LitHint": "Offers this item in the token light picker. This overrides whatever the light source table says about an item of this name.",
       "Preset": "Light preset",
-      "PresetHint": "The lighting preset this gives off. Edit the presets themselves under Configure Settings.",
+      "PresetHint": "The lighting preset this gives off, or Custom for a light configured on this item alone. The edit button opens the light configuration, filled in from the selected preset, and saving it selects Custom. Edit the presets themselves under Configure Settings.",
+      "Customize": "Configure a custom light for this item",
+      "CustomUnset": "No custom light configured yet. This item gives off nothing until one is saved.",
+      "EditTitle": "Custom Light: {name}",
+      "SaveLight": "Save Light",
       "Fuel": "Fuel",
       "FuelNone": "Burns indefinitely",
       "FuelHours": "Hours",

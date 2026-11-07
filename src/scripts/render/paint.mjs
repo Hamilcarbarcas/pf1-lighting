@@ -75,6 +75,7 @@ import { darknessFor } from "./levels.mjs";
 import { width as transitionWidth } from "./transition.mjs";
 import * as lightRamps from "./light-ramps.mjs";
 import * as fieldBlur from "./texture-blur.mjs";
+import * as motion from "../vision/motion.mjs";
 
 let signature = null;
 let lastStats = null;
@@ -472,6 +473,41 @@ function shadowRegions() {
   return out;
 }
 
+/** The last shadows and clamp ramps with what they were built from. §9.14. */
+let shadowMemo = null;
+let clampMemo = null;
+
+const sameParts = (a, b) => (a.length === b.length) && a.every((part, i) => part === b[i]);
+
+/**
+ * {@link shadowRegions}, kept until an observer's view or a provider changes. A light moving forces a
+ * repaint and changes neither, unless an observer's umbra regions followed it.
+ */
+function shadowsCached() {
+  const key = [hideUnseen(), obstructedLightShows(), withheld.currentGeneration(), revealed.currentGeneration()];
+  for (const source of observers()) {
+    const regions = umbra.regionsFor(source);
+    key.push(source, source.los, regions.length ? regions : null);
+  }
+  if (shadowMemo && sameParts(shadowMemo.key, key)) {
+    lastShadowPath = shadowMemo.path;
+    return shadowMemo.shadows;
+  }
+  const shadows = shadowRegions();
+  shadowMemo = { key, shadows, path: lastShadowPath };
+  return shadows;
+}
+
+/** {@link clampRamps}, kept while the same shadows are drawn the same way. */
+function clampsCached(shadows, collar) {
+  const levels = shadows.map((shadow) => darknessFor(shadow.clamp).level).join();
+  const key = [shadows, collar, transitionWidth(), levels];
+  if (clampMemo && sameParts(clampMemo.key, key)) return clampMemo.ramps;
+  const ramps = clampRamps(shadows, { collar });
+  clampMemo = { key, ramps };
+  return ramps;
+}
+
 /* -------------------------------------------- */
 /*  The split                                   */
 /* -------------------------------------------- */
@@ -753,6 +789,14 @@ function matches(next) {
 export function repaint({ force = false } = {}) {
   if (!canvas?.ready) return null;
 
+  // §9.14: a held step goes out whole, and the refresh that releases it repaints.
+  if (motion.isHolding()) {
+    forceOwed ||= force;
+    return lastStats;
+  }
+  force ||= forceOwed;
+  forceOwed = false;
+
   if (!active()) {
     if (lastStats) {
       gradient.clear();
@@ -783,7 +827,7 @@ export function repaint({ force = false } = {}) {
   const t0 = performance.now();
   const base = baseCells();
   const tBase = performance.now();
-  const shadows = shadowRegions();
+  const shadows = shadowsCached();
   const tShadows = performance.now();
 
   // The cut is off, and leaving it on was actively wrong (2026-08-27: hard edges on wall shadows and
@@ -810,7 +854,7 @@ export function repaint({ force = false } = {}) {
   const lights = lightRamps.rampsFrom(currentField.cells, tierOf(currentField.stats?.ambientB ?? 0));
   const tLights = performance.now();
   const moving = observerMoving();
-  const clamps = softClamps() ? clampRamps(shadows, { collar: !moving }) : [];
+  const clamps = softClamps() ? clampsCached(shadows, !moving) : [];
   if (moving) settleAfterMotion();
   const tClamps = performance.now();
   // §6.4.3 — the ground's own boundaries, as ramps rather than as a blur.
@@ -923,6 +967,7 @@ function observerMoving() {
 
 /** Milliseconds after the last moving repaint before the collar is restored. */
 const SETTLE_MS = 120;
+let forceOwed = false;
 let settleTimer = null;
 
 /** Repaint with the clamp collar once no repaint has seen an observer moving for {@link SETTLE_MS}. */
@@ -1016,6 +1061,8 @@ export function registerHooks() {
     signature = null;
     lastStats = null;
     lastPaintedField = null;
+    shadowMemo = null;
+    clampMemo = null;
     // The container these live in belongs to the old canvas; this is about dropping the module's
     // references, same as `renderer.mjs` does for the texture pool.
     gradient.dispose();
@@ -1061,6 +1108,8 @@ export const repaintLog = () => log.map((entry) => ({ ...entry }));
 /** Drop the cached signature so the next call recomputes. */
 export function invalidate() {
   signature = null;
+  shadowMemo = null;
+  clampMemo = null;
 }
 
 /**

@@ -59,6 +59,15 @@ function windingNumber(points, x, y) {
  * @property {Record<string, number>} byProvider  Polygon counts, for diagnostics
  */
 
+/** A provider handing back the same polygon gets the same path: identity is how consumers see no change. */
+const paths = new WeakMap();
+
+function pathOf(polygon) {
+  let path = paths.get(polygon);
+  if (!path) paths.set(polygon, path = toClipperPath(polygon, CLIPPER_SCALE));
+  return path;
+}
+
 const EMPTY_COLLECTED = Object.freeze({
   light: [], lightElevations: [], sight: [], every: [], everyPolygons: [],
   unseen: [], unseenPolygons: [], obstructed: [], byProvider: Object.freeze({}),
@@ -95,10 +104,11 @@ export function createRegistry(name) {
   function invalidate() {
     generation++;
     failed.clear();
-    if (canvas?.ready) canvas.perception.update({ initializeVision: true, refreshVision: true });
+    // No re-sweep: every cache of a provider's output carries this generation (§9.14).
+    if (canvas?.ready) canvas.perception.update({ refreshVision: true });
   }
 
-  function register(id, provider, { layers = Object.values(LAYERS), treatment = TREATMENTS.UNSEEN, depth = null } = {}) {
+  function register(id, provider, { layers = Object.values(LAYERS), treatment = TREATMENTS.UNSEEN, depth = null, pending = null } = {}) {
     if (!id || (typeof id !== "string")) throw new Error(`${name}.register: id must be a string`);
     if (typeof provider !== "function") throw new Error(`${name}.register: provider must be a function`);
     const set = new Set(layers);
@@ -115,13 +125,26 @@ export function createRegistry(name) {
     if ((depth !== null) && ((typeof depth !== "function") || (treatment !== TREATMENTS.OBSTRUCTED))) {
       throw new Error(`${name}.register: depth must be a function, and only with the obstructed treatment`);
     }
-    providers.set(id, { provider, layers: set, treatment, depth });
+    if ((pending !== null) && (typeof pending !== "function")) throw new Error(`${name}.register: pending must be a function`);
+    providers.set(id, { provider, layers: set, treatment, depth, pending });
     invalidate();
     return () => unregister(id);
   }
 
   function unregister(id) {
     if (providers.delete(id)) invalidate();
+  }
+
+  /** Is a provider still working out this observer's newest answer? §9.14. Fails open per provider. */
+  function isPending(source) {
+    for (const { pending } of providers.values()) {
+      try {
+        if (pending?.(source)) return true;
+      } catch (error) {
+        console.error(`PF1 Lighting | ${name} pending check failed`, error);
+      }
+    }
+    return false;
   }
 
   /** Everything registered for one observer, by layer. Fails open per provider. */
@@ -152,7 +175,7 @@ export function createRegistry(name) {
       const obstructed = treatment === TREATMENTS.OBSTRUCTED;
       let count = 0;
       for (const polygon of polygons) {
-        const path = toClipperPath(polygon, CLIPPER_SCALE);
+        const path = pathOf(polygon);
         if (path.length < 3) continue;
         if (layers.has(LAYERS.LIGHT)) {
           value.light.push(path);
@@ -225,6 +248,7 @@ export function createRegistry(name) {
     register,
     unregister,
     invalidate,
+    isPending,
     collect,
     collectDepth,
     covers,

@@ -49,6 +49,7 @@
  */
 
 import { EFFECT_MARK, MODULE_ID } from "../constants.mjs";
+import { intervalMs, owe } from "../vision/motion.mjs";
 import { applyPreset, table as presetTable } from "./presets.mjs";
 import * as registry from "./registry.mjs";
 import * as socket from "../socket.mjs";
@@ -718,7 +719,7 @@ function followsAnimation() {
  * position is not cached there (`contributionAt` reads `source.x` live), so a light-bearing token
  * moving does not stale it.
  */
-export function moved(anchorDoc) {
+export function moved(anchorDoc, { quiet = false } = {}) {
   if (!anchorDoc || !canvas?.ready) return 0;
   const prefix = `${anchorDoc.uuid}::`;
   let count = 0;
@@ -735,7 +736,9 @@ export function moved(anchorDoc) {
   }
   // Only when something actually moved. Asking for a perception update per `refreshToken` would
   // undo the guard above, the flags being the expensive half rather than the sweep.
-  if (count) perceptionUpdate(edges);
+  // Quiet when a held step publishes it, in the refresh that runs the lighting. A darkness's edges
+  // still have to be asked for.
+  if (count && (!quiet || edges)) perceptionUpdate(edges);
   return count;
 }
 
@@ -913,19 +916,31 @@ export async function place(point, { preset, config = {}, scene = canvas?.scene 
 /** Anchors whose companions need moving, flushed once per frame. */
 const dirty = new Set();
 let frame = null;
+let lastFlush = -Infinity;
 
 function markMoved(doc) {
   // The rejection that keeps this off the drag profile: `refreshToken` fires for every token on the
   // scene, and almost none of them carry an effect.
   if (!doc || !liveAnchors.has(doc.uuid)) return;
+  // §9.14: while steps are held, a carried light goes out with them.
+  if (owe(doc, () => moved(doc, { quiet: true }))) return;
   dirty.add(doc);
   if (frame !== null) return;
-  frame = requestAnimationFrame(() => {
+  const flush = () => {
+    // §9.14: companions step on the same interval as a moving token's own sources.
+    if ((performance.now() - lastFlush) < intervalMs()) {
+      frame = requestAnimationFrame(flush);
+      return;
+    }
     frame = null;
+    lastFlush = performance.now();
     const docs = [...dirty];
     dirty.clear();
-    for (const d of docs) moved(d);
-  });
+    for (const d of docs) {
+      if (!owe(d, () => moved(d, { quiet: true }))) moved(d);
+    }
+  };
+  frame = requestAnimationFrame(flush);
 }
 
 /** Did an update touch the records? */

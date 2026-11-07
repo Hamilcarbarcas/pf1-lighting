@@ -378,6 +378,15 @@
   flex: 0 0 5rem;
 }
 
+/* The custom-light button sits beside the preset select at its own width. */
+.app.sheet.item .pf1-lighting-emits .pf1-lighting-emits-edit {
+  flex: 0 0 auto;
+  width: auto;
+  margin: 0 0 0 4px;
+  padding: 0 6px;
+  line-height: normal;
+}
+
 /* *Dead end, recorded so it is not retried.* Chromium's datalist arrow on `input[list]` sits low in
  * the box — Foundry gives every input `height` **and** `line-height` of `var(--input-height)`
  * (`foundry2.css:3361-3362`), so the line box fills the control and its baseline is low in it.
