@@ -12,6 +12,7 @@
 import { MODULE_ID } from "./constants.mjs";
 import { TIER, TIER_NAME } from "./model/tiers.mjs";
 import { evaluate } from "./model/evaluate.mjs";
+import { footprint, majorityPoints, majorityTier } from "./sample.mjs";
 import * as perception from "./vision/perception.mjs";
 import * as sceneConfig from "./ui/scene-config.mjs";
 import * as companion from "./model/companion.mjs";
@@ -145,40 +146,11 @@ function pointOf(subject) {
  * `min`/`max` are opt-in, for the asymmetric stealth case: a creature hides in the darkest square
  * it occupies and is spotted by the brightest. No `average` — averaging tiers and re-thresholding
  * matches no rule in the game.
- */
-const SAMPLE = Object.freeze({ CENTER: "center", MIN: "min", MAX: "max" });
-
-/**
- * Every grid space a token occupies, as centre points.
  *
- * @remarks
- * The bounds walk is the live path; v13 has no `getOccupiedGridSpaceOffsets`. The optional call
- * is there because a version that adds it would handle hex grids and odd token shapes, which the
- * walk does not — on hex or gridless scenes it approximates. Only `min`/`max` sampling reaches it.
+ * `majority` is the default for tokens (§11.3.1): the highest tier more than half of a token's
+ * sample points reach. Attacks, stealth, the readout, and the light-level target all read it.
  */
-function footprint(token) {
-  const grid = canvas?.grid;
-  const doc = token?.document;
-  if (!grid || !doc) return [];
-
-  const offsets = doc.getOccupiedGridSpaceOffsets?.();
-  if (offsets?.length) {
-    return offsets.map((offset) => {
-      const { x, y } = grid.getCenterPoint(offset);
-      return { x, y, elevation: doc.elevation ?? 0 };
-    });
-  }
-
-  const b = token.bounds;
-  const size = grid.size || 100;
-  const points = [];
-  for (let y = b.y + size / 2; y < b.y + b.height; y += size) {
-    for (let x = b.x + size / 2; x < b.x + b.width; x += size) {
-      points.push({ x, y, elevation: doc.elevation ?? 0 });
-    }
-  }
-  return points.length ? points : [pointOf(token)].filter(Boolean);
-}
+const SAMPLE = Object.freeze({ CENTER: "center", MIN: "min", MAX: "max", MAJORITY: "majority" });
 
 /** The points one subject resolves to, under `sample`. */
 function pointsFor(subject, sample) {
@@ -191,7 +163,7 @@ function pointsFor(subject, sample) {
     const point = pointOf(subject);
     return point ? [point] : [];
   }
-  const points = footprint(token);
+  const points = sample === SAMPLE.MAJORITY ? majorityPoints(token) : footprint(token);
   return points.length ? points : [pointOf(token)].filter(Boolean);
 }
 
@@ -200,6 +172,7 @@ function fold(tiers, sample) {
   if (!tiers.length) return TIER.DARK;
   if (sample === SAMPLE.MIN) return Math.min(...tiers);
   if (sample === SAMPLE.MAX) return Math.max(...tiers);
+  if (sample === SAMPLE.MAJORITY) return majorityTier(tiers);
   return tiers[0];
 }
 
@@ -305,10 +278,10 @@ export function brightnessAt(points, { observer = null } = {}) {
  * @param {Token|TokenDocument|(Token|TokenDocument)[]} tokens
  * @param {object} [options]
  * @param {Token|TokenDocument|null} [options.observer]
- * @param {"center"|"min"|"max"} [options.sample="center"] - See {@link SAMPLE}
+ * @param {"majority"|"center"|"min"|"max"} [options.sample="majority"] - See {@link SAMPLE}
  * @returns {number|number[]}
  */
-export function brightnessOf(tokens, { observer = null, sample = SAMPLE.CENTER } = {}) {
+export function brightnessOf(tokens, { observer = null, sample = SAMPLE.MAJORITY } = {}) {
   const list = many(tokens);
   const obs = observer ? visionSourceFor(tokenOf(observer)) : null;
   try {
@@ -408,12 +381,14 @@ function lightIndependenceOf(id) {
  *   wins (`visibility.mjs:788`). Saved and restored here, or a probe leaves a rendering artefact
  *   on an unexamined token.
  */
-function modesSeeing(source, observed, point) {
+function modesSeeing(source, observed, point, { tolerance } = {}) {
   const found = [];
   const visibility = canvas?.visibility;
   if (!visibility?._createVisibilityTestConfig) return found;
 
-  const config = visibility._createVisibilityTestConfig(point, { object: observed });
+  // `tolerance` undefined keeps core's own default (2 px); `perceive` and `perceivedAlong` pass a
+  // token's own (a quarter of its smaller side), as `Token#isVisible` does.
+  const config = visibility._createVisibilityTestConfig(point, { object: observed, tolerance });
   const modes = CONFIG.Canvas.detectionModes ?? {};
   const doc = source?.object?.document;
 
@@ -474,10 +449,10 @@ function modesSeeing(source, observed, point) {
  * @param {Token|TokenDocument|(Token|TokenDocument)[]} observers
  * @param {Token|TokenDocument|(Token|TokenDocument)[]} observed
  * @param {object} [options]
- * @param {"center"|"min"|"max"} [options.sample="center"]
+ * @param {"majority"|"center"|"min"|"max"} [options.sample="majority"]
  * @returns {object|object[]}
  */
-export function perceive(observers, observed, { sample = SAMPLE.CENTER } = {}) {
+export function perceive(observers, observed, { sample = SAMPLE.MAJORITY } = {}) {
   const obsList = many(observers).map(tokenOf).filter(Boolean);
   const targetList = many(observed).map(tokenOf).filter(Boolean);
   const out = [];
@@ -497,9 +472,22 @@ export function perceive(observers, observed, { sample = SAMPLE.CENTER } = {}) {
   return single ? (out[0] ?? null) : out;
 }
 
+/** Grid distance between two points in scene units, or `null` when either is missing. */
+function distanceBetween(from, to) {
+  if (!from || !to) return null;
+  return (
+    canvas?.grid?.measurePath?.([from, to])?.distance ??
+    Math.hypot(to.x - from.x, to.y - from.y) / (canvas?.dimensions?.distancePixels ?? 1)
+  );
+}
+
 function record(observer, source, target, sample) {
   const point = pointOf(target);
-  const reasons = point ? modesSeeing(source, target, point) : [];
+  // Core's own tolerance for a token (`Token#isVisible`): a quarter of its smaller side, so `visible`
+  // agrees with whether the token is drawn. Points stay core's 2 px.
+  const size = Math.min(target?.w ?? 0, target?.h ?? 0);
+  const tolerance = size > 0 ? size / 4 : undefined;
+  const reasons = point ? modesSeeing(source, target, point, { tolerance }) : [];
   const reason = reasons[0] ?? null;
 
   const tier = point
@@ -514,12 +502,7 @@ function record(observer, source, target, sample) {
     : TIER.DARK;
 
   const from = pointOf(observer);
-  const distance =
-    from && point
-      ? canvas?.grid?.measurePath?.([from, point])?.distance ??
-        Math.hypot(point.x - from.x, point.y - from.y) /
-          (canvas?.dimensions?.distancePixels ?? 1)
-      : null;
+  const distance = distanceBetween(from, point);
 
   return {
     observer,
@@ -559,10 +542,10 @@ function record(observer, source, target, sample) {
  * @param {Token|TokenDocument} observed
  * @param {object} [options]
  * @param {(Token|TokenDocument)[]} [options.observers]
- * @param {"center"|"min"|"max"} [options.sample="center"] - `"min"` is the hider's rule
+ * @param {"majority"|"center"|"min"|"max"} [options.sample="majority"] - See {@link SAMPLE}
  * @returns {object[]}
  */
-export function perceivedBy(observed, { observers, sample = SAMPLE.CENTER } = {}) {
+export function perceivedBy(observed, { observers, sample = SAMPLE.MAJORITY } = {}) {
   const target = tokenOf(observed);
   if (!target) return [];
 
@@ -574,6 +557,95 @@ export function perceivedBy(observed, { observers, sample = SAMPLE.CENTER } = {}
   return many(results).sort(
     (a, b) => Number(b.visible) - Number(a.visible) || b.tier - a.tier
   );
+}
+
+/**
+ * Which points of a path each observer could have seen the token at. Stealth's call for a move.
+ *
+ * @remarks
+ * {@link perceivedBy} answers for where the token stands now. A stealth check also asks about the
+ * path it took to get there, so this tests every point with **one** vision source per observer —
+ * the sweep is the expensive part (§9.6), and the points cost only a containment test each.
+ *
+ * Each point is where the token's centre was. Detection modes still get the token itself as the
+ * object, so its current statuses (invisible) decide as they would on the canvas. The tolerance is
+ * core's own for a token, a quarter of its smaller side (`Token#isVisible`), so a point counts as
+ * seen exactly when the token standing there would have been drawn.
+ *
+ * `tier` is the `"majority"` reading (§11.3.1) of the token standing at each point: the token's own
+ * majority points, shifted from where it stands now to the point.
+ *
+ * Observers default to every other token on the scene with sight enabled, as in
+ * {@link perceivedBy}. Records come back with observers that saw any point first.
+ *
+ * @param {Token|TokenDocument} observed
+ * @param {{x: number, y: number, elevation?: number}[]} points - Token centres along the path.
+ *   A point without `elevation` takes the token's current one.
+ * @param {object} [options]
+ * @param {(Token|TokenDocument)[]} [options.observers]
+ * @returns {{observer: Token, observed: Token, samples: object[], seen: number[], blinded: boolean,
+ *   ephemeral: boolean}[]}
+ */
+export function perceivedAlong(observed, points, { observers } = {}) {
+  const target = tokenOf(observed);
+  if (!target) return [];
+
+  const ownElevation = target.document?.elevation ?? 0;
+  const path = (points ?? []).map((p) =>
+    Number.isFinite(p?.x) && Number.isFinite(p?.y)
+      ? { x: p.x, y: p.y, elevation: Number.isFinite(p.elevation) ? p.elevation : ownElevation }
+      : null
+  );
+  const size = Math.min(target.w ?? 0, target.h ?? 0);
+  const tolerance = size > 0 ? size / 4 : undefined;
+
+  // The majority points as offsets from the token's centre, re-placed at each path point.
+  const centre = target.center;
+  const offsets = centre ? majorityPoints(target).map((p) => ({ dx: p.x - centre.x, dy: p.y - centre.y })) : [];
+  if (!offsets.length) offsets.push({ dx: 0, dy: 0 });
+
+  const candidates = (observers ? many(observers).map(tokenOf) : canvas?.tokens?.placeables ?? [])
+    .filter(Boolean)
+    .filter((token) => token !== target && token.document?.sight?.enabled !== false);
+
+  const out = [];
+  for (const observer of candidates) {
+    const { source, dispose } = visionSourceFor(observer);
+    try {
+      const from = pointOf(observer);
+      const tierAt = (p) =>
+        source ? perception.withObserver(source, () => perception.perceivedTier(p, source)) : evaluate(p).tier;
+      const samples = path.map((point, index) => {
+        if (!point) return { index, point: null, visible: false, reason: null, reasons: [], tier: TIER.DARK, distance: null };
+        const reasons = modesSeeing(source, target, point, { tolerance });
+        const tier = majorityTier(
+          offsets.map((o) => tierAt({ x: point.x + o.dx, y: point.y + o.dy, elevation: point.elevation }))
+        );
+        const distance = distanceBetween(from, point);
+        return {
+          index,
+          point,
+          visible: reasons.length > 0,
+          reason: reasons[0] ?? null,
+          reasons,
+          tier,
+          distance: distance === null ? null : +distance.toFixed(2),
+        };
+      });
+      out.push({
+        observer,
+        observed: target,
+        samples,
+        seen: samples.filter((s) => s.visible).map((s) => s.index),
+        blinded: source?.isBlinded === true,
+        ephemeral: !observer?.vision,
+      });
+    } finally {
+      dispose();
+    }
+  }
+
+  return out.sort((a, b) => Number(b.seen.length > 0) - Number(a.seen.length > 0));
 }
 
 /* -------------------------------------------- */
@@ -687,6 +759,9 @@ export function build() {
 
     perceive,
     perceivedBy,
+    // §11.4.2. Added 2026-11-09 for astora-mod's stealth; feature-detect with
+    // `api.perceivedAlong !== undefined`.
+    perceivedAlong,
     registerLightIndependentMode,
 
     sceneTier,

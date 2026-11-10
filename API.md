@@ -91,13 +91,14 @@ api.brightnessAt(p, { observer: rogue })  // 1 — the rogue is looking through 
 
 # Sampling
 
-`api.SAMPLE` is `{ CENTER: "center", MIN: "min", MAX: "max" }` — how a subject occupying more than one
+`api.SAMPLE` is `{ CENTER: "center", MIN: "min", MAX: "max", MAJORITY: "majority" }` – how a subject occupying more than one
 square resolves to a single tier. Accepted by `brightnessOf`, `perceive` and `perceivedBy` — a grid
 square has one centre, so `brightnessInSquare` has nothing to sample.
 
 | `sample` | Rule | Use for |
 | --- | --- | --- |
-| `"center"` (default) | The token's centre point | Everything ordinary. Matches the readout and a grid square |
+| `"majority"` (default) | The highest tier more than half of its sample points reach: the centre and four points halfway to the corners, or for a token larger than one square, every occupied square's centre plus its centre | Everything ordinary: attacks, stealth, the readout, the light-level target |
+| `"center"` | The token's centre point | Matches a grid square |
 | `"min"` | The darkest square the token occupies | The hider's rule |
 | `"max"` | The brightest square it occupies | The spotter's rule |
 
@@ -115,12 +116,39 @@ the game.
 `perceivedBy` defaults `observers` to every other token on the scene with sight enabled. Narrow it
 yourself — which NPCs are entitled to notice is a table question.
 
+## Along a path
+
+```js
+api.perceivedAlong(observed, points, { observers })
+```
+
+Which points of a path each observer could have seen the token at: the question a stealth check
+asks about a move, not just where the token ended up. `points` are the token's centre positions
+along the path (`{x, y, elevation?}`; a missing elevation takes the token's current one).
+`observers` defaults as in `perceivedBy`. Added after version 1 shipped; feature-detect with
+`api.perceivedAlong !== undefined`.
+
+One record per observer, those that saw any point first:
+
+| Field | |
+| --- | --- |
+| `observer`, `observed` | The two `Token`s |
+| `samples` | One entry per point, in order: `index`, `point`, `visible`, `reason`, `reasons`, `tier` (the majority reading of the token standing there), `distance` |
+| `seen` | The indices of the points the observer could see |
+| `blinded`, `ephemeral` | As in the record below |
+
+Each point counts as seen exactly when the token standing there would have been drawn for that
+observer: the same detection modes, with core's tolerance for a token (a quarter of its smaller
+side). The modes test the token as it is now, so its current statuses (invisible) apply at every
+point. One vision source per observer covers the whole path, so a long path costs little more
+than `perceivedBy`.
+
 ## The record
 
 | Field | |
 | --- | --- |
 | `observer`, `observed` | The two `Token`s |
-| `visible` | Boolean |
+| `visible` | Boolean: would core draw the token, judged with its own tolerance (a quarter of the token's smaller side) |
 | `reason` | Which sense did it — the first mode that succeeded, or `null` |
 | `reasons` | *Every* mode that would have succeeded, in core's own order |
 | `tier` | The tier the observer perceives the target at |

@@ -24,6 +24,7 @@
 import { MODULE_ID, setSettingVisibility } from "../constants.mjs";
 import { t } from "../i18n.mjs";
 import { evaluate } from "../model/evaluate.mjs";
+import { majorityIndex, majorityPoints } from "../sample.mjs";
 import { TIER, tierLabel } from "../model/tiers.mjs";
 import { viewerTier } from "../vision/perception.mjs";
 import { PAINTED_HOOK, unseenAt } from "../render/paint.mjs";
@@ -183,44 +184,19 @@ const detailed = () => {
 /* -------------------------------------------- */
 
 /**
- * Light level for a token, sampled across its footprint.
- *
- * @remarks
- * A large token does not occupy a point, and sampling only the centre gives the wrong answer for
- * anything bigger than 1×1 straddling a light's edge — so the centre plus four quarter-offset
- * points, keeping the brightest.
- *
- * Brightest rather than average or darkest because the question this readout usually serves is
- * whether something can be seen: being lit anywhere is what matters, and it is the conservative
- * answer for the creature trying to hide.
+ * Light level for a token: the `"majority"` sample (§11.3.1), the highest level more than half of
+ * its sample points reach, so the readout agrees with the API, attacks, and stealth.
  */
 function evaluateToken(token) {
-  const centre = token.center;
   const elevation = token.document.elevation ?? 0;
-  const dx = (token.document.width * canvas.grid.size) / 4;
-  const dy = (token.document.height * canvas.grid.size) / 4;
-
-  const points = [
-    centre,
-    { x: centre.x - dx, y: centre.y - dy },
-    { x: centre.x + dx, y: centre.y - dy },
-    { x: centre.x - dx, y: centre.y + dy },
-    { x: centre.x + dx, y: centre.y + dy },
-  ];
-
-  let best = null;
-  let at = centre;
-  for (const point of points) {
-    const result = evaluate({ x: point.x, y: point.y, elevation });
-    if (!best || result.B > best.B) {
-      best = result;
-      at = point;
-    }
-    if (best.tier === TIER.BRIGHT) break; // nothing can beat it
-  }
-  // The winning sample is carried out, so the umbra clamp applies at the place the brightness was
-  // measured rather than at the centre.
-  return { ...best, point: { x: at.x, y: at.y, elevation } };
+  const points = majorityPoints(token);
+  if (!points.length) points.push({ x: token.center.x, y: token.center.y, elevation });
+  const results = points
+    .map((point) => ({ result: evaluate({ x: point.x, y: point.y, elevation }), point }))
+    .sort((a, b) => b.result.B - a.result.B);
+  const { result, point } = results[majorityIndex(results.length)];
+  // The chosen sample is carried out, so the umbra clamp applies where the level was measured.
+  return { ...result, point: { x: point.x, y: point.y, elevation } };
 }
 
 /* -------------------------------------------- */

@@ -9,7 +9,20 @@
 
 ## Unreleased
 
+### Changed
+- **`perceive` agrees with what's drawn.** Its `visible` now uses core's own tolerance for a token (a quarter
+  of its smaller side), so a token with only its edge in sight counts as seen, as on the canvas.
+- **A token's light level is the level most of it is in.** The readout, the light-level target, and
+  the API (`brightnessOf`, `perceive`, `perceivedBy`) now read the highest level reached by more than
+  half of a token's sample points: its center and four points halfway to its corners, or for a token
+  larger than one square, the center of each square plus its center. The readout used to show the
+  brightest point and the light-level target the brightest square. New `"majority"` value of
+  `api.SAMPLE`, now the default; `"center"`, `"min"`, and `"max"` still work when asked for.
+
 ### Added
+- **Who could see a token along its path** (`api.perceivedAlong`, documented in API.md): for each
+  observer, which points of a move it could have seen the token at, with the light level and distance
+  at each. One vision check per observer covers the whole path.
 - **Custom lights on items and buffs**: the Light section of an item's Advanced tab offers **Custom**
   beside the presets, and an edit button that opens the light configuration window for that item alone,
   filled in from the selected preset.

@@ -411,8 +411,9 @@ a magical darkness lowers it.
 Hovering a token also shows its name. If a player does not have permission to read the nameplate of a 
 token it instead reads `???`.
 
-Token readouts sample the center plus four quarter-offset points and report the **brightest**, so a 
-token straddling a light's edge reads its as lit.
+Token readouts report the level that **most of the token** is in: the highest level reached by more
+than half of its sample points (the center and four points halfway to its corners; for a token larger
+than one square, the center of each square it covers and its center). Three of five points lit means lit.
 
 ## Token Vision
 
@@ -437,7 +438,8 @@ With [Roll Bonuses](https://github.com/dmrickey/fvtt-ckl-roll-bonuses) installed
 
 - **Whose light** - Self, Target, Self or Target, or Self and Target. With several targets, every
   target must match.
-- A token's light is its **brightest** square, read from the map rather than from anyone's view.
+- A token's light is the level **most of the token** is in (as in the readout), read from the map
+  rather than from anyone's view.
 
 For light sensitivity, use **Self**, **At**, **Bright** with a -1 attack bonus and a -1 Perception
 bonus (dazzled).

@@ -109,8 +109,8 @@ function registerTarget(api) {
       const all = [...self, ...targets];
       if (!all.length) return [];
 
-      // One call builds the field once for every subject. Brightest occupied square (§13).
-      const tiers = brightnessOf(all, { sample: "max" });
+      // One call builds the field once for every subject. Majority sample (§11.3.1).
+      const tiers = brightnessOf(all, { sample: "majority" });
       const selfTiers = tiers.slice(0, self.length);
       const targetTiers = tiers.slice(self.length);
 
