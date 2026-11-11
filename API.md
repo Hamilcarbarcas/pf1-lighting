@@ -110,11 +110,18 @@ the game.
 
 | Function | Returns |
 | --- | --- |
-| `api.perceive(observer, target, { sample })` | One record. Arrays on either side give one record per pair |
+| `api.perceive(observer, target, { sample, lean, needTier })` | One record. Arrays on either side give one record per pair |
 | `api.perceivedBy(observed, { observers, sample })` | A record per candidate observer, those that **can** see first, brightest perception first within that |
 
 `perceivedBy` defaults `observers` to every other token on the scene with sight enabled. Narrow it
 yourself — which NPCs are entitled to notice is a table question.
+
+Two options make `perceive` cheaper when asking about many tokens at once:
+
+- `lean: true` skips `distance` and `losBlocked` (both `null`).
+- `needTier: (reasons) => boolean` is called with each record's `reasons`; returning `false` skips the
+  light sampling, and `tier` and `tierName` are `null`. Useful when a light-independent sense already
+  sees the target and the light level wouldn't change your answer.
 
 ## Along a path
 

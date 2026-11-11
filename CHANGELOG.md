@@ -9,6 +9,10 @@
 
 ## Unreleased
 
+### Added
+- **`perceive` options `lean` and `needTier`** skip the distance, wall test and light sampling a caller
+  doesn't need, for asking about many tokens at once (pf1-cover-and-sight's token icons).
+
 ### Changed
 - **`perceive` agrees with what's drawn.** Its `visible` now uses core's own tolerance for a token (a quarter
   of its smaller side), so a token with only its edge in sight counts as seen, as on the canvas.

@@ -450,9 +450,14 @@ function modesSeeing(source, observed, point, { tolerance } = {}) {
  * @param {Token|TokenDocument|(Token|TokenDocument)[]} observed
  * @param {object} [options]
  * @param {"majority"|"center"|"min"|"max"} [options.sample="majority"]
+ * @param {boolean} [options.lean=false] - Skip `distance` and `losBlocked` (both null), for a caller
+ *   asking about many tokens at once that needs neither.
+ * @param {(reasons: string[]) => boolean} [options.needTier] - Called with each record's `reasons`;
+ *   false skips the light sampling (`tier` and `tierName` null), as when a light-independent mode
+ *   already sees the target.
  * @returns {object|object[]}
  */
-export function perceive(observers, observed, { sample = SAMPLE.MAJORITY } = {}) {
+export function perceive(observers, observed, { sample = SAMPLE.MAJORITY, lean = false, needTier } = {}) {
   const obsList = many(observers).map(tokenOf).filter(Boolean);
   const targetList = many(observed).map(tokenOf).filter(Boolean);
   const out = [];
@@ -461,7 +466,7 @@ export function perceive(observers, observed, { sample = SAMPLE.MAJORITY } = {})
     const { source, dispose } = visionSourceFor(observer);
     try {
       for (const target of targetList) {
-        out.push(record(observer, source, target, sample));
+        out.push(record(observer, source, target, sample, { lean, needTier }));
       }
     } finally {
       dispose();
@@ -481,7 +486,7 @@ function distanceBetween(from, to) {
   );
 }
 
-function record(observer, source, target, sample) {
+function record(observer, source, target, sample, { lean = false, needTier } = {}) {
   const point = pointOf(target);
   // Core's own tolerance for a token (`Token#isVisible`): a quarter of its smaller side, so `visible`
   // agrees with whether the token is drawn. Points stay core's 2 px.
@@ -490,7 +495,8 @@ function record(observer, source, target, sample) {
   const reasons = point ? modesSeeing(source, target, point, { tolerance }) : [];
   const reason = reasons[0] ?? null;
 
-  const tier = point
+  const wantTier = typeof needTier !== "function" || needTier(reasons) !== false;
+  const tier = !wantTier ? null : point
     ? fold(
         pointsFor(target, sample).map((p) =>
           source
@@ -502,7 +508,7 @@ function record(observer, source, target, sample) {
     : TIER.DARK;
 
   const from = pointOf(observer);
-  const distance = distanceBetween(from, point);
+  const distance = lean ? null : distanceBetween(from, point);
 
   return {
     observer,
@@ -511,12 +517,12 @@ function record(observer, source, target, sample) {
     reason,
     reasons,
     tier,
-    tierName: TIER_NAME[tier],
+    tierName: tier === null ? null : TIER_NAME[tier],
     lightIndependent: lightIndependenceOf(reason),
     blinded: source?.isBlinded === true,
     distance: distance === null ? null : +distance.toFixed(2),
     losBlocked:
-      from && point
+      !lean && from && point
         ? CONFIG.Canvas.polygonBackends.sight.testCollision(from, point, {
             type: "sight",
             mode: "any",
