@@ -10,6 +10,8 @@
 ## Unreleased
 
 ### Added
+- **`api.holdReadout()`** shows the light-level readout until released, for a pick where the light
+  matters (astora-mod's shadow teleport); the user's own setting is untouched.
 - **`perceive` options `lean` and `needTier`** skip the distance, wall test and light sampling a caller
   doesn't need, for asking about many tokens at once (pf1-cover-and-sight's token icons).
 

@@ -20,6 +20,7 @@ const api = game.modules.get("pf1-lighting")?.api;
 - [Withheld regions](#withheld-regions)
 - [Revealed regions](#revealed-regions)
 - [Unexplored regions](#unexplored-regions)
+- [Holding the readout](#holding-the-readout)
 - [Hooks](#hooks)
 - [Cost](#cost)
 - [Examples](#examples)
@@ -402,6 +403,17 @@ Feature-detect with `api.unexplored !== undefined`.
 **`provider(visionSource)`** returns an array of `PIXI.Polygon` to keep out of fog for that observer,
 or `null`, with the same caching contract as withheld regions. Withheld regions still win: a part of
 the view another provider withholds stays hidden, kept or not.
+
+# Holding the readout
+
+```js
+const release = api.holdReadout();
+try { /* a pick where the light level matters */ } finally { release(); }
+```
+
+Shows the light-level readout until `release()` is called, whatever the user's own setting, which is
+left as it was. Holds stack; releasing twice is harmless. The GM-only setting still applies. Added
+2026-11-17; feature-detect with `api.holdReadout !== undefined`.
 
 # Hooks
 

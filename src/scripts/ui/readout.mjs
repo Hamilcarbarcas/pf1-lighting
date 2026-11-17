@@ -110,8 +110,34 @@ const showing = () => {
   }
 };
 
+/**
+ * Holds taken through the API ({@link hold}): while any is held the chip shows whatever the user's
+ * own preference, which is left as it was. Never stored, so a reload or a crash cannot leave it on.
+ */
+let holds = 0;
+
 /** Should the chip be on screen right now? */
-const enabled = () => available() && showing();
+const enabled = () => available() && (holds > 0 || showing());
+
+/**
+ * Shows the readout until the returned function is called (DESIGN.md §11.9): astora-mod's teleport
+ * crosshair holds it while a shadow teleport is picked. The GM-only switch still applies. Releasing
+ * twice is harmless.
+ *
+ * @returns {() => void} Release.
+ */
+export function hold() {
+  holds += 1;
+  resync();
+  schedule();
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    holds = Math.max(0, holds - 1);
+    schedule();
+  };
+}
 
 /* -------------------------------------------- */
 /*  Token names                                 */

@@ -20,6 +20,7 @@ import * as withheldRegions from "./withheld.mjs";
 import * as revealedRegions from "./revealed.mjs";
 import * as unexploredRegions from "./unexplored.mjs";
 import { isPatched as umbraMaskPatched } from "./vision/umbra-mask.mjs";
+import { hold as holdReadout } from "./ui/readout.mjs";
 
 /**
  * Regions withheld from an observer's view. DESIGN.md §4.3.2.
@@ -790,6 +791,10 @@ export function build() {
     // §4.3.4. Added 2026-10-08 for astora-mod's roofs seen from above; feature-detect with
     // `api.unexplored !== undefined`.
     unexplored,
+
+    // §11.9. Added 2026-11-17 for astora-mod's teleport crosshair; feature-detect with
+    // `api.holdReadout !== undefined`. Returns a release function.
+    holdReadout,
   }));
 }
 
