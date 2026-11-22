@@ -19,6 +19,7 @@ import * as companion from "./model/companion.mjs";
 import * as withheldRegions from "./withheld.mjs";
 import * as revealedRegions from "./revealed.mjs";
 import * as unexploredRegions from "./unexplored.mjs";
+import * as attenuatedRegions from "./attenuated.mjs";
 import { isPatched as umbraMaskPatched } from "./vision/umbra-mask.mjs";
 import { hold as holdReadout } from "./ui/readout.mjs";
 
@@ -77,6 +78,24 @@ const unexplored = Object.freeze({
   active: () => umbraMaskPatched(),
   get generation() {
     return unexploredRegions.currentGeneration();
+  },
+});
+
+/**
+ * Ground an observer sees, dimmed by another module's depth mesh. DESIGN.md §4.3.6.
+ *
+ * @remarks
+ * Seen, not withheld: nothing is carved or kept from fog, and detection is unaffected. Caps are areas
+ * never dimmed past a given depth; `invalidateCaps` redraws them without a vision refresh.
+ */
+const attenuated = Object.freeze({
+  register: attenuatedRegions.register,
+  unregister: attenuatedRegions.unregister,
+  invalidate: attenuatedRegions.invalidate,
+  invalidateCaps: attenuatedRegions.invalidateCaps,
+  active: () => umbraMaskPatched(),
+  get generation() {
+    return attenuatedRegions.currentGeneration();
   },
 });
 
@@ -791,6 +810,10 @@ export function build() {
     // §4.3.4. Added 2026-10-08 for astora-mod's roofs seen from above; feature-detect with
     // `api.unexplored !== undefined`.
     unexplored,
+
+    // §4.3.6. Added 2026-11-21 for astora-mod's tapered fog; feature-detect with
+    // `api.attenuated !== undefined`.
+    attenuated,
 
     // §11.9. Added 2026-11-17 for astora-mod's teleport crosshair; feature-detect with
     // `api.holdReadout !== undefined`. Returns a release function.

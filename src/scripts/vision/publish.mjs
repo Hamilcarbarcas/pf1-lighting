@@ -10,6 +10,7 @@
 import * as motion from "./motion.mjs";
 import * as umbraMask from "./umbra-mask.mjs";
 import * as withheld from "../withheld.mjs";
+import * as attenuated from "../attenuated.mjs";
 
 const HOLD_LIMIT_MS = 200;
 
@@ -24,7 +25,9 @@ function busy() {
   for (const source of canvas.effects?.visionSources ?? []) {
     if (!source.active) continue;
     withheld.collect(source);
-    if (withheld.isPending(source) || umbraMask.cutPending(source)) return true;
+    // §4.3.6: collecting starts a worker-backed provider's job.
+    attenuated.collect(source);
+    if (withheld.isPending(source) || attenuated.isPending(source) || umbraMask.cutPending(source)) return true;
   }
   return false;
 }

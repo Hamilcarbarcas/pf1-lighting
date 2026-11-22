@@ -46,6 +46,8 @@ import * as presetEditor from "./ui/preset-editor.mjs";
 import * as companion from "./model/companion.mjs";
 import * as lightingSocket from "./socket.mjs";
 import * as tokenHud from "./ui/token-hud.mjs";
+import * as tileHud from "./ui/tile-hud.mjs";
+import * as tileConfig from "./ui/tile-config.mjs";
 import * as emitterPip from "./ui/emitter-pip.mjs";
 import * as lightItems from "./model/light-items.mjs";
 import * as buffDriver from "./model/buff-driver.mjs";
@@ -61,6 +63,7 @@ import * as colorationBlend from "./render/coloration-blend.mjs";
 import * as greyscale from "./render/greyscale.mjs";
 import * as darknessMask from "./render/darkness-mask.mjs";
 import * as obstructed from "./render/obstructed.mjs";
+import * as attenuatedRender from "./render/attenuated.mjs";
 import * as ambient from "./render/ambient.mjs";
 import * as soften from "./render/soften.mjs";
 import * as darknessTexture from "./render/darkness-texture.mjs";
@@ -225,6 +228,8 @@ Hooks.once("init", () => {
   lightingSocket.registerHooks();
   // The Token HUD light button (§12.9) and the fuel clock (§12.8).
   tokenHud.registerHooks();
+  tileHud.registerHooks();
+  tileConfig.registerHooks();
   emitterPip.registerHooks();
   // The record reader, injected rather than imported: `light-items` is read *by* `companion`'s
   // consumers and must not import it back. Same seam and same reason as `suppression.setVisionModel`
@@ -301,6 +306,8 @@ Hooks.once("init", () => {
   umbraMask.applyPatch();
   // §4.3.5: obstructed ground's mask, fed by the carve above and read by the two filters below.
   obstructed.registerHooks();
+  // §4.3.6: attenuated ground, composited into the vision mask.
+  attenuatedRender.registerHooks();
 
   // Fog explores the global-light erase's hard boundary, not its blurred rim (§6.4.5).
   darknessTexture.patchFogCommit();
@@ -857,6 +864,8 @@ Hooks.once("ready", () => {
       // §4.3.5: obstructed ground, its mask, and a red overlay of it.
       obstructed: obstructed.status,
       showObstructed: obstructed.show,
+      // §4.3.6: attenuated ground's providers, layers and counters.
+      attenuated: attenuatedRender.status,
       invalidate: umbra.invalidate,
       // `stats().rebuildMs` is the cold path by construction; this is the only readout that
       // exercises the one `perceivedTier` actually calls.

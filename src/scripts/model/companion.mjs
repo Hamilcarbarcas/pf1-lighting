@@ -214,6 +214,8 @@ function toRecord(effect = {}) {
 
   if (effect.expires !== undefined) record.expires = effect.expires;
   if (effect.fuel) record.fuel = effect.fuel;
+  // Lit from the anchor's own configuration (§12.9.4), so the HUD can mark it and a config edit can follow.
+  if (effect.configured) record.configured = true;
   return record;
 }
 
@@ -576,6 +578,12 @@ export function anchorsOnScene(scene = canvas?.scene) {
 }
 
 /**
+ * A hidden token or tile emits nothing, matching core's own token light and a hidden ambient light
+ * (§12.9.3). `hidden` only: the invisible condition is a detection matter and keeps emitting.
+ */
+const dormant = (doc) => doc.documentName !== "MeasuredTemplate" && doc.hidden === true;
+
+/**
  * Reconcile the live sources against the records on the current scene.
  *
  * @remarks
@@ -595,6 +603,8 @@ export function sync() {
   let touchedDarkness = false;
 
   for (const doc of anchorsOnScene()) {
+    // Unseen records fall through to the removal pass below.
+    if (dormant(doc)) continue;
     for (const record of list(doc)) {
       const key = keyOf(doc, record);
       seen.add(key);
@@ -957,7 +967,7 @@ export function registerHooks() {
 
   for (const type of ["Token", "Tile", "MeasuredTemplate"]) {
     Hooks.on(`update${type}`, (doc, changed) => {
-      if (touchesEffects(changed)) sync();
+      if (touchesEffects(changed) || (type !== "MeasuredTemplate" && "hidden" in changed)) sync();
       // Position, and only for anchors that carry something — `markMoved` returns immediately
       // otherwise, which is every token on an ordinary scene.
       // Size, texture scale and the wall-height flag all feed a token's eye height (§12.4.1).

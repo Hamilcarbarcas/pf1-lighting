@@ -99,6 +99,8 @@ import { lowLightAmbient } from "../model/registry.mjs";
 import { tierOf } from "../model/tiers.mjs";
 import { darknessFor } from "../render/levels.mjs";
 import * as obstructed from "../render/obstructed.mjs";
+import * as attenuatedRender from "../render/attenuated.mjs";
+import * as attenuated from "../attenuated.mjs";
 import * as carveWorker from "./carve-worker-client.mjs";
 import * as motion from "./motion.mjs";
 import { SIGHT_TIER } from "./perception.mjs";
@@ -548,6 +550,9 @@ export function applyPatch() {
     pending = [];
     // §4.3.5: per observer, its obstructed ground clipped to `los` and its depth, for `render/obstructed.mjs`.
     const obstructedSets = [];
+    // §4.3.6: per observer, its view and depth meshes, read before the swap below.
+    const attenuatedSets = [];
+    const anyAttenuated = attenuated.hasProviders();
 
     // Swap one property for EMPTY and queue its trimmed rings; core then draws nothing for it.
     const substitute = (source, property, rings, layer, preview) => {
@@ -572,6 +577,13 @@ export function applyPatch() {
       let sight = null;
       let keptLight = [];
       let keptSight = [];
+      if (anyAttenuated) {
+        try {
+          attenuatedSets.push(attenuatedRender.entryFor(source));
+        } catch (error) {
+          console.error("PF1 Lighting | attenuated ground collect failed", error);
+        }
+      }
       try {
         const collected = withheld.collect(source);
         // §4.3.5: a preview or blinded source sees nothing it could be looking across.
@@ -610,6 +622,12 @@ export function applyPatch() {
     } catch (error) {
       // Failing open: obstructed ground keeps whatever the mask last held, and the carve is unaffected.
       console.error("PF1 Lighting | obstructed mask update failed", error);
+    }
+
+    try {
+      attenuatedRender.publish(attenuatedSets);
+    } catch (error) {
+      console.error("PF1 Lighting | attenuated ground update failed", error);
     }
 
     try {

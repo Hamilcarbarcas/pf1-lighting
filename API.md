@@ -20,6 +20,7 @@ const api = game.modules.get("pf1-lighting")?.api;
 - [Withheld regions](#withheld-regions)
 - [Revealed regions](#revealed-regions)
 - [Unexplored regions](#unexplored-regions)
+- [Attenuated regions](#attenuated-regions)
 - [Holding the readout](#holding-the-readout)
 - [Hooks](#hooks)
 - [Cost](#cost)
@@ -403,6 +404,63 @@ Feature-detect with `api.unexplored !== undefined`.
 **`provider(visionSource)`** returns an array of `PIXI.Polygon` to keep out of fog for that observer,
 or `null`, with the same caching contract as withheld regions. Withheld regions still win: a part of
 the view another provider withholds stays hidden, kept or not.
+
+# Attenuated regions
+
+Dim what a particular observer sees, by how deep into something it is: mist, smoke, murky water.
+The ground stays seen. Nothing is carved from the view, fog of war explores it as usual (pair it
+with unexplored regions to keep part of it out), and brightness, perception and token detection
+are unaffected. Tokens standing in it dim with the ground, because the fog overlay draws over them.
+
+Feature-detect with `api.attenuated !== undefined`.
+
+| | |
+| --- | --- |
+| `api.attenuated.register(id, provider, { caps, pending })` | Register a provider. `caps(source)`, optional, returns `[{ polygon, depth }]`: areas never dimmed past `depth`, such as a creature that should stay readable. `pending(source)`, optional, as for withheld regions. Returns a function that unregisters it |
+| `api.attenuated.unregister(id)` | Remove a provider |
+| `api.attenuated.invalidate()` | Your provider's output changed for a reason other than an observer moving. Triggers a vision refresh |
+| `api.attenuated.invalidateCaps()` | Only your caps changed. Redraws them on the next frame without a vision refresh |
+| `api.attenuated.active()` | `true` while the dimming is installed, which is always while this module is enabled |
+| `api.attenuated.generation` | A counter that changes whenever any provider's output may have |
+
+**`provider(visionSource)`** returns triangles, or `null`:
+
+```js
+{ points: Float32Array,   // x, y per vertex, scene pixels
+  depths: Float32Array,   // one per vertex: 0 seen as usual, 1 or more unseen
+  indices: Uint16Array }  // or Uint32Array; three per triangle
+```
+
+Depths are interpolated linearly across each triangle and clamped per pixel; where triangles
+overlap the deepest wins. Ground no triangle covers is seen as usual. Where several observers see
+the same spot, the one that sees it best wins. Same caching contract as withheld regions: cache on
+`visionSource.los`. Caps are asked for again after `invalidateCaps()`; return the same array when
+nothing changed, and nothing is redrawn.
+
+A dimmed pixel blends toward what the viewer would see there unseen: explored fog where it has been
+explored, black where it hasn't. At depth 1 it looks exactly like ground out of sight, so a fade
+that reaches 1 where something else cuts the view leaves no seam.
+
+```js
+const api = game.modules.get("pf1-lighting")?.api;
+// Fade every observer's view to nothing between 200 and 600 px from its eye (a test, not a use case).
+api.attenuated.register("my-module.test", (source) => {
+  const { x, y } = source.origin;
+  const n = 64, radii = [200, 600, 4000], depths = [0, 1, 1];
+  const points = [], d = [], indices = [];
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * Math.PI * 2;
+    radii.forEach((r, q) => { points.push(x + r * Math.cos(a), y + r * Math.sin(a)); d.push(depths[q]); });
+    const k2 = (k + 1) % n;
+    for (let q = 0; q < 2; q++) {
+      const v = k * 3 + q, w = k2 * 3 + q;
+      indices.push(v, v + 1, w + 1, v, w + 1, w);
+    }
+  }
+  return { points: new Float32Array(points), depths: new Float32Array(d), indices: new Uint32Array(indices) };
+});
+```
+
 
 # Holding the readout
 

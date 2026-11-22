@@ -10,12 +10,21 @@
 ## Unreleased
 
 ### Added
+- **A light button on the tile HUD** (GM): pick a preset and the tile gives that light until it is put
+  out. It moves, rotates, copies, and is deleted with the tile, and a hidden tile gives none. A **Light**
+  tab on the tile's configuration sets a preset or a custom light, offered first in the list as
+  *As configured*.
 - **`api.holdReadout()`** shows the light-level readout until released, for a pick where the light
   matters (astora-mod's shadow teleport); the user's own setting is untouched.
+- **`api.attenuated`**: another module can dim what an observer sees by a depth mesh, seen ground
+  fading into unseen, with the best-placed observer winning (astora-mod's natural fog). Tokens dim
+  with the ground; caps keep chosen areas from dimming past a depth. See API.md, *Attenuated regions*.
 - **`perceive` options `lean` and `needTier`** skip the distance, wall test and light sampling a caller
   doesn't need, for asking about many tokens at once (pf1-cover-and-sight's token icons).
 
 ### Changed
+- **A hidden token's light effects go dark** while it is hidden, as its own light already did. An
+  invisible token still gives light.
 - **`perceive` agrees with what's drawn.** Its `visible` now uses core's own tolerance for a token (a quarter
   of its smaller side), so a token with only its edge in sight counts as seen, as on the canvas.
 - **A token's light level is the level most of it is in.** The readout, the light-level target, and

@@ -21,6 +21,7 @@ A complete overhaul of foundry's lighting system to match pathfinder 1e's rules 
   - [Presets](#presets)
   - [Light effects](#light-effects)
     - [The token light button](#the-token-light-button)
+    - [The tile light button](#the-tile-light-button)
     - [The light badge](#the-light-badge)
     - [Fuel](#fuel)
     - [Light on an item](#light-on-an-item)
@@ -240,6 +241,19 @@ A GM gets one extra row at the top, **Any light source…**, which offers every 
 ignores inventory and fuel entirely.
 
 A player whose actor is carrying nothing that gives light gets no button.
+
+### The tile light button
+
+A GM gets the same **light bulb** button at the top of a tile's HUD, above elevation. It lists every
+preset; pick one and the tile gives that light from its center until you put it out. Click to put it
+out, right-click to swap it.
+
+The light moves, rotates, copies, and is deleted with the tile. While the tile is hidden it gives no light;
+the same goes for a hidden token's light effects. An invisible token still gives light.
+
+For a light of the tile's own, open the tile's configuration and pick a preset, or **Custom**, on the
+**Light** tab; the edit button opens the full light configuration. That doesn't light the tile: it adds an
+italic **As configured** row at the top of the button's list.
 
 ### The light badge
 

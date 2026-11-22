@@ -387,6 +387,18 @@
           "below": "Light at {subject}: below {tier}"
         }
       }
+    },
+    "TileLight": {
+      "Tab": "Light",
+      "Light": "Light",
+      "None": "None",
+      "Hint": "Offered as As configured at the top of the tile HUD's light button. Setting it here does not light the tile. The edit button opens the light configuration, filled in from the selected preset, and saving it selects Custom.",
+      "Customize": "Configure a custom light for this tile",
+      "CustomUnset": "No custom light configured yet. As configured gives off nothing until one is saved.",
+      "EditTitle": "Custom Light: Tile",
+      "Tile": "Tile",
+      "CustomLabel": "Custom light",
+      "AsConfigured": "As configured"
     }
   }
 }

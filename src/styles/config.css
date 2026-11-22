@@ -15,6 +15,8 @@
  * | `.pf1-lighting.preset-editor`, `.pf1-lighting.light-item-editor` | our own windows | their own furniture |
  * | `.pf1-lighting-emits` | a PF1 item sheet | the light descriptor's section |
  * | `.pf1-lighting-hud` | the Token HUD | the light button and its picker |
+ * | `.pf1-lighting-tile-hud` | the Tile HUD | the same button, GM presets only |
+ * | `.pf1-lighting-tile-config` | the tile sheet | the Light tab |
  * | `.pf1-lighting-moved`, `.pf1-lighting-scene-tier` | core's own elements | what we hid or drove |
  *
  * `.pf1-lighting-config` is **not** in that list and carries no rules at all any more. It is the
@@ -262,7 +264,8 @@
 /* No `top` here on purpose — `ui/token-hud.place()` sets it, because the button's own position in
  * the column moves as other modules add controls and the panel has to follow it. A rule here would
  * be a second opinion about the same number, and the wrong one whenever the column changed. */
-#token-hud .pf1-lighting-hud-palette {
+#token-hud .pf1-lighting-hud-palette,
+#tile-hud .pf1-lighting-tile-hud-palette {
   display: flex;
   flex-direction: column;
   width: max-content;
@@ -278,7 +281,8 @@
 
 /* A row is a flex line, not text with an image in it, so the icon and the label are one target and
  * both are clickable — the `inert` span they started as made only the padding hit the anchor. */
-#token-hud .pf1-lighting-hud-choice {
+#token-hud .pf1-lighting-hud-choice,
+#tile-hud .pf1-lighting-tile-hud-choice {
   display: flex;
   align-items: center;
   gap: 0.35rem;
@@ -289,13 +293,15 @@
   cursor: var(--cursor-pointer);
 }
 
-#token-hud .pf1-lighting-hud-choice:hover {
+#token-hud .pf1-lighting-hud-choice:hover,
+#tile-hud .pf1-lighting-tile-hud-choice:hover {
   color: var(--control-hover-icon-color);
   background: var(--control-hover-bg-color);
 }
 
 /* The preset currently lit, so reopening the picker says what is burning. */
-#token-hud .pf1-lighting-hud-choice.active {
+#token-hud .pf1-lighting-hud-choice.active,
+#tile-hud .pf1-lighting-tile-hud-choice.active {
   color: var(--control-active-icon-color);
   background: var(--control-active-bg-color);
 }
@@ -313,6 +319,14 @@
  * because it is a different kind of thing: everything below it is what this actor has, and this one
  * ignores that entirely. */
 #token-hud .pf1-lighting-hud-override {
+  margin-bottom: 2px;
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--control-border-color);
+  font-style: italic;
+}
+
+/* The tile's own configuration, set apart from the presets below it. */
+#tile-hud .pf1-lighting-tile-hud-configured {
   margin-bottom: 2px;
   padding-bottom: 0.25rem;
   border-bottom: 1px solid var(--control-border-color);
